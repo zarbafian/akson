@@ -42,3 +42,4 @@ Index:
 | [0007](0007-jws-agent-card.md) | Minimal EdDSA JWS for Agent Card signatures | accepted |
 | 0008 | DSSE/in-toto implementation | open |
 | [0009](0009-keystore-rollback.md) | Keystore abstraction and rollback checkpoint | accepted |
+| [0010](0010-unknown-fields.md) | Unknown-field handling for standard A2A objects | accepted |

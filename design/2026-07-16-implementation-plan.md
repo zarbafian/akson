@@ -405,9 +405,11 @@ anchored here so they are not lost:
 - **M11** — result-manifest semantic validation (evidence resolution,
   bytewise ordering, dup-role/slot rejection) and per-attempt/task evidence
   binding.
-- **ADR (before M5)** — decide strict-reject vs. preserve-for-compat for
-  unknown fields on *standard* A2A objects (design §18); Axon extension
-  objects keep reject-unknown regardless.
+- **ADR (before M5)** — **done** (ADR-0010): standard A2A objects preserve
+  non-critical unknown fields via `pbjson ignore_unknown_fields()`, unknown
+  safety-critical enum values still reject, extension objects stay
+  reject-unknown. Remaining: verify/forward over *original bytes* (not the
+  typed re-serialization) on the M5 receive path (card_sig refinement).
 
 ### Tracer bullet checkpoint (after M7 + a minimal M8)
 

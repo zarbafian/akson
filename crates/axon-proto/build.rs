@@ -29,6 +29,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pbjson_build::Builder::new()
         .register_descriptors(&descriptor_bytes)?
+        // Design §18 / ADR-0010: preserve non-critical unknown *standard*
+        // fields (ignore them in the typed view rather than rejecting the
+        // object), while unknown safety-critical enum values still fail closed
+        // — so `ignore_unknown_enum_variants()` is deliberately NOT set.
+        .ignore_unknown_fields()
         .build(&[".lf.a2a.v1"])?;
 
     Ok(())

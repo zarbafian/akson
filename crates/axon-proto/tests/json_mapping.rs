@@ -75,12 +75,14 @@ fn task_states_map_to_standard_names() {
 }
 
 #[test]
-fn unknown_fields_are_rejected() {
-    // Design §20.1: reject unknown critical fields. The generated mapping
-    // already refuses unknown members outright; the profile layer relies on
-    // this baseline.
+fn unknown_standard_fields_are_ignored() {
+    // Design §18 / ADR-0010: a non-critical unknown field on a *standard* A2A
+    // object is preserved (ignored by the typed view), not rejected — so a
+    // benign field from a newer A2A minor does not hard-fail. Axon extension
+    // objects, by contrast, keep reject-unknown via their JSON Schemas.
     let json = r#"{"messageId": "msg-1", "role": "ROLE_USER", "parts": [], "bogus": true}"#;
-    assert!(serde_json::from_str::<Message>(json).is_err());
+    let msg: Message = serde_json::from_str(json).unwrap();
+    assert_eq!(msg.message_id, "msg-1");
 }
 
 #[test]
