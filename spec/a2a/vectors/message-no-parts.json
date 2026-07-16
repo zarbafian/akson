@@ -1,0 +1,20 @@
+{
+  "name": "a2a-profile/message-no-parts",
+  "description": "a message must carry content",
+  "kind": "message",
+  "input": {
+    "message": {
+      "messageId": "msg-0001",
+      "contextId": "ctx-0001",
+      "role": "ROLE_USER",
+      "parts": [],
+      "extensions": [
+        "https://axon.invalid/ext/contract/v1"
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "at least one part"
+  }
+}

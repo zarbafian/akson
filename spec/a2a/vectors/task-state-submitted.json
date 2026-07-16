@@ -1,0 +1,16 @@
+{
+  "name": "a2a-profile/task-state-submitted",
+  "description": "TASK_STATE_SUBMITTED is reachable in v1",
+  "kind": "task",
+  "input": {
+    "task": {
+      "id": "task-0001",
+      "status": {
+        "state": "TASK_STATE_SUBMITTED"
+      }
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}

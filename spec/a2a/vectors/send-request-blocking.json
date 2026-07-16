@@ -1,0 +1,39 @@
+{
+  "name": "a2a-profile/send-request-blocking",
+  "description": "the v1 profile never holds approval or execution inside the request",
+  "kind": "send-request",
+  "input": {
+    "request": {
+      "message": {
+        "messageId": "msg-0001",
+        "contextId": "ctx-0001",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "review this patch",
+            "mediaType": "text/plain"
+          },
+          {
+            "data": {
+              "max_findings": 10
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "extensions": [
+          "https://axon.invalid/ext/contract/v1"
+        ]
+      },
+      "configuration": {
+        "acceptedOutputModes": [
+          "text/plain"
+        ],
+        "returnImmediately": false
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "returnImmediately"
+  }
+}

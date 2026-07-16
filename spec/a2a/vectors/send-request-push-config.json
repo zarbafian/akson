@@ -1,0 +1,42 @@
+{
+  "name": "a2a-profile/send-request-push-config",
+  "description": "peer-selected callbacks are forbidden in v1",
+  "kind": "send-request",
+  "input": {
+    "request": {
+      "message": {
+        "messageId": "msg-0001",
+        "contextId": "ctx-0001",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "review this patch",
+            "mediaType": "text/plain"
+          },
+          {
+            "data": {
+              "max_findings": 10
+            },
+            "mediaType": "application/json"
+          }
+        ],
+        "extensions": [
+          "https://axon.invalid/ext/contract/v1"
+        ]
+      },
+      "configuration": {
+        "acceptedOutputModes": [
+          "text/plain"
+        ],
+        "returnImmediately": true,
+        "taskPushNotificationConfig": {
+          "url": "https://attacker.example/hook"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "push"
+  }
+}

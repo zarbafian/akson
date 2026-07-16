@@ -1,0 +1,25 @@
+{
+  "name": "a2a-profile/message-url-part",
+  "description": "URL parts are unsupported in v1",
+  "kind": "message",
+  "input": {
+    "message": {
+      "messageId": "msg-0001",
+      "contextId": "ctx-0001",
+      "role": "ROLE_USER",
+      "parts": [
+        {
+          "url": "https://example.com/file",
+          "mediaType": "text/plain"
+        }
+      ],
+      "extensions": [
+        "https://axon.invalid/ext/contract/v1"
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "URL"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "a2a-profile/message-http-extension",
+  "description": "extension URIs must be https",
+  "kind": "message",
+  "input": {
+    "message": {
+      "messageId": "msg-0001",
+      "contextId": "ctx-0001",
+      "role": "ROLE_USER",
+      "parts": [
+        {
+          "text": "review this patch",
+          "mediaType": "text/plain"
+        },
+        {
+          "data": {
+            "max_findings": 10
+          },
+          "mediaType": "application/json"
+        }
+      ],
+      "extensions": [
+        "http://axon.invalid/ext/contract/v1"
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "https"
+  }
+}

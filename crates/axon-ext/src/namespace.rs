@@ -20,6 +20,20 @@ pub fn ext_uri(name: &str, version: u32) -> String {
     format!("{EXTENSION_NAMESPACE}/{name}/v{version}")
 }
 
+/// The complete required Axon extension URI set every v1 operation activates
+/// (design §10.1): contract, identity/key binding, passive delivery,
+/// result/evidence, and outcome. Fed to
+/// `axon_proto::profile::ProfileConfig` by the daemon.
+pub fn required_extension_uris() -> [String; 5] {
+    [
+        ext_uri("contract", 1),
+        ext_uri("key-binding", 1),
+        ext_uri("delivery", 1),
+        ext_uri("result-evidence", 1),
+        ext_uri("outcome", 1),
+    ]
+}
+
 /// Builds the versioned payload media type for an extension object, e.g.
 /// `payload_media_type("contract", 1)` →
 /// `application/vnd.axon-dev.contract.v1+json`.

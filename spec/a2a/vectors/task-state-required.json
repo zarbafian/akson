@@ -1,0 +1,17 @@
+{
+  "name": "a2a-profile/task-state-required",
+  "description": "TASK_STATE_AUTH_REQUIRED is not reachable in v1",
+  "kind": "task",
+  "input": {
+    "task": {
+      "id": "task-0001",
+      "status": {
+        "state": "TASK_STATE_AUTH_REQUIRED"
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "not reachable"
+  }
+}

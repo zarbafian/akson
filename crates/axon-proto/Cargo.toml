@@ -12,6 +12,7 @@ prost = { workspace = true }
 pbjson = { workspace = true }
 pbjson-types = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -1,0 +1,31 @@
+{
+  "name": "a2a-profile/negotiation-exact",
+  "description": "activating exactly the required set echoes it",
+  "kind": "negotiation",
+  "input": {
+    "supported": [
+      "https://axon.invalid/ext/contract/v1",
+      "https://axon.invalid/ext/key-binding/v1",
+      "https://axon.invalid/ext/delivery/v1",
+      "https://axon.invalid/ext/result-evidence/v1",
+      "https://axon.invalid/ext/outcome/v1"
+    ],
+    "required": [
+      "https://axon.invalid/ext/contract/v1",
+      "https://axon.invalid/ext/key-binding/v1",
+      "https://axon.invalid/ext/delivery/v1",
+      "https://axon.invalid/ext/result-evidence/v1",
+      "https://axon.invalid/ext/outcome/v1"
+    ],
+    "activated": [
+      "https://axon.invalid/ext/contract/v1",
+      "https://axon.invalid/ext/key-binding/v1",
+      "https://axon.invalid/ext/delivery/v1",
+      "https://axon.invalid/ext/result-evidence/v1",
+      "https://axon.invalid/ext/outcome/v1"
+    ]
+  },
+  "expected": {
+    "valid": true
+  }
+}

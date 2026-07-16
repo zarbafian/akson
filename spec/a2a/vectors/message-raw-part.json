@@ -1,0 +1,35 @@
+{
+  "name": "a2a-profile/message-raw-part",
+  "description": "raw byte parts are unsupported in v1",
+  "kind": "message",
+  "input": {
+    "message": {
+      "messageId": "msg-0001",
+      "contextId": "ctx-0001",
+      "role": "ROLE_USER",
+      "parts": [
+        {
+          "text": "review this patch",
+          "mediaType": "text/plain"
+        },
+        {
+          "data": {
+            "max_findings": 10
+          },
+          "mediaType": "application/json"
+        },
+        {
+          "raw": "AAAA",
+          "mediaType": "application/octet-stream"
+        }
+      ],
+      "extensions": [
+        "https://axon.invalid/ext/contract/v1"
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "raw"
+  }
+}

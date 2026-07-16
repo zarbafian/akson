@@ -106,6 +106,7 @@ dependencies = [
  "protox",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

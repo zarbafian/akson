@@ -1,0 +1,80 @@
+{
+  "name": "a2a-profile/agent-card-wrong-binding",
+  "description": "the v1 interface is HTTP+JSON",
+  "kind": "agent-card",
+  "input": {
+    "card": {
+      "name": "reviewer",
+      "description": "Axon endpoint",
+      "version": "0.0.1",
+      "supportedInterfaces": [
+        {
+          "url": "https://reviewer.example:7300/a2a",
+          "protocolBinding": "JSONRPC",
+          "protocolVersion": "1.0"
+        }
+      ],
+      "capabilities": {
+        "streaming": false,
+        "pushNotifications": false,
+        "extendedAgentCard": true,
+        "extensions": [
+          {
+            "uri": "https://axon.invalid/ext/contract/v1",
+            "required": true
+          },
+          {
+            "uri": "https://axon.invalid/ext/key-binding/v1",
+            "required": true
+          },
+          {
+            "uri": "https://axon.invalid/ext/delivery/v1",
+            "required": true
+          },
+          {
+            "uri": "https://axon.invalid/ext/result-evidence/v1",
+            "required": true
+          },
+          {
+            "uri": "https://axon.invalid/ext/outcome/v1",
+            "required": true
+          }
+        ]
+      },
+      "securitySchemes": {
+        "mtls": {
+          "mtlsSecurityScheme": {
+            "description": "pinned mutual TLS"
+          }
+        }
+      },
+      "securityRequirements": [
+        {
+          "schemes": {
+            "mtls": {
+              "list": []
+            }
+          }
+        }
+      ],
+      "defaultInputModes": [
+        "text/plain"
+      ],
+      "defaultOutputModes": [
+        "text/plain"
+      ],
+      "skills": []
+    },
+    "required_extensions": [
+      "https://axon.invalid/ext/contract/v1",
+      "https://axon.invalid/ext/key-binding/v1",
+      "https://axon.invalid/ext/delivery/v1",
+      "https://axon.invalid/ext/result-evidence/v1",
+      "https://axon.invalid/ext/outcome/v1"
+    ]
+  },
+  "expected": {
+    "valid": false,
+    "violation": "HTTP+JSON"
+  }
+}

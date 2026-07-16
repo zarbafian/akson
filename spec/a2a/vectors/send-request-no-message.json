@@ -1,0 +1,16 @@
+{
+  "name": "a2a-profile/send-request-no-message",
+  "description": "a request must carry a message",
+  "kind": "send-request",
+  "input": {
+    "request": {
+      "configuration": {
+        "returnImmediately": true
+      }
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "message"
+  }
+}

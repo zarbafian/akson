@@ -1,0 +1,31 @@
+{
+  "name": "a2a-profile/message-bad-role",
+  "description": "unspecified role is rejected",
+  "kind": "message",
+  "input": {
+    "message": {
+      "messageId": "msg-0001",
+      "contextId": "ctx-0001",
+      "role": "ROLE_UNSPECIFIED",
+      "parts": [
+        {
+          "text": "review this patch",
+          "mediaType": "text/plain"
+        },
+        {
+          "data": {
+            "max_findings": 10
+          },
+          "mediaType": "application/json"
+        }
+      ],
+      "extensions": [
+        "https://axon.invalid/ext/contract/v1"
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "violation": "role"
+  }
+}

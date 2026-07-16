@@ -8,6 +8,8 @@
 //! disabled streaming/push) are validation layered on top by the transport
 //! and contract crates, never edits to the generated model.
 
+pub mod profile;
+
 /// Generated A2A types, package `lf.a2a.v1`.
 #[allow(clippy::all, clippy::pedantic, rustdoc::all)]
 pub mod v1 {

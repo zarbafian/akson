@@ -1,0 +1,16 @@
+{
+  "name": "a2a-profile/task-state-completed",
+  "description": "TASK_STATE_COMPLETED is reachable in v1",
+  "kind": "task",
+  "input": {
+    "task": {
+      "id": "task-0001",
+      "status": {
+        "state": "TASK_STATE_COMPLETED"
+      }
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}
