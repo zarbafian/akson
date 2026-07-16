@@ -16,7 +16,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::handler::{handle_bootstrap, BootstrapStatus, InviterConfig};
-use crate::state_machine::PairingLedger;
+use crate::state_machine::PairingStore;
 
 /// An HTTP response from the bootstrap endpoint.
 pub struct HttpResponse {
@@ -48,7 +48,7 @@ struct BootstrapBody {
 /// connection (the server extracts it from the TLS session).
 #[allow(clippy::too_many_arguments)]
 pub fn handle_http(
-    ledger: &mut impl PairingLedger,
+    ledger: &mut impl PairingStore,
     inviter: &InviterConfig,
     method: &str,
     authorization: Option<&str>,

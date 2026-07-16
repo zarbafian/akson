@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 
+use axon_crypto::identity::PeerIdentity;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -106,6 +107,16 @@ pub trait PairingLedger {
     ) -> Result<(), LedgerError>;
 }
 
+/// A [`PairingLedger`] that also persists the pending peer a successful
+/// bootstrap creates (design §8.2 steps 6–7). Kept separate from the ledger so
+/// the in-memory ledger records peers in memory while the SQLite store persists
+/// them durably.
+pub trait PairingStore: PairingLedger {
+    /// Persists the peer created by a fresh pairing. In v1 this is a *pending*
+    /// peer awaiting local confirmation before it becomes active (§8.2 step 7).
+    fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError>;
+}
+
 /// The verifier (ledger key) for a presented base64url secret, or `None` if the
 /// secret is malformed.
 pub fn verifier_of(presented_secret: &str) -> Option<[u8; 32]> {
@@ -173,6 +184,7 @@ pub fn accept(
 pub struct MemoryLedger {
     active: HashMap<[u8; 32], PendingInvitation>,
     consumed: HashMap<[u8; 32], Consumed>,
+    pending_peers: Vec<PeerIdentity>,
 }
 
 impl MemoryLedger {
@@ -183,6 +195,18 @@ impl MemoryLedger {
     /// Registers a live invitation (from [`Invitation::create`]).
     pub fn add(&mut self, invitation: PendingInvitation) {
         self.active.insert(invitation.verifier(), invitation);
+    }
+
+    /// The pending peers created by successful bootstraps (tests/inspection).
+    pub fn pending_peers(&self) -> &[PeerIdentity] {
+        &self.pending_peers
+    }
+}
+
+impl PairingStore for MemoryLedger {
+    fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError> {
+        self.pending_peers.push(peer.clone());
+        Ok(())
     }
 }
 

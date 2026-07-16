@@ -17,7 +17,7 @@ use axon_crypto::purpose::KeyPurpose;
 use axon_pairing::bootstrap::Transcript;
 use axon_pairing::invitation::Invitation;
 use axon_pairing::session::key_binding_digest_hex;
-use axon_pairing::state_machine::{MemoryLedger, PairingLedger};
+use axon_pairing::state_machine::{MemoryLedger, PairingLedger, PairingStore};
 use axon_proto::card_sig;
 use axon_proto::v1::AgentCard;
 use axon_transport::bootstrap::{serve, BootstrapState};
@@ -119,7 +119,7 @@ async fn accepter_bootstrap(
 
 /// Starts the inviter's bootstrap server on an ephemeral port and returns its
 /// address. The ledger is any `PairingLedger` (generic server).
-async fn serve_inviter<L: PairingLedger + Send + 'static>(
+async fn serve_inviter<L: PairingStore + Send + 'static>(
     inviter_key: &PurposeKey,
     inviter_cert: &EndpointCert,
     state: Arc<BootstrapState<L>>,
@@ -215,7 +215,7 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
         inviter_tls_sha256: inviter_tls.clone(),
         inviter_response: b"INVITER-PENDING-PAIR".to_vec(),
     });
-    let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
+    let addr = serve_inviter(&inviter_key, &inviter_cert, state.clone()).await;
 
     let text = accepter_bootstrap(
         addr,
@@ -233,4 +233,10 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
         "persistent-ledger bootstrap, got:\n{text}"
     );
     assert!(text.contains("INVITER-PENDING-PAIR"), "got:\n{text}");
+
+    // The paired peer — including its endpoint — is now durably stored.
+    let stored = state.ledger.lock().unwrap().get_peer("accepter").unwrap();
+    let peer = stored.expect("the paired peer should be persisted");
+    assert_eq!(peer.identity.endpoint_id, "https://a/x");
+    assert_eq!(peer.identity.tls_cert.value, accepter_tls);
 }

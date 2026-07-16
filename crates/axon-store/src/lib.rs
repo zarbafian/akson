@@ -33,7 +33,7 @@ use std::path::Path;
 
 use axon_crypto::identity::PeerIdentity;
 use axon_pairing::invitation::PendingInvitation;
-use axon_pairing::state_machine::{Consumed, LedgerError, PairingLedger};
+use axon_pairing::state_machine::{Consumed, LedgerError, PairingLedger, PairingStore};
 use delivery::CoveredValues;
 use envelope::{DataKey, Kek, SealError};
 use rand::RngCore;
@@ -606,6 +606,18 @@ impl PairingLedger for Store {
         .map_err(ledger_err)?;
         tx.commit().map_err(ledger_err)?;
         Ok(())
+    }
+}
+
+impl PairingStore for Store {
+    fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError> {
+        // Persist the pending peer in the encrypted `peers` table (§8.2 step 7).
+        // A pending→active status column is a later refinement.
+        self.put_peer(&StoredPeer {
+            identity: peer.clone(),
+            local_note: String::new(),
+        })
+        .map_err(ledger_err)
     }
 }
 

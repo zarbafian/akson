@@ -10,8 +10,8 @@ use axon_proto::v1::AgentCard;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::session::verify_accepter;
-use crate::state_machine::{accept, verifier_of, Accepted, PairingLedger};
+use crate::session::{to_peer_identity, verify_accepter};
+use crate::state_machine::{accept, verifier_of, Accepted, PairingStore};
 
 /// Inviter-side configuration for a bootstrap.
 pub struct InviterConfig<'a> {
@@ -48,7 +48,7 @@ pub struct BootstrapReply {
 /// the certificate presented on *this* mTLS connection (not a body claim).
 #[allow(clippy::too_many_arguments)]
 pub fn handle_bootstrap(
-    ledger: &mut impl PairingLedger,
+    ledger: &mut impl PairingStore,
     inviter: &InviterConfig,
     accepter_tls_sha256: &str,
     bearer_secret: &str,
@@ -97,9 +97,18 @@ pub fn handle_bootstrap(
         inviter.response_body.to_vec(),
         now_unix,
     ) {
-        Ok(Accepted::Paired { response }) | Ok(Accepted::Replay { response }) => {
-            reply(BootstrapStatus::Ok, response)
-        }
+        // A fresh pairing: persist the pending peer (§8.2 step 6-7). If the peer
+        // cannot be assembled or stored, fail closed — a consumed secret with no
+        // stored peer is recoverable only by re-pairing.
+        Ok(Accepted::Paired { response }) => match to_peer_identity(&verified, extended_card) {
+            Ok(peer) => match ledger.store_pending_peer(&peer) {
+                Ok(()) => reply(BootstrapStatus::Ok, response),
+                Err(_) => reply(BootstrapStatus::Error, vec![]),
+            },
+            Err(_) => reply(BootstrapStatus::Error, vec![]),
+        },
+        // A replay's peer was already stored on the first pairing.
+        Ok(Accepted::Replay { response }) => reply(BootstrapStatus::Ok, response),
         Ok(Accepted::TranscriptConflict) => reply(BootstrapStatus::Conflict, vec![]),
         Ok(Accepted::BadSecret) => reply(BootstrapStatus::Unauthorized, vec![]),
         Ok(Accepted::Expired | Accepted::AttemptsExhausted) => reply(BootstrapStatus::Gone, vec![]),
@@ -216,12 +225,18 @@ mod tests {
     }
 
     #[test]
-    fn fresh_bootstrap_returns_the_inviter_response() {
+    fn fresh_bootstrap_returns_the_inviter_response_and_stores_the_peer() {
         let mut ledger = MemoryLedger::new();
         let req = setup(&mut ledger);
         let reply = run(&mut ledger, &req);
         assert_eq!(reply.status, BootstrapStatus::Ok);
         assert_eq!(reply.body, b"INVITER-CARD");
+
+        // The paired peer is persisted, with its endpoint captured from the card.
+        let peers = ledger.pending_peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].agent_id, "accepter");
+        assert_eq!(peers[0].endpoint_id, "https://a/x");
     }
 
     #[test]
