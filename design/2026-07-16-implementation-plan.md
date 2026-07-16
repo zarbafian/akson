@@ -240,17 +240,19 @@ already stands ready to fingerprint the DER.
 *Exit (met):* cross-purpose key use fails closed in tests; thumbprint/JWS
 vectors match xcheck.
 
-**M4. State store (L)** — `axon-store`
-Encrypted SQLite. Tables (one line each; details in the milestone doc):
-`peers`, `peer_key_history`, `invitations`, `outbox`, `inbox_objects`,
-`replay_tombstones`, `tasks`, `contracts`, `decisions`, `policy`,
-`work_orders`, `attempts`, `processor_calls`, `artifacts`, `evidence`,
-`outcomes`, `audit` (append-only, hash-linked), `state_generation`.
-Envelope encryption of sensitive columns (ADR-0005); WAL/temp-file plaintext
-scan test; monotonic generation checkpoint + recovery state on mismatch
-(design §15.5); trusted-time checkpoint (design §8.5).
-*Exit:* §20.7 storage scans find no plaintext; restore of an old snapshot
-provably enters recovery and disables automatic authority.
+**M4. State store (L)** — `axon-store` — **core done** (commit `35dccc4`)
+Encrypted SQLite. **Landed (M4-core):** the cross-cutting machinery — envelope
+sealing (ADR-0005, XChaCha20Poly1305, keystore-wrapped DEK), `user_version`
+migrations + `meta`, state-generation recovery (§15.5), trusted-time floor
+(§8.5), the hash-linked `audit` table (§15.3), and the representative encrypted
+`peers` table (stores the M3 identity tuple). Both exit criteria met.
+**Deferred to their engines:** the domain tables — `peer_key_history`,
+`invitations` (M6); `outbox`, `inbox_objects`, `replay_tombstones` (M5);
+`tasks`, `contracts`, `decisions`, `policy` (M7); `work_orders`, `attempts`,
+`processor_calls` (M8); `artifacts`, `evidence`, `outcomes` (M11) — each added
+as its own numbered migration when the engine that writes it lands.
+*Exit (met):* §20.7 storage scan finds no plaintext; restore of an old
+snapshot provably enters recovery and disables automatic authority.
 
 **M5. Transport and reliable delivery (L)** — `axon-transport`
 axum A2A endpoint + reqwest client on the pinned TLS profile (§9.1): TLS 1.3
