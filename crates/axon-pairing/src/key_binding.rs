@@ -36,6 +36,8 @@ pub enum KeyBindingError {
     BadJwk { purpose: String },
     #[error("thumbprint does not match JWK for purpose {purpose}")]
     ThumbprintMismatch { purpose: String },
+    #[error("the same key is advertised for more than one purpose (at {purpose})")]
+    ReusedKey { purpose: String },
     #[error("invalid validity timestamp for purpose {purpose}")]
     BadTimestamp { purpose: String },
     #[error("validity interval is not well-formed for purpose {purpose}")]
@@ -75,6 +77,7 @@ pub fn verify(value: &Value, now: OffsetDateTime) -> Result<KeyBindingSet, KeyBi
     schema::validate(SchemaId::KeyBindingV1, value)?;
     let set: KeyBindingSet = serde_json::from_value(value.clone())?;
 
+    let mut seen_thumbprints = std::collections::BTreeSet::new();
     for (purpose, entry) in &set.keys {
         // The JWK must be a valid Ed25519 point...
         entry.jwk.to_key().map_err(|_| KeyBindingError::BadJwk {
@@ -82,8 +85,19 @@ pub fn verify(value: &Value, now: OffsetDateTime) -> Result<KeyBindingSet, KeyBi
         })?;
         // ...and the advertised thumbprint must be *its* RFC 7638 thumbprint,
         // not an unrelated value (finding M6).
-        if entry.jwk.thumbprint() != entry.thumbprint {
+        let thumbprint = entry.jwk.thumbprint();
+        if thumbprint != entry.thumbprint {
             return Err(KeyBindingError::ThumbprintMismatch {
+                purpose: purpose.clone(),
+            });
+        }
+        // Per-purpose key separation (design §8.1): the same key must not be
+        // advertised for two purposes. Deduping on the *verified* thumbprint
+        // means a forged thumbprint cannot hide reuse. Cross-purpose signature
+        // replay is already blocked by domain separation (JWS typ/kid vs DSSE
+        // payloadType), so this is defense-in-depth and design hygiene.
+        if !seen_thumbprints.insert(thumbprint) {
+            return Err(KeyBindingError::ReusedKey {
                 purpose: purpose.clone(),
             });
         }
@@ -180,6 +194,27 @@ mod tests {
         assert!(matches!(
             verify(&r, now_2025()),
             Err(KeyBindingError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn same_key_for_two_purposes_is_rejected() {
+        // Reuse the agent-card key (and its correct thumbprint) for task-result.
+        let card = jwk(1);
+        let r = serde_json::json!({
+            "schema_version": 1,
+            "subject": { "issuer": "local", "agent": "agent-a" },
+            "tls_certificate_sha256": "aa".repeat(32),
+            "keys": {
+                "agent-card": { "jwk": card, "thumbprint": card.thumbprint(),
+                    "generation": 0, "not_before": "2020-01-01T00:00:00Z", "not_after": "2030-01-01T00:00:00Z" },
+                "task-result": { "jwk": card, "thumbprint": card.thumbprint(),
+                    "generation": 0, "not_before": "2020-01-01T00:00:00Z", "not_after": "2030-01-01T00:00:00Z" }
+            }
+        });
+        assert!(matches!(
+            verify(&r, now_2025()),
+            Err(KeyBindingError::ReusedKey { .. })
         ));
     }
 
