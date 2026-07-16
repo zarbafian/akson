@@ -254,7 +254,18 @@ as its own numbered migration when the engine that writes it lands.
 *Exit (met):* §20.7 storage scan finds no plaintext; restore of an old
 snapshot provably enters recovery and disables automatic authority.
 
-**M5. Transport and reliable delivery (L)** — `axon-transport`
+**M5. Transport and reliable delivery (L)** — `axon-transport` — **core done**
+(commits `f078551`, `8e5a3c0`; delivery model in M5-core `d4656cd`)
+Landed: the pure-Rust TLS 1.3 mutual-auth layer with peer pinning (ADR-0011,
+verified end to end over tokio-rustls), and `ingress::admit` — the fail-closed
+profile + Content-Digest + required-extension gates and the idempotency
+decision (Accept/Duplicate/Conflict/Rejected). **Deferred to the tracer bullet
+(post-M7):** the axum HTTP server that *dispatches operations* and the reqwest
+client — they need operations to serve (task proposal, decision), which are
+M6/M7; building them now means a placeholder echo, which the tracer bullet
+already owns. The M6 pairing bootstrap is the first real consumer of the TLS
+layer.
+Original scope for reference —
 axum A2A endpoint + reqwest client on the pinned TLS profile (§9.1): TLS 1.3
 only, mTLS after pairing, no resumption/0-RTT/redirect/compression, limits
 before allocation. RFC 9530 `Content-Digest` (single sha-256, reject
