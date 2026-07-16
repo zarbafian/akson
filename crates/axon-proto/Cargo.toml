@@ -8,6 +8,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+prost = { workspace = true }
+pbjson = { workspace = true }
+pbjson-types = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[build-dependencies]
+prost = { workspace = true }
+prost-build = { workspace = true }
+pbjson-build = { workspace = true }
+protox = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,26 @@
+# Pinned upstream sources for the vendored A2A definitions (ADR-0002).
+# Files under proto/ are byte-exact upstream copies; verify with sha256sum.
+
+[a2a]
+repository = https://github.com/a2aproject/A2A
+tag = v1.0.1
+commit = 3303592588e388e62e0f69f701af531d2f4e3991
+file proto/a2a.proto = specification/a2a.proto
+sha256 proto/a2a.proto = e195bf96ab630c69797851970203e1b2b6b19528f2e9803b7d904b91a5104016
+
+# Upstream pins googleapis through the buf registry
+# (buf.build/googleapis/googleapis commit 004180b77378443887d3b55cabc00384).
+# We vendor the transitive google/api imports from the googleapis git mirror:
+
+[googleapis]
+repository = https://github.com/googleapis/googleapis
+commit = 300fb478d0334baeefd134eba6ea30277477509b
+sha256 proto/google/api/annotations.proto = e79ea741cb605a65e78ca322174764a4af9fde1962c1631e12b84c4934ba9a6c
+sha256 proto/google/api/client.proto = 5e9fc117290fe7d3472791543c979bec7cf4497f3fe6ffaf9de9ae99cc4f1804
+sha256 proto/google/api/field_behavior.proto = bb7ed77725c95f751ec2c47cd92359d0137c39383b8a62aef41bab7aa7478da5
+sha256 proto/google/api/http.proto = ead99129aa15dd5f6233942030c72eec33bc0d7b1c7c260dc143293ef66c5b78
+sha256 proto/google/api/launch_stage.proto = 68e22c9821227b4e84c7029569fce1055c21e6ccab991e0986bc75f12ef4dd82
+
+# Remaining imports (google/protobuf/{descriptor,duration,empty,struct,
+# timestamp}.proto) are protobuf well-known types supplied by the protox
+# compiler at build time; they are part of the protobuf language, not A2A.

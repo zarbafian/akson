@@ -55,6 +55,15 @@ base64 = "0.22"
 hex = "0.4"
 thiserror = "2.0"
 uuid = { version = "1.17", features = ["v4"] }
+# A2A codegen (ADR-0002): protox compiles the vendored protos without a
+# system protoc or network; pbjson supplies the standard proto3 JSON mapping.
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
+pbjson = "0.9"
+pbjson-types = "0.9"
+pbjson-build = "0.9"
+protox = "0.9"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 
 [workspace.lints.rust]
