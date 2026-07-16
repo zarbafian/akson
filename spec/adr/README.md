@@ -43,3 +43,4 @@ Index:
 | 0008 | DSSE/in-toto implementation | open |
 | [0009](0009-keystore-rollback.md) | Keystore abstraction and rollback checkpoint | accepted |
 | [0010](0010-unknown-fields.md) | Unknown-field handling for standard A2A objects | accepted |
+| [0011](0011-tls-stack.md) | TLS stack and self-issued endpoint certificates | accepted |

@@ -394,9 +394,10 @@ anchored here so they are not lost:
 - **M5** — outbound `validate_task`/`validate_artifact`/response-echo profile
   checks; couple Message validation to the negotiated extension set.
 - **M5/M6** — self-issued X.509 endpoint certificate generation (moved from
-  M3): the `tls-endpoint` cert for the mTLS listener and pairing bootstrap,
-  under the transport TLS-stack ADR; fingerprint via
-  `identity::Fingerprint::cert_sha256`.
+  M3): **done** — `axon_crypto::cert::self_signed_endpoint` (pure-Rust
+  `x509-cert` + `ed25519-dalek`, ADR-0011), purpose-gated to `tls-endpoint`,
+  self-signature verified, fingerprint via `identity::Fingerprint::cert_sha256`.
+  Remaining: wire it into the rustls mTLS listener (M5 transport).
 - **M6** — at pairing, verify each transported key-binding thumbprint equals
   its JWK.
 - **M7** — input-manifest ↔ exact Message-Part binding and per-field

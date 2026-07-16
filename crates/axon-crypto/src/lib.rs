@@ -10,7 +10,9 @@
 //! - [`jws`] — minimal EdDSA JWS for Agent Card signatures (ADR-0007). The
 //!   Agent-Card-specific canonicalization lives in `axon_proto::card_sig`.
 //! - [`identity`] — the internal peer identity tuple (design §8.1).
+//! - [`cert`] — self-issued Ed25519 X.509 endpoint certificates (ADR-0011).
 
+pub mod cert;
 pub mod identity;
 pub mod jwk;
 pub mod jws;

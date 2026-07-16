@@ -48,8 +48,11 @@ json-canon = "0.1"
 # default-features off: keeps the remote-$ref HTTP resolver (reqwest) out of
 # the tree — schema compilation must never be able to fetch anything.
 jsonschema = { version = "0.30", default-features = false }
-ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
+# Self-issued endpoint certificates (ADR-0011): pure-Rust X.509 to match the
+# rustls-rustcrypto provider choice.
+x509-cert = { version = "0.2", features = ["builder"] }
 # Storage (ADR-0003) and envelope encryption (ADR-0005).
 rusqlite = { version = "0.32", features = ["bundled"] }
 chacha20poly1305 = "0.10"
