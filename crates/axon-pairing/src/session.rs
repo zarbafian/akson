@@ -19,13 +19,14 @@
 
 use std::collections::BTreeMap;
 
-use axon_crypto::keypair::PurposeVerifyingKey;
+use axon_crypto::keypair::{KeyError, PurposeKey, PurposeVerifyingKey};
 use axon_crypto::purpose::KeyPurpose;
 use axon_proto::card_sig;
 use axon_proto::v1::AgentCard;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use serde_json::Value;
+use ed25519_dalek::Signer;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -112,6 +113,95 @@ pub fn verify_accepter(
 pub fn key_binding_digest_hex(key_binding_json: &Value) -> String {
     let canonical = json_canon::to_vec(key_binding_json).unwrap_or_default();
     hex::encode(Sha256::digest(canonical))
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error("serialization failed: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error(transparent)]
+    Key(#[from] KeyError),
+}
+
+/// The shared pairing context both sides bind into their transcript.
+pub struct PairingContext {
+    pub invitation_verifier: [u8; 32],
+    pub inviter_tls_sha256: String,
+    pub accepter_tls_sha256: String,
+}
+
+/// Builds one endpoint's bootstrap material — the `{ key_binding,
+/// extended_card, proofs }` it sends (design §8.2). The sender-side counterpart
+/// to [`verify_accepter`]: it assembles the key-binding record for `keys`,
+/// signs the pairing transcript with every key (proof of possession), and
+/// bundles the already-signed extended card. `my_tls_sha256` is the sender's
+/// own certificate fingerprint (which the receiver checks against the
+/// connection). `signed_card` must already carry its Agent Card JWS.
+#[allow(clippy::too_many_arguments)]
+pub fn build_material(
+    ctx: &PairingContext,
+    my_tls_sha256: &str,
+    subject_issuer: &str,
+    subject_agent: &str,
+    signed_card: &AgentCard,
+    keys: &BTreeMap<KeyPurpose, PurposeKey>,
+    not_before: &str,
+    not_after: &str,
+    generation: u64,
+) -> Result<Value, BuildError> {
+    let mut key_entries = serde_json::Map::new();
+    for (purpose, key) in keys {
+        let jwk = key.verifying().to_jwk();
+        key_entries.insert(
+            purpose_key(*purpose),
+            json!({
+                "jwk": jwk,
+                "thumbprint": jwk.thumbprint(),
+                "generation": generation,
+                "not_before": not_before,
+                "not_after": not_after,
+            }),
+        );
+    }
+    let key_binding = json!({
+        "schema_version": 1,
+        "subject": { "issuer": subject_issuer, "agent": subject_agent },
+        "tls_certificate_sha256": my_tls_sha256,
+        "keys": Value::Object(key_entries),
+    });
+
+    let transcript = Transcript {
+        invitation_verifier: URL_SAFE_NO_PAD.encode(ctx.invitation_verifier),
+        inviter_tls_sha256: ctx.inviter_tls_sha256.clone(),
+        accepter_tls_sha256: ctx.accepter_tls_sha256.clone(),
+        key_binding_sha256: key_binding_digest_hex(&key_binding),
+    };
+    let message = transcript.to_bytes();
+
+    let mut proofs = serde_json::Map::new();
+    for (purpose, key) in keys {
+        let signature = key.sign_with(*purpose, |sk| sk.sign(&message))?;
+        proofs.insert(
+            purpose_key(*purpose),
+            Value::String(URL_SAFE_NO_PAD.encode(signature.to_bytes())),
+        );
+    }
+
+    Ok(json!({
+        "key_binding": key_binding,
+        "extended_card": signed_card,
+        "proofs": Value::Object(proofs),
+    }))
+}
+
+/// The kebab-case schema key for a purpose (e.g. `agent-card`).
+fn purpose_key(purpose: KeyPurpose) -> String {
+    // KeyPurpose serializes to the kebab-case string the schema uses; a fixed
+    // enum cannot fail to serialize.
+    serde_json::to_value(purpose)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -205,6 +295,61 @@ mod tests {
     fn valid_request_verifies() {
         let (v, kb, card, proofs) = valid_request();
         assert!(run(&v, ACCEPTER_TLS, &kb, &card, &proofs).is_ok());
+    }
+
+    #[test]
+    fn built_material_round_trips_through_verify() {
+        // The sender-side builder produces material the receiver-side verifier
+        // accepts — the two halves of the exchange agree.
+        let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[10u8; 32]);
+        let mut card: AgentCard = serde_json::from_str(card_json()).unwrap();
+        card.signatures
+            .push(card_sig::sign_card(&card, &card_key).unwrap());
+
+        let ctx = PairingContext {
+            invitation_verifier: [3u8; 32],
+            inviter_tls_sha256: INVITER_TLS.to_owned(),
+            accepter_tls_sha256: ACCEPTER_TLS.to_owned(),
+        };
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            KeyPurpose::AgentCard,
+            PurposeKey::from_seed(KeyPurpose::AgentCard, &[10u8; 32]),
+        );
+        keys.insert(
+            KeyPurpose::TaskResult,
+            PurposeKey::from_seed(KeyPurpose::TaskResult, &[11u8; 32]),
+        );
+
+        let material = build_material(
+            &ctx,
+            ACCEPTER_TLS,
+            "local",
+            "accepter",
+            &card,
+            &keys,
+            "2020-01-01T00:00:00Z",
+            "2030-01-01T00:00:00Z",
+            0,
+        )
+        .unwrap();
+
+        let key_binding = material["key_binding"].clone();
+        let extended_card: AgentCard =
+            serde_json::from_value(material["extended_card"].clone()).unwrap();
+        let proofs: BTreeMap<String, String> =
+            serde_json::from_value(material["proofs"].clone()).unwrap();
+
+        let result = verify_accepter(
+            &ctx.invitation_verifier,
+            INVITER_TLS,
+            ACCEPTER_TLS,
+            &key_binding,
+            &extended_card,
+            &proofs,
+            now(),
+        );
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 
     #[test]
