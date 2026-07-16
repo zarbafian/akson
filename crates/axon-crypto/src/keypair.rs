@@ -93,6 +93,22 @@ impl PurposeKey {
         }
         Ok(f(&self.signing))
     }
+
+    /// Exports the key as PKCS#8 DER, gated to `intended`. Unlike
+    /// [`sign_with`](Self::sign_with) this hands the secret *out* — required
+    /// because a TLS library (rustls, ADR-0011) must hold the key to sign
+    /// handshakes. The purpose gate keeps it to the one role that legitimately
+    /// needs it; use it nowhere else.
+    pub fn pkcs8_der(&self, intended: KeyPurpose) -> Result<Vec<u8>, KeyError> {
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        self.sign_with(intended, |sk| {
+            // PKCS#8 encoding of a valid Ed25519 key cannot fail; an empty
+            // vector on the impossible error path is rejected downstream.
+            sk.to_pkcs8_der()
+                .map(|doc| doc.as_bytes().to_vec())
+                .unwrap_or_default()
+        })
+    }
 }
 
 /// A public Ed25519 key bound to one purpose — what pairing pins and the

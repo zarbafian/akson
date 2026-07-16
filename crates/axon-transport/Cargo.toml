@@ -9,6 +9,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axon-crypto = { workspace = true }
+rustls = { workspace = true }
+rustls-rustcrypto = { workspace = true }
+rustls-pki-types = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [lints]
 workspace = true
