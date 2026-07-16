@@ -1,0 +1,16 @@
+{
+  "name": "jcs/utf16-key-sorting",
+  "description": "keys sort by UTF-16 code units: U+10000 (surrogates D800 DC00) before U+FF61, unlike UTF-8 byte order",
+  "input": {
+    "value": {
+      "\uff61": "halfwidth ideographic full stop",
+      "\ud800\udc00": "linear b syllable",
+      "abc": 1,
+      "\u20ac": "euro"
+    }
+  },
+  "expected": {
+    "canonical": "{\"abc\":1,\"\u20ac\":\"euro\",\"\ud800\udc00\":\"linear b syllable\",\"\uff61\":\"halfwidth ideographic full stop\"}",
+    "sha256_hex": "f55a43d6507bab28ee21192ab2c62624fd945dd916213e872d0e60fb7e3e80c8"
+  }
+}

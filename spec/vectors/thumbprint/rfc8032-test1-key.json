@@ -1,0 +1,11 @@
+{
+  "name": "thumbprint/rfc8032-test1-key",
+  "description": "thumbprint of the RFC 8032 TEST 1 public key",
+  "input": {
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  },
+  "expected": {
+    "jwk_x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+  }
+}

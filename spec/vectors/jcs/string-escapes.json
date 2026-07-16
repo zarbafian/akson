@@ -1,0 +1,13 @@
+{
+  "name": "jcs/string-escapes",
+  "description": "control characters use two-char escapes where defined, else u-escapes; non-ASCII emitted literally",
+  "input": {
+    "value": {
+      "esc": "\b\t\n\u000b\f\r\u0000\"\\ \u20ac\ud83d\ude00"
+    }
+  },
+  "expected": {
+    "canonical": "{\"esc\":\"\\b\\t\\n\\u000b\\f\\r\\u0000\\\"\\\\ \u20ac\ud83d\ude00\"}",
+    "sha256_hex": "bac3aa8ba147574cbf9c9f9a0042d26174dd33f6a701ce23847398baa0837ccc"
+  }
+}

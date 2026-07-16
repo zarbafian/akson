@@ -1,0 +1,13 @@
+[package]
+name = "axon-evidence"
+description = "Result manifest, in-toto statements, SARIF profile, evidence validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

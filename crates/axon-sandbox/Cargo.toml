@@ -1,0 +1,13 @@
+[package]
+name = "axon-sandbox"
+description = "Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock; fail-closed capability probing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/axon-proto",
+    "crates/axon-ext",
+    "crates/axon-crypto",
+    "crates/axon-store",
+    "crates/axon-transport",
+    "crates/axon-pairing",
+    "crates/axon-contract",
+    "crates/axon-authority",
+    "crates/axon-sandbox",
+    "crates/axon-worker",
+    "crates/axon-broker",
+    "crates/axon-evidence",
+    "crates/axond",
+    "crates/axon-cli",
+    "crates/axon-adapter-sdk",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/zarbafian/axon"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+axon-proto = { path = "crates/axon-proto" }
+axon-ext = { path = "crates/axon-ext" }
+axon-crypto = { path = "crates/axon-crypto" }
+axon-store = { path = "crates/axon-store" }
+axon-transport = { path = "crates/axon-transport" }
+axon-pairing = { path = "crates/axon-pairing" }
+axon-contract = { path = "crates/axon-contract" }
+axon-authority = { path = "crates/axon-authority" }
+axon-sandbox = { path = "crates/axon-sandbox" }
+axon-worker = { path = "crates/axon-worker" }
+axon-broker = { path = "crates/axon-broker" }
+axon-evidence = { path = "crates/axon-evidence" }
+axon-adapter-sdk = { path = "crates/axon-adapter-sdk" }
+
+# External (pinned minor versions; exact pins live in Cargo.lock, committed)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+json-canon = "0.1"
+jsonschema = "0.30"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+thiserror = "2.0"
+uuid = { version = "1.17", features = ["v4"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"

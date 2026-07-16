@@ -1,0 +1,16 @@
+{
+  "name": "jcs/empty-structures",
+  "description": "empty array, object, string, and null",
+  "input": {
+    "value": {
+      "a": [],
+      "o": {},
+      "s": "",
+      "n": null
+    }
+  },
+  "expected": {
+    "canonical": "{\"a\":[],\"n\":null,\"o\":{},\"s\":\"\"}",
+    "sha256_hex": "a0e64a9d54eb19d4d01f5430bb54ea80575a24a5436ed3d3a64a46a90f52267f"
+  }
+}

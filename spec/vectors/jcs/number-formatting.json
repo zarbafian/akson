@@ -1,0 +1,28 @@
+{
+  "name": "jcs/number-formatting",
+  "description": "ES ToString number serialization: integer-valued floats, exponents, small decimals",
+  "input": {
+    "value": {
+      "ints": [
+        0,
+        -1,
+        10,
+        9007199254740991,
+        -9007199254740991
+      ],
+      "floats": [
+        10.0,
+        4.5,
+        0.002,
+        1e+21,
+        1e-07,
+        1e-06,
+        333333333.3333333
+      ]
+    }
+  },
+  "expected": {
+    "canonical": "{\"floats\":[10,4.5,0.002,1e+21,1e-7,0.000001,333333333.3333333],\"ints\":[0,-1,10,9007199254740991,-9007199254740991]}",
+    "sha256_hex": "17b5cb396be942a9ae7a785dd576a08fdc883c585a9416bee8120e3aa682457f"
+  }
+}

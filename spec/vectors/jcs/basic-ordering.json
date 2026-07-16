@@ -1,0 +1,22 @@
+{
+  "name": "jcs/basic-ordering",
+  "description": "object keys sorted, whitespace stripped, nested containers",
+  "input": {
+    "value": {
+      "b": 2,
+      "a": 1,
+      "nested": {
+        "z": true,
+        "y": [
+          3,
+          2,
+          1
+        ]
+      }
+    }
+  },
+  "expected": {
+    "canonical": "{\"a\":1,\"b\":2,\"nested\":{\"y\":[3,2,1],\"z\":true}}",
+    "sha256_hex": "4ed40933045aa961fbced9c24c06949b94f4f34b9cd640d799b856ca9bd48042"
+  }
+}

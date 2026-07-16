@@ -1,0 +1,17 @@
+[package]
+name = "axond"
+description = "The Axon daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axond"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

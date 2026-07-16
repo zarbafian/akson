@@ -175,7 +175,7 @@ worker-payload code.
 | A2A types | `prost` from vendored protos |
 | JSON | `serde_json`; I-JSON + duplicate-key rejection in `axon-ext` |
 | JSON Schema 2020-12 | `jsonschema` |
-| RFC 8785 JCS | `serde_jcs` |
+| RFC 8785 JCS | `json-canon` (`serde_jcs` rejected: sorts keys by code point, not UTF-16 code units — caught by the `jcs/utf16-key-sorting` golden vector) |
 | Signatures | `ed25519-dalek` v2; JWS per ADR-0007; DSSE/in-toto per ADR-0008 |
 | SARIF | `serde-sarif` (parse behind strict limits, preserve original bytes) |
 | Storage | `rusqlite` (bundled SQLite, WAL); envelope encryption per ADR-0005 |

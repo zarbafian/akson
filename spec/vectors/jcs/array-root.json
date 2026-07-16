@@ -1,0 +1,20 @@
+{
+  "name": "jcs/array-root",
+  "description": "root value is an array",
+  "input": {
+    "value": [
+      1,
+      "two",
+      {
+        "three": 3
+      },
+      [
+        4
+      ]
+    ]
+  },
+  "expected": {
+    "canonical": "[1,\"two\",{\"three\":3},[4]]",
+    "sha256_hex": "95622b6cc541c61dcaf28d678257ceab310e25f669bfc6695a7c231651c3c83b"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "thumbprint/rfc8037-a3",
+  "description": "RFC 8037 appendix A.3 published thumbprint example",
+  "input": {
+    "jwk": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    }
+  },
+  "expected": {
+    "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+  }
+}
