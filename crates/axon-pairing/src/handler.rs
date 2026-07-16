@@ -35,6 +35,8 @@ pub enum BootstrapStatus {
     Gone,
     /// The presented material failed verification.
     BadRequest,
+    /// The ledger backend failed; the request is failed closed.
+    Error,
 }
 
 pub struct BootstrapReply {
@@ -64,7 +66,12 @@ pub fn handle_bootstrap(
     let Some(verifier) = verifier_of(bearer_secret) else {
         return reply(BootstrapStatus::Unauthorized, vec![]);
     };
-    if !ledger.active_exists(&verifier) && ledger.consumed(&verifier).is_none() {
+    // A ledger backend error fails the request closed, not Unauthorized.
+    let known = match (ledger.active_exists(&verifier), ledger.consumed(&verifier)) {
+        (Ok(active), Ok(consumed)) => active || consumed.is_some(),
+        _ => return reply(BootstrapStatus::Error, vec![]),
+    };
+    if !known {
         return reply(BootstrapStatus::Unauthorized, vec![]);
     }
 
@@ -96,7 +103,8 @@ pub fn handle_bootstrap(
         Ok(Accepted::TranscriptConflict) => reply(BootstrapStatus::Conflict, vec![]),
         Ok(Accepted::BadSecret) => reply(BootstrapStatus::Unauthorized, vec![]),
         Ok(Accepted::Expired | Accepted::AttemptsExhausted) => reply(BootstrapStatus::Gone, vec![]),
-        Err(_) => reply(BootstrapStatus::BadRequest, vec![]),
+        // A ledger backend failure during consume fails closed.
+        Err(_) => reply(BootstrapStatus::Error, vec![]),
     }
 }
 

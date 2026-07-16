@@ -90,6 +90,7 @@ pub fn handle_http(
         BootstrapStatus::Conflict => 409,
         BootstrapStatus::Gone => 410,
         BootstrapStatus::BadRequest => 400,
+        BootstrapStatus::Error => 500,
     };
     HttpResponse {
         status,

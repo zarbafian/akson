@@ -62,22 +62,45 @@ pub enum Accepted {
     AttemptsExhausted,
 }
 
+/// A pairing-ledger backend failure. Kept backend-agnostic (a `String`) so this
+/// crate does not depend on any particular storage library; the SQLite-backed
+/// ledger maps its database and sealing errors into it.
+#[derive(Debug, thiserror::Error)]
+#[error("pairing ledger backend error: {0}")]
+pub struct LedgerError(pub String);
+
 /// Persistence for the bootstrap: live invitations by verifier, and the
 /// consumed records that make retries idempotent.
+///
+/// Every method is fallible: a persistent backend can fail, and — critically —
+/// [`commit_consumed`](Self::commit_consumed) must not silently succeed, or a
+/// consumed secret could be paired twice. Errors propagate to the caller, which
+/// fails the request closed rather than proceeding.
 pub trait PairingLedger {
     /// The consumed record for a verifier, if the invitation was already used.
-    fn consumed(&self, verifier: &[u8; 32]) -> Option<Consumed>;
+    fn consumed(&self, verifier: &[u8; 32]) -> Result<Option<Consumed>, LedgerError>;
     /// Whether a live invitation exists for this verifier — a cheap pre-check
     /// so an unknown secret is rejected before any signature verification.
-    fn active_exists(&self, verifier: &[u8; 32]) -> bool;
+    fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError>;
     /// Removes and returns the live invitation for a verifier, if present.
-    fn take_active(&mut self, verifier: &[u8; 32]) -> Option<PendingInvitation>;
+    fn take_active(
+        &mut self,
+        verifier: &[u8; 32],
+    ) -> Result<Option<PendingInvitation>, LedgerError>;
     /// Re-inserts a live invitation (e.g. after a failed-but-not-final attempt).
-    fn put_active(&mut self, verifier: [u8; 32], invitation: PendingInvitation);
+    fn put_active(
+        &mut self,
+        verifier: [u8; 32],
+        invitation: PendingInvitation,
+    ) -> Result<(), LedgerError>;
     /// Atomically records a consumed invitation (the active one having been
     /// taken). On a real ledger this is one transaction — the secret is
     /// consumed in the same commit that creates the pending peer (§8.2).
-    fn commit_consumed(&mut self, verifier: [u8; 32], consumed: Consumed);
+    fn commit_consumed(
+        &mut self,
+        verifier: [u8; 32],
+        consumed: Consumed,
+    ) -> Result<(), LedgerError>;
 }
 
 /// The verifier (ledger key) for a presented base64url secret, or `None` if the
@@ -87,14 +110,16 @@ pub fn verifier_of(presented_secret: &str) -> Option<[u8; 32]> {
     Some(Sha256::digest(bytes).into())
 }
 
-/// Runs a bootstrap attempt against the ledger.
+/// Runs a bootstrap attempt against the ledger. Returns an error only if the
+/// ledger backend fails (the request must then fail closed); every pairing
+/// outcome — including bad/expired secrets — is an [`Accepted`] value.
 pub fn accept(
     ledger: &mut impl PairingLedger,
     presented_secret: &str,
     transcript_digest: [u8; 32],
     response: Vec<u8>,
     now: i64,
-) -> Result<Accepted, InvitationError> {
+) -> Result<Accepted, LedgerError> {
     let verifier = match verifier_of(presented_secret) {
         Some(v) => v,
         None => return Ok(Accepted::BadSecret),
@@ -102,7 +127,7 @@ pub fn accept(
 
     // A consumed invitation is idempotent: same transcript replays, a changed
     // transcript under the same secret is an attack.
-    if let Some(prior) = ledger.consumed(&verifier) {
+    if let Some(prior) = ledger.consumed(&verifier)? {
         return Ok(if prior.transcript_digest == transcript_digest {
             Accepted::Replay {
                 response: prior.response,
@@ -112,7 +137,7 @@ pub fn accept(
         });
     }
 
-    let Some(mut invitation) = ledger.take_active(&verifier) else {
+    let Some(mut invitation) = ledger.take_active(&verifier)? else {
         return Ok(Accepted::BadSecret);
     };
 
@@ -124,7 +149,7 @@ pub fn accept(
                     transcript_digest,
                     response: response.clone(),
                 },
-            );
+            )?;
             Ok(Accepted::Paired { response })
         }
         // Expired or exhausted invitations are dead — not re-inserted.
@@ -133,7 +158,7 @@ pub fn accept(
         // A verifier match with a failing constant-time check is only reachable
         // via a hash collision; re-insert the (attempt-incremented) invitation.
         Err(InvitationError::BadSecret | InvitationError::Malformed) => {
-            ledger.put_active(verifier, invitation);
+            ledger.put_active(verifier, invitation)?;
             Ok(Accepted::BadSecret)
         }
     }
@@ -158,25 +183,38 @@ impl MemoryLedger {
 }
 
 impl PairingLedger for MemoryLedger {
-    fn consumed(&self, verifier: &[u8; 32]) -> Option<Consumed> {
-        self.consumed.get(verifier).cloned()
+    fn consumed(&self, verifier: &[u8; 32]) -> Result<Option<Consumed>, LedgerError> {
+        Ok(self.consumed.get(verifier).cloned())
     }
 
-    fn active_exists(&self, verifier: &[u8; 32]) -> bool {
-        self.active.contains_key(verifier)
+    fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError> {
+        Ok(self.active.contains_key(verifier))
     }
 
-    fn take_active(&mut self, verifier: &[u8; 32]) -> Option<PendingInvitation> {
-        self.active.remove(verifier)
+    fn take_active(
+        &mut self,
+        verifier: &[u8; 32],
+    ) -> Result<Option<PendingInvitation>, LedgerError> {
+        Ok(self.active.remove(verifier))
     }
 
-    fn put_active(&mut self, verifier: [u8; 32], invitation: PendingInvitation) {
+    fn put_active(
+        &mut self,
+        verifier: [u8; 32],
+        invitation: PendingInvitation,
+    ) -> Result<(), LedgerError> {
         self.active.insert(verifier, invitation);
+        Ok(())
     }
 
-    fn commit_consumed(&mut self, verifier: [u8; 32], consumed: Consumed) {
+    fn commit_consumed(
+        &mut self,
+        verifier: [u8; 32],
+        consumed: Consumed,
+    ) -> Result<(), LedgerError> {
         self.active.remove(&verifier);
         self.consumed.insert(verifier, consumed);
+        Ok(())
     }
 }
 
