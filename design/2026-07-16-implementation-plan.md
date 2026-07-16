@@ -295,10 +295,14 @@ over the ledger. **Persistent ledger done:** `PairingLedger` is now fallible
 (`Result`, so `commit_consumed` cannot silently fail), and `impl PairingLedger
 for Store` (schema V3: `invitations`, `pending_pairs`, sealed) survives restart
 with `purge_expired_pairing` GC — proven end-to-end over mTLS.
-**Remaining:** pending→active confirmation + peer persistence (`Store::put_peer`;
-needs a `VerifiedAccepter`→`PeerIdentity` mapping — `endpoint_id` source TBD);
-QR transfer; re-pair; rate-limit + enable-only-when-active gating on `serve`;
-`axon endpoint check` / `axon pair diagnose` CLI.
+**Peer persistence done:** a successful bootstrap now stores the paired peer
+(the §8.1 identity tuple, endpoint id from the card interface URL, projection vs
+full-card digests) via the `PairingStore` trait — `Store` persists to the
+encrypted `peers` table; proven end-to-end (pair over mTLS, then `get_peer`).
+**Remaining:** pending→active *confirmation* status (stored as active now; an
+operator-confirm step + status column is the refinement); QR transfer; re-pair;
+rate-limit + enable-only-when-active gating on `serve`; `axon endpoint check` /
+`axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
