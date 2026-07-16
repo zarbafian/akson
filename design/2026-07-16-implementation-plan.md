@@ -226,13 +226,19 @@ keys, invalid UTF-8, non-I-JSON numbers, unknown critical fields, downgrade).
 
 ### Track 2 — identity, state, transport (starts after M0; parallel to M1/M2 tail)
 
-**M3. Keys and identity (M)** — `axon-crypto`
+**M3. Keys and identity (M)** — `axon-crypto` — **core done** (commit
+`6d88b6f`)
 Key generation per purpose (TLS, Agent Card JWS, task-statement,
 local-authority, evidence), RFC 7638 thumbprints, purpose binding, keystore
-wrapping (ADR-0009), self-issued X.509 endpoint certs, identity tuple record
-(design §8.1). Agent Card JWS sign/verify (ADR-0007).
-*Exit:* cross-purpose key use fails closed in tests; thumbprint vectors match
-xcheck.
+wrapping (ADR-0009), identity tuple record (design §8.1), Agent Card JWS
+sign/verify (ADR-0007) — all landed with vectors.
+Self-issued X.509 endpoint certs **move to M5/M6**: they are the
+`tls-endpoint` key's cert, generated once and consumed by the mTLS listener
+and pairing bootstrap, and the cert-generation library choice is inseparable
+from the TLS-stack ADR (rustls) made there. `identity::Fingerprint::cert_sha256`
+already stands ready to fingerprint the DER.
+*Exit (met):* cross-purpose key use fails closed in tests; thumbprint/JWS
+vectors match xcheck.
 
 **M4. State store (L)** — `axon-store`
 Encrypted SQLite. Tables (one line each; details in the milestone doc):
@@ -383,6 +389,10 @@ anchored here so they are not lost:
   cross-checked. Pinning the verification key at pairing remains M6.
 - **M5** — outbound `validate_task`/`validate_artifact`/response-echo profile
   checks; couple Message validation to the negotiated extension set.
+- **M5/M6** — self-issued X.509 endpoint certificate generation (moved from
+  M3): the `tls-endpoint` cert for the mTLS listener and pairing bootstrap,
+  under the transport TLS-stack ADR; fingerprint via
+  `identity::Fingerprint::cert_sha256`.
 - **M6** — at pairing, verify each transported key-binding thumbprint equals
   its JWK.
 - **M7** — input-manifest ↔ exact Message-Part binding and per-field
