@@ -277,6 +277,8 @@ re-pair, removal, key-change suspension (§8.2, §8.4). `axon endpoint check`,
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
+Also the **Layer 1 interop checkpoint** (below): first live cross-
+implementation handshake via the signed Agent Card fetch over mTLS.
 
 ### Track 3 — the decision and execution core
 
@@ -413,7 +415,43 @@ subprocess worker (clearly non-shippable, behind a `dev-insecure-worker`
 feature that release builds cannot enable) and a dev-only echo processor.
 This proves the six-state spine integrates before the sandbox lands, and
 becomes the permanent integration test. The echo path never satisfies any
-gate (§4.4) and is never packaged.
+gate (§4.4) and is never packaged. This is also the **Layer 2 interop
+checkpoint** (below): the first full task lifecycle across two independent
+stacks.
+
+### Cross-implementation interop checkpoints
+
+Two independent implementations flush out spec-prose ambiguities that one
+implementation cannot see. Stage the interop deliberately by layer — each
+isolates a distinct failure class, so hit them in order rather than debugging
+transport, canonicalization, and protocol semantics at once. "Independent
+peer" means genuinely different code: the Python `xcheck`, a reference A2A SDK
+(`a2a-python`/`a2a-js`) driven as a conformance peer, or a second daemon — not
+a re-run of the same Rust.
+
+- **Layer 0 — agree on bytes (continuous, from M1).** An independent
+  implementation reproduces every frozen vector's canonical bytes/signatures;
+  no wire involved. This is `xcheck/` today (it already caught the `serde_jcs`
+  UTF-16 bug and validated the Agent Card JWS pipeline). *Best time:* per
+  canonical format, the moment it is frozen. A second independent reproducer
+  (e.g. Codex regenerating `spec/vectors/`) is additive insurance here.
+- **Layer 1 — one request over real mTLS (at M6).** Catches framing,
+  `application/a2a+json`, `A2A-Version`/`A2A-Extensions` headers, TLS 1.3 and
+  cert pinning — the wire, not the semantics. *Best time:* M6, using the
+  **signed Agent Card fetch** as the first cross-implementation handshake: the
+  card is fully specified and vector-covered, so a mismatch is unambiguously a
+  transport/framing bug. Needs M5 transport + M6 pairing.
+- **Layer 2 — a full task lifecycle (at the tracer bullet).** Propose →
+  accept → work-order → result → outcome across two independent stacks;
+  exercises extension negotiation, the six-state matrix, and contract/decision
+  signing. *Best time:* the tracer-bullet checkpoint above (contract +
+  minimal authority). This is the first genuine *conversation*, and the
+  compelling demo form — two different agent brains (e.g. Codex and Claude),
+  each speaking through a conformant transport — is meaningful here.
+
+The interop peer at Layers 1–2 should include a reference A2A SDK, because the
+bug worth finding is "axon vs. the reference", not "axon vs. a second axon that
+shares axon's assumptions".
 
 ### Dependency sketch
 
