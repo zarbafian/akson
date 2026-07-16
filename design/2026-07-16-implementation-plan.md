@@ -279,19 +279,23 @@ covered-value change; keyed replay tombstones outliving the retry horizon
 covered change rejected"; crash tests at every transaction boundary lose no
 acknowledged receipt and duplicate no task (§20.2).
 
-**M6. Pairing (L)** — `axon-pairing` — **logic core done**
+**M6. Pairing (L)** — `axon-pairing` + `axon-transport` — **bootstrap live**
 Landed (pure, tested): invitation create + verifier-only bearer secret
 (constant-time, expiry, attempt cap); mode-0600 file / stdin transfer;
-extended-card + key-binding verification (thumbprint==JWK, closes Codex M6);
-transcript + proof of possession; the consume-once **state machine** (retry-safe
-replay / transcript-conflict, over a `PairingLedger` trait + in-memory impl);
-the composed inviter-side **verification** (`session::verify_accepter`,
-incl. the TLS-cert-binding check) and the **handler** (`handle_bootstrap`:
-pre-check → verify → consume → respond). **Remaining:** the rate-limited HTTP
-bootstrap endpoint over the M5 TLS layer (first live HTTP-over-mTLS consumer;
-Store→ledger wiring); pending→active confirmation UX; QR transfer; re-pair,
-removal, key-change suspension (§8.4); `axon endpoint check` / `axon pair
-diagnose`.
+extended-card + key-binding verification (thumbprint==JWK, closes Codex M6;
+plus per-purpose key-reuse rejection); transcript + proof of possession
+(`verify_strict`); the consume-once **state machine** (retry-safe replay /
+transcript-conflict, `PairingLedger` trait + in-memory impl); composed
+inviter-side **verification** (`session::verify_accepter`, incl. TLS-cert
+binding) and the **handler**; the sender-side **`build_material`** (symmetric
+exchange). **Live:** the HTTP bootstrap endpoint over the M5 TLS layer
+(`axon-transport::bootstrap::serve` on `tls::bootstrap_server_config`), proven
+end-to-end over mTLS — the **Layer-1 interop checkpoint**. Server is generic
+over the ledger. **Remaining:** persistent SQLite `PairingLedger` (requires
+making the trait fallible — `Result` — so `commit_consumed` cannot silently
+fail; + consumed-record GC); pending→active confirmation + peer persistence
+(`Store::put_peer`); QR transfer; re-pair; rate-limit + enable-only-when-active
+gating; `axon endpoint check` / `axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
