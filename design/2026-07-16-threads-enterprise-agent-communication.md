@@ -1,2134 +1,2313 @@
-# Threads: safe, private, reliable agent-to-agent communication
+# Axon: private, reliable connections between agents
+
+Status: proposed design
 
 Date: 2026-07-16
-Status: proposed architecture and implementation specification
-Audience: c2c implementers, security reviewers, client-adapter owners, and
-enterprise operators
+
+Scope: open-source, local-first agent communication and bounded delegation
+
+The filename is historical. The product and public vocabulary are **Axon**, not
+Threads.
 
 ## 1. Executive decision
 
-Threads is a new protocol and security boundary beside legacy c2c DMs and
-rooms. It is not a `thread_id` field added to the current message record.
+Axon is an open-source, local-first gateway that lets independently operated
+agents exchange tasks, messages, artifacts, and evidence without sharing
+credentials or giving a peer ambient access to the local machine.
 
-The design makes these decisions:
+Axon is not a new agent language, general orchestration framework, remote shell,
+identity system, marketplace, or rich-media renderer. Its product value is the
+secure boundary between an authenticated remote request and a locally
+authorized, bounded worker, followed by a portable evidence-backed result.
 
-1. A connection grants no access. Every endpoint starts at `NONE`, which
-   means conversation input and a response only: no local workspace, tools,
-   shell, memory from other sessions, credentials, network, or host IPC.
-2. `READ`, `WRITE`, and `EXECUTE` are cumulative permission ceilings, granted
-   independently by each endpoint to a specific remote agent instance. They
-   are constrained to one selected workspace root, a short lifetime, and a
-   bounded work order.
-3. Conversation and authority are different planes. An inbound message or
-   action proposal is inert data. Only a host-local operator/admin action can
-   create a grant or work order. Existing c2c inbox, room, relay, MCP, hook,
-   and auto-turn paths never become an RPC or approval channel.
-4. A prompt is not a sandbox. Any endpoint offering more than `NONE` uses a
-   dedicated clean-context worker and a trusted local gateway that mediates
-   every operation. It must not reuse a full-power Claude, Codex, OpenCode,
-   or other coding session and ask it to behave through instructions.
-5. All thread content, including same-machine traffic, uses mandatory
-   end-to-end encryption. There is no plaintext fallback or downgrade mode.
-6. Threads use Messaging Layer Security 1.0 (MLS, RFC 9420) for both
-   two-member and group conversations. This gives one membership, epoch,
-   forward-secrecy, post-compromise-recovery, and replay-resistant protocol
-   instead of maintaining separate pairwise and group cryptosystems.
-7. Network delivery is at least once. Durable event append is exactly once
-   per event/idempotency key. Transcript presentation and command execution
-   are not falsely described as exactly once.
-8. Ordered text and multimodal parts share one encrypted application schema.
-   Binary parts live in an encrypted, authorization-checked blob store; a
-   content hash is never a bearer credential.
-9. Enterprise identity is tenant/user/agent/device/session based. Aliases are
-   mutable display names and never authorization principals. OIDC links human
-   users, SCIM supplies group lifecycle, and short-lived workload/agent
-   certificates authenticate devices and MLS leaves.
-10. Discovery by user and group belongs in the first enterprise release.
-    Interest-based discovery is an opt-in v2 feature and never indexes private
-    messages, repositories, paths, or attachments.
+The first complete product slice is a two-party code-review task:
 
-This is intentionally stricter than the existing opportunistic relay crypto.
-A feature may be delayed because a required crypto or sandbox backend is not
-available; it must not silently run with weaker guarantees.
+1. two endpoints pair without an Axon-hosted account or organization identity
+   provider;
+2. a requester sends an A2A Message with an immutable change and proposed
+   terms; the recipient durably creates the standard A2A Task;
+3. the recipient sees one clear risk card and accepts or rejects the exact
+   contract revision;
+4. an approved clean worker receives only the supplied change and context;
+5. the worker returns structured findings and signed evidence;
+6. the requester validates the bundle and records an accepted, rejected, or
+   disputed outcome.
 
-## 2. Why this is a new subsystem
+The first release uses the A2A 1.0 HTTP+JSON binding over HTTPS with TLS 1.3 and
+mutual endpoint authentication. It does not require a relay, directory, group
+protocol, OIDC, SCIM, or organization administrator. Direct delivery
+deliberately trades offline store-and-forward for a much smaller security and
+operational surface. A sender keeps a durable outbox and retries when both
+endpoints are reachable.
 
-The current c2c transport is a useful base for local messaging, but its data
-model and authority boundary cannot safely be stretched into Threads:
+If a later relay is justified, content encryption through that relay must use
+an accepted end-to-end group-security scheme such as MLS 1.0. Axon will not
+invent a cryptographic transport or silently weaken the direct security
+profile.
 
-| Area | Current c2c | Threads requirement |
-|---|---|---|
-| Message | `C2c_mcp_helpers.message` has one string `content`; schema v1 has an optional `message_id` and `in_reply_to` | Mandatory thread/event IDs, membership epoch, sender sequence, ordered content parts, relations, expiry, and critical extensions |
-| Delivery | Destructive inbox drain, archive, offline queue, dead letter | Non-destructive cursor sync, durable per-endpoint ACKs, idempotent append, gap recovery, and precise receipts |
-| Rooms | Alias membership, plaintext local history, live-member fan-out | Cryptographic members, durable offline fan-out, rekey on membership change, terminal lifecycle |
-| Identity | Local alias/session/PID; relay alias-to-Ed25519 TOFU | Tenant-issued user/agent/device/session identity; alias never authorizes |
-| Encryption | `Relay_e2e` static X25519 boxes on some remote paths; local traffic is intentionally plaintext; missing keys may fall back to plaintext | MLS on local and remote traffic, forward secrecy and recovery, hard failure on missing keys/downgrade |
-| Permissions | Trust tiers are advisory and B098 keeps messages as data | Explicit local grants and one-shot work orders enforced below the model |
-| Multimodal | Text only; attachments are an unimplemented draft | Encrypted multipart payloads, chunked CAS, safe rendering and model-adapter negotiation |
-| Persistence | Local broker/connector state uses multiple hand-written JSON/JSONL files; relay deployments may use SQLite | Transactional thread, crypto, outbox, cursor, grant, blob, and audit state |
+### 1.1 Product principles
 
-Specific current hazards must not be inherited:
+1. The complete secure path is open source and self-hostable.
+2. Personal, independent, and managed deployments use the same protocol,
+   cryptography, export features, and essential security controls.
+3. Receiving data is not authorization. A connection grants no local
+   capability.
+4. Messages, Agent Cards, skill descriptions, and model output cannot authorize
+   effects.
+5. Security properties fail closed. There is no plaintext, anonymous, or
+   weaker-protocol fallback.
+6. Established formats and reviewed schemes are reused whenever they satisfy
+   the requirement.
+7. Axon-specific formats are limited, versioned extensions with a documented
+   standards gap and interoperability tests.
+8. Delivery, execution, verification, and requester acceptance are distinct
+   states.
+9. Evidence identifies who asserted what about exact bytes; it is not marketed
+   as proof that an answer is correct.
+10. The happy path exposes peers, tasks, risks, progress, and results—not
+    certificates, policy records, or work-order internals.
 
-- `C2c_send_handlers.encrypt_content_for_recipient` returns plaintext for
-  local delivery and can return plaintext when keys or encryption are
+### 1.2 Product promise
+
+The concise promise is:
+
+> Connect an agent, approve exactly what it may do, and receive a result whose
+> inputs, producer, limits, and verification can be checked independently.
+
+“Evidence-backed outcome” is the preferred term. “Verified outcome” is used
+only when a named verifier actually checked the stated claim.
+
+## 2. Normative language and vocabulary
+
+The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are used as
+described by BCP 14.
+
+Axon uses the following public vocabulary:
+
+| Concept | Meaning |
+|---|---|
+| peer | An issuer-qualified, cryptographically pinned remote endpoint |
+| connection | The local record that authorizes communication with one peer |
+| task | The A2A Task and standard lifecycle; Axon’s required delivery extension adds durable receipt |
+| message | The A2A Message used for conversational or task content |
+| artifact | An A2A Artifact containing a task output |
+| contract | A signed Axon extension describing one exact proposed task revision and its input Message Parts |
+| decision | A signed accept or reject decision about a contract |
+| policy ceiling | A reusable, local rule that limits what may be approved |
+| work order | A local, one-shot authorization for one executor and exact task |
+| attempt | One authorized execution of a task revision |
+| evidence | DSSE-protected in-toto statements and referenced standard reports |
+| outcome | The requester’s signed accepted, rejected, or disputed result state |
+| processor | A local or remote model/service that receives approved plaintext |
+
+“Thread,” “home,” “tenant,” and “enterprise” are not base protocol concepts.
+Organization integrations are described as the optional managed profile.
+
+## 3. Standards-first policy
+
+Axon must not create a new envelope, message model, identity token, attachment
+container, signature convention, or transport when a suitable established
+format exists.
+
+| Concern | Normative or preferred reuse |
+|---|---|
+| agent semantics | A2A 1.0 Agent Card, Message, Task, Part, Artifact, operations, lifecycle, and extension mechanism |
+| direct network transport | A2A 1.0 HTTP+JSON with <code>application/a2a+json</code> over TLS 1.3 |
+| HTTP body integrity/deduplication | RFC 9530 <code>Content-Digest</code> plus the required Axon delivery profile |
+| standard A2A validation | A2A’s normative Protocol Buffer definitions and standard JSON mapping |
+| endpoint authentication | X.509 certificates and mutual TLS |
+| Agent Card signatures | A2A AgentCardSignature using JWS and the A2A canonicalization rules |
+| managed workload identity | SPIFFE X.509-SVID where workload federation is needed |
+| managed human identity | OIDC; SCIM only for organization lifecycle input |
+| identifiers | A2A identifier rules; UUIDv4 under RFC 9562 for Axon-created extension IDs |
+| times | RFC 3339 UTC timestamps |
+| content types | Registered IANA media types when one exists |
+| structured extension validation | JSON Schema Draft 2020-12 |
+| deterministic extension bytes | RFC 8785 JSON Canonicalization Scheme |
+| signed statements | DSSE v1 |
+| attestations | in-toto Attestation Framework |
+| build provenance | SLSA Provenance only for actual build-like work |
+| code findings | SARIF 2.1.0 |
+| Git inputs | Git object IDs, bundle v3, format-patch, and unified diff as applicable |
+| HTTP errors outside A2A | RFC 9457 Problem Details |
+| group end-to-end security, later | MLS 1.0, RFC 9420 and its architecture |
+| operational telemetry | OpenTelemetry, with content disabled |
+
+JUnit XML MAY be imported for compatibility, but it is a family of de facto
+dialects rather than one normative format. Axon must define and test a narrow
+parser profile while preserving the original bytes.
+
+Sigstore bundles MAY be used as an evidence signer/verifier provider. Upload to
+a public transparency service is never automatic because names, artifact
+digests, and timing can cross Axon’s privacy boundary. Private deployments do
+not need a public log to exchange valid DSSE/in-toto evidence.
+
+### 3.1 Rule for an Axon-specific extension
+
+An Axon-specific wire field or schema may be added only when all of the
+following are true:
+
+1. an ADR states the exact unmet requirement;
+2. the ADR evaluates current standards and widely used ecosystem formats;
+3. the extension changes only the missing semantics instead of replacing the
+   surrounding standard;
+4. the project controls a stable HTTPS namespace for the extension;
+5. the schema is versioned, bounded, reject-unknown where safety requires, and
+   has canonical bytes and golden vectors;
+6. a security review covers parsing, downgrade, replay, ambiguity, and privacy;
+7. at least two independent adapters pass interoperability tests.
+
+No provisional private URI or unregistered collision-prone name may ship in a
+stable release. The project domain and extension registry are Phase 0 release
+gates.
+
+### 3.2 Intentional Axon extension surface
+
+A2A already defines the agent, task, message, part, artifact, and operation
+model. Axon adds only the semantics A2A does not provide:
+
+- a bilateral task contract and revision chain;
+- a contract decision;
+- a paired identity projection and purpose-bound statement keys;
+- requested local capability metadata, which is never authority;
+- durable passive submission and idempotent retry semantics;
+- a canonical result manifest, evidence references, and required evidence slots;
+- a requester outcome decision distinct from task completion.
+
+These objects travel in standard A2A Message Parts or output Artifacts as
+appropriate. Axon does not wrap the whole A2A object in a second message
+schema.
+
+Grants, policies, work orders, sandbox descriptors, and local audit records are
+endpoint-private and are never A2A objects.
+
+### 3.3 Dependency discipline
+
+Each external protocol and library is pinned to a reviewed version. Axon
+publishes:
+
+- the supported A2A version and binding;
+- required and optional Axon extension versions;
+- the TLS and signature algorithm profile;
+- conformance vectors;
+- dependency provenance, SBOMs, and vulnerability response policy.
+
+Experimental drafts cannot become an invisible core dependency. AGNTCY SLIM
+may be evaluated as a later secure-session provider, and MIMI should be
+monitored for group interoperability, but neither is normative for the direct
+v1 path.
+
+Axon generates standard A2A types from A2A’s normative Protocol Buffer
+definitions instead of maintaining a competing schema. JSON Schema is used
+only for the Axon extension objects.
+
+Axon never implements cryptographic primitives, TreeKEM, HPKE, AEAD framing, or
+certificate validation itself. It uses maintained, reviewed libraries and
+tests their configuration.
+
+## 4. First release
+
+### 4.1 Included
+
+The v1 product includes:
+
+- one-to-one local and cross-host pairing;
+- no-Axon-account personal use and an isolated service profile;
+- an authenticated A2A Agent Card;
+- direct A2A Messages, Tasks, Parts, and Artifacts;
+- a complete <code>code_review.v1</code> contract, decision, execution,
+  evidence, and outcome loop;
+- bounded UTF-8 text and validated JSON;
+- durable sender outbox, receiver inbox, retry, and deduplication;
+- a local CLI and inbox/risk-card interface;
+- one-time approval and deny;
+- a clean worker with no host workspace, arbitrary tools, generic network, or
+  ambient credentials;
+- an explicit configured model processor; local versus remote is always shown;
+- DSSE/in-toto evidence and SARIF findings where applicable;
+- two real agent adapters and a documented adapter SDK;
+- encrypted local sensitive state and explicit retention;
+- self-hosting from signed native packages.
+
+The supported v1 capability subset is:
+
+- respond to the exact task;
+- read only the task’s supplied text Message Parts;
+- use one explicitly configured processor if the operator approves the data
+  disclosure;
+- export bounded results and evidence back to the requester.
+
+Everything else is absent and therefore denied.
+
+### 4.2 Explicitly deferred
+
+The first release does not include:
+
+- groups or multi-party membership;
+- a store-and-forward relay;
+- public, semantic, or organization directory discovery;
+- OIDC, SCIM, legal hold, fleet policy, or recovery escrow;
+- host workspace reads;
+- host writes, patch apply, or repository mutation;
+- arbitrary shell commands or general command execution;
+- peer-selected network access, callbacks, webhooks, or URL fetching;
+- remote secret use;
+- delegation to a third agent;
+- large files or a custom encrypted blob store;
+- binary media preview or decoding;
+- SVG, Markdown, Mermaid, or Graphviz rendering;
+- marketplace, reputation, payment, or settlement.
+
+Deferral is a security boundary, not an unfinished hidden feature. Unsupported
+requests return a stable, non-sensitive error and create no effect.
+
+### 4.3 Success criteria
+
+The first release is successful when:
+
+- two independent users on two directly reachable machines with supported
+  processors already configured complete fresh Axon installation and the
+  code-review loop in under ten minutes;
+- neither user needs an Axon-hosted account, organization IdP, public
+  directory, or shared secret copied into a command-line argument;
+- the recipient can understand the exact disclosure and local operations from
+  one risk card;
+- a restarted sender or receiver neither loses an acknowledged task nor starts
+  duplicate work;
+- an independent validator can validate the result manifest and referenced
+  bytes without the producer’s database;
+- all inbound paths remain inert until an endpoint-local authorization exists;
+- the same flow passes through two independent A2A adapters.
+
+### 4.4 Supported launch profile
+
+Phase 1 execution support is Linux on x86-64 and arm64 with the isolation
+features in Section 13.1. Other operating systems may support communication,
+inbox, and evidence validation only; Axon does not advertise worker execution
+until an equivalent backend passes the same suite.
+
+Signed native packages are the Phase 1 installation. They install a per-user
+service for the personal profile or a dedicated system service for the isolated
+profile. Containers are not a v1 release artifact. A later server/CI container
+requires an ADR and tests for its keystore, host socket, update, namespace, and
+backup boundaries; “run this container with the host socket mounted” is never
+the personal quick start.
+
+The guided installer recommends the isolated service when the operator can
+authorize it. Personal mode is an explicit lower-local-assurance choice and
+never displays the same badge. The cross-host Phase 1 security gate runs the
+reviewer in the isolated profile; <code>axon demo review</code> may use personal
+mode and labels the same-UID TCB.
+
+The two Phase 1 release adapters are OpenCode with a documented fully local
+model path, and Codex, exercised through supported non-interactive,
+task-bounded interfaces. If either cannot meet the passive-arrival and sandbox
+contract, Phase 0 must name a real replacement in a public ADR; an echo/demo
+adapter never satisfies the gate. Claude Code is a high-priority follow-on
+adapter, not a reason to delay the open local path.
+
+Processor setup is explicit:
+
+~~~text
+axon processor add <adapter> --name <local-name>
+axon processor list
+axon processor test <local-name>
+~~~
+
+A processor named <code>local</code> is a user-created alias, not an implicit
+claim that the model runs on-device. The setup and risk card state whether the
+adapter and model are local, which network service receives plaintext, and what
+credentials are brokered. The OpenCode reference fixture uses a documented
+local model endpoint and no vendor account.
+
+The under-five-minute local and under-ten-minute cross-host metrics begin after
+a supported processor is installed and tested; they include fresh Axon
+installation, initialization, pairing, and the task loop. A separate setup
+benchmark records processor installation and model-download time so the quick
+metric cannot hide it.
+
+## 5. User experience
+
+### 5.1 Happy path
+
+Initial setup makes the network prerequisite explicit:
+
+| Reviewer/server | Requester/client |
+|---|---|
+| <code>axon init</code> | <code>axon init</code> |
+| <code>axon serve --listen &lt;address&gt;</code> | |
+| <code>axon endpoint check</code> | |
+| <code>axon pair create --invite-file invite.axon --expires 10m</code> | <code>axon pair accept --invite-file invite.axon --alias reviewer</code> |
+
+After pairing, the normal product flow has three user moments:
+
+1. The requester runs
+   <code>axon review reviewer change.patch --wait</code>.
+2. The reviewer receives one risk card and chooses **Approve once** or
+   **Deny**.
+3. Axon validates the returned identities, signatures, schemas, and digests,
+   presents the review, and asks the requester to **Accept**, **Reject**, or
+   **Dispute**.
+
+Polling, retry, evidence validation, and progress display happen automatically
+under <code>--wait</code>. Advanced commands remain available for scripting,
+debugging, and export; users do not need them to complete a review.
+
+An invitation secret is accepted through a mode-0600 file, standard input, or a
+QR flow. The CLI MUST NOT encourage placing it in argv, a URL query string, a
+shell history entry, or logs.
+
+<code>axon serve</code> never opens a router port or publishes an address
+implicitly. It explains whether the listener is local-only, private-network, or
+public; <code>axon endpoint check</code> verifies the advertised address,
+certificate, Agent Card, and reachability from the intended network. The
+pairing invitation states the connection direction and which endpoint must be
+reachable. <code>axon pair diagnose</code> explains firewall, DNS, certificate,
+and private-network failures without printing the bearer invitation.
+
+The simple text-message path may exist for diagnostics and conversation, but it
+is not the release milestone. The evidence-backed task loop is the product
+milestone.
+
+For evaluation, <code>axon demo review change.patch</code> creates two
+separately keyed local endpoints and runs the same real adapter, contract,
+worker, evidence, and outcome path. It is clearly labeled a product
+demonstration: same-host use does not prove a cross-owner trust boundary or
+cross-host transport. A local evaluation should complete in under five minutes.
+
+### 5.2 Risk card
+
+Before local work, Axon groups the decision into five questions:
+
+1. **Who:** exact issuer-qualified peer and assurance, highlighting any key,
+   Agent Card, endpoint, or processor change.
+2. **What leaves:** every input exposed to the worker or processor, plus the
+   processor’s local/remote status, operator, region, retention, and training
+   policy known to Axon.
+3. **What runs:** task type, requested operations, actual processor, and
+   explicit denials for host files, generic network, secrets, and mutation.
+4. **Limits:** revision digest, time, byte, response, and cost bounds.
+5. **Evidence and destination:** required evidence slots, “Independent
+   verifier: none” unless one is configured, result recipient, and retention.
+
+Advanced details expand the exact contract, policy ceiling, and one-shot work
+order. Those implementation concepts do not appear in the primary approval
+sentence.
+
+The primary actions are deny, allow once, and—after v1—always allow this exact
+bounded rule. One UI action may sign a remote contract decision and create a
+local work order, but those records remain separate.
+
+Approval language is concrete. “Review this supplied 84 KiB diff with local
+model X and return findings to peer Y” is acceptable. “Allow agent access” is
+not.
+
+### 5.3 Quiet, abuse-resistant arrival
+
+Arrival may add a bounded item to the inbox. It MUST NOT foreground an approval
+dialog, start a model, speak, play media, or create an attacker-controlled OS
+notification by default. Operators may enable rate-limited generic
+notifications that reveal no remote body.
+
+Blocking, rate limits, connection close, and peer removal are always local and
+immediate.
+
+## 6. Threat model and security invariants
+
+### 6.1 Protected assets
+
+Axon protects:
+
+- endpoint identity and signing keys;
+- local policy and approval authority;
+- task, message, artifact, and evidence plaintext;
+- host files, repositories, tools, processes, network, and credentials;
+- processor credentials and configuration;
+- peer relationships and task metadata;
+- audit integrity and recovery state.
+
+### 6.2 Adversaries
+
+The design assumes:
+
+- a malicious or compromised remote agent;
+- prompt injection in every remote text field;
+- malformed, oversized, recursive, compressed, or ambiguous inputs;
+- replay, reorder, duplication, truncation, and connection interruption;
+- an active network attacker;
+- a compromised future relay;
+- a compromised model or adapter process;
+- an untrusted local agent process outside <code>axond</code> in the isolated
+  profile; same-UID processes are explicitly in the personal profile’s TCB;
+- a worker that crashes before, during, or after a side effect;
+- an operator who restores an old database snapshot;
+- a dependency or parser vulnerability.
+
+Axon does not claim to protect plaintext from the endpoint process that must use
+it, from an approved external processor that receives it, or from a fully
+compromised host kernel. These trust boundaries are visible in the risk card
+and <code>axon doctor</code>.
+
+### 6.3 Normative invariants
+
+#### Arrival is not execution
+
+Receiving any A2A Message, Task, Artifact, cancellation, Agent Card,
+authentication request, metadata extension, callback configuration, or
+transport control MUST NOT:
+
+- start or resume a model;
+- create an approval decision;
+- mint or consume execution authority;
+- access a host workspace;
+- invoke a tool or process;
+- fetch a URL;
+- import an attachment into a repository;
+- contact a peer-selected third party;
+- reveal a host or processor credential;
+- apply, commit, or publish a change.
+
+An A2A handler MAY durably create an inert local Task and return the standard
+Task in <code>submitted</code> state. The signed-outcome profile MAY instead
+return a fixed direct Message receipt without creating another Task. Either
+response is generated without a model or tool, contains only bounded
+correlation information, and means durable receipt only.
+
+#### All peer content is untrusted data
+
+Agent Card fields, skills, display names, objectives, messages, metadata,
+filenames, paths, URLs, status text, artifacts, reports, and model output are
+data. Only a validated, supported Axon extension field may be considered by
+policy, and it still cannot grant authority.
+
+Unknown extensions are preserved for forwarding when safe or ignored. They are
+never interpreted as policy.
+
+#### Authority is endpoint-local
+
+A valid certificate, successful TLS session, valid signature, paired
+connection, advertised skill, accepted contract, or A2A task state does not
+grant a host capability. Authority exists only in a locally issued one-shot
+work order addressed to a local executor.
+
+#### The model does not enforce its own sandbox
+
+Inbound content never enters an existing full-power session. A clean worker
+receives only the approved context and typed operations. A trusted gateway,
+secret broker, output gate, and operating-system sandbox enforce limits outside
+the model.
+
+#### Deny by default
+
+Missing, malformed, stale, unsupported, conflicting, unverified, or
+downgraded state resolves to no effect. Failure to prove a required provider or
+sandbox property is a denial, not a warning-and-continue path.
+
+#### Effects are one-shot and crash-honest
+
+An effectful work order is durably claimed before its first effect. A crash
+after effect start without a durable terminal record becomes
+<code>ambiguous</code> and is never automatically retried.
+
+#### Identity is issuer-qualified
+
+Aliases, display names, URL hostnames alone, process IDs, routing names, and
+unverified Agent Card claims never authorize. Policy keys include the identity
+issuer or trust domain and current key binding.
+
+#### Cancellation is not implicit kill authority
+
+Remote cancellation is advisory unless the exact work order grants
+<code>remote_cancel</code> to the exact request origin and task. Cancellation
+cannot undo a committed result or change. In the A2A interface, “advisory”
+means Axon returns TaskNotCancelableError when that caveat is absent; it does
+not acknowledge cancellation and then ignore it.
+
+#### Credentials remain local
+
+A2A authentication flows cannot solicit or return host credentials through
+task conversation. Later secret use is mediated by a local broker reference,
+purpose, audience, and work order. Raw secrets never enter peer-visible or
+model-visible text.
+
+#### Receipts remain distinct
+
+Network receipt, durable inbox storage, contract acceptance, worker claim,
+processor consumption, task completion, verifier result, and requester outcome
+are separate states. The UI and protocol never collapse them into “done.”
+
+#### Evidence proves claims, not truth
+
+Every claim is labeled self-attested, independently verified, or
+hardware-attested. A valid signature proves integrity and signer attribution,
+not semantic correctness.
+
+## 7. Architecture
+
+### 7.1 Components
+
+~~~text
+remote A2A endpoint
+        |
+        | HTTPS / TLS 1.3 / mutual authentication
+        v
++----------------------------------------------------------+
+| axond                                                    |
+|                                                          |
+|  network endpoint -> bounded A2A parser -> inbox/dedupe  |
+|                                           |              |
+|                                      contract engine     |
+|                                           |              |
+|  local UI/admin -> policy decision -> one-shot work order|
+|                                           |              |
+|                         clean worker + output gate        |
+|                              |              |            |
+|                     processor broker   evidence engine   |
+|                                                          |
+|       encrypted state, outbox, audit, key-store adapter  |
++----------------------------------------------------------+
+        |                                      |
+        | standard local adapter API           | A2A response
+        v                                      v
+configured agent/model                    remote requester
+~~~
+
+The network endpoint, policy engine, work-order issuer, output gate, and
+evidence validator are trusted code. The model, remote peer, task content,
+reports, and worker output are untrusted.
+
+The processor broker is the only v1 component allowed to disclose approved task
+content to a configured external model service. It enforces the exact processor
+identity, destination, input manifest, byte/cost limits, and credential
+separation recorded in the work order.
+
+### 7.2 Processing sequence
+
+1. The network endpoint authenticates the peer certificate before accepting an
+   A2A request body.
+2. It enforces connection, content-length, rate, and parse limits.
+3. It validates the standard A2A object and recognized Axon extension.
+4. It stores the encrypted object and stable digest transactionally.
+5. Under the required Axon passive-delivery extension, it returns the standard
+   A2A Task shape only after the stronger Axon durability commit.
+6. A user or standing local policy evaluates the exact immutable contract
+   revision.
+7. Contract acceptance is signed separately from local authorization.
+8. The local issuer creates a one-shot work order for a clean executor.
+9. The executor receives only the selected input manifest and typed
+   capabilities.
+10. Results pass through size, media-type, recipient, and schema gates.
+11. The evidence engine signs statements over exact inputs, attempt, outputs,
+    and verifier results.
+12. The requester validates the bundle and signs its own outcome.
+
+No receive-path code calls an agent adapter or model.
+
+### 7.3 Assurance profiles
+
+All profiles use the same protocol and cryptography.
+
+| Profile | Local assurance |
+|---|---|
+| personal | Per-user daemon, OS keystore, pinned peer certificates; all processes with the same OS user are explicitly inside the local TCB |
+| isolated | Dedicated service identity, separate client/admin sockets, OS ACLs, sandbox/cgroup, protected keystore; recommended for servers and teams |
+| managed | Isolated profile plus optional OIDC, SCIM, SPIFFE, central policy/audit, and visible recovery/compliance participants |
+
+A personal endpoint can pair across hosts and organizations. It is not a
+development-only or weaker-network mode. Its narrower local-process isolation
+is reported precisely. It does not claim to resist a compromised process with
+the same UID and access to the user’s keystore, sockets, debugger, or files.
+
+Managed integrations add operational and identity assurance. They do not
+unlock stronger encryption, essential policy controls, export, private
+connections, or interoperability unavailable to self-hosters.
+
+## 8. Identity and pairing
+
+### 8.1 Identity tuple
+
+Internal peer references contain:
+
+~~~text
+identity issuer or trust domain
+stable agent identity
+workload or device identity
+endpoint instance identity
+current TLS certificate thumbprint
+current Agent Card JWS verification-key thumbprint
+current task-statement verification-key identifiers and allowed purposes
+current evidence-signing key identifiers and allowed purposes
+authenticated Agent Card security-projection digest
+full Agent Card digest for display and change history
+~~~
+
+Not every profile has a federated issuer, but the tuple remains issuer-qualified
+and typed. Local aliases are presentation only.
+
+Transport identity, Agent Card identity, task-statement signer, local authority
+issuer, executor identity, processor identity, and evidence signer are separate
+roles. Every verification key is bound to its permitted purposes during
+pairing or through an issuer-authorized managed binding. If one key is reused
+during an early implementation, the reuse is explicit, purpose-constrained,
+and removed before stable release. The target design uses separate TLS, Agent
+Card JWS, task-statement, local-authority, and evidence-signing keys.
+
+The security projection contains only stable identity, AgentInterface,
+security requirement, required extension, and identity/key-binding fields.
+Policy pins this projection rather than cosmetic skill descriptions. The full
+card digest is retained so every change remains visible.
+
+Certificate fingerprints are SHA-256 over the complete DER certificate.
+Public JWK fingerprints use RFC 7638. A non-JWK public key uses SHA-256 over
+DER SubjectPublicKeyInfo. Displays include the algorithm and full digest;
+truncation is presentation only and never used for matching.
+
+### 8.2 Personal pairing
+
+Personal pairing uses standard TLS and X.509 with explicit pinning:
+
+1. The inviting endpoint creates a cryptographically random 256-bit,
+   single-use bearer secret, an expiry, a maximum attempt count, its endpoint,
+   its full TLS certificate fingerprint, and its Agent Card JWS key
+   fingerprint.
+2. The invitation is transferred out of band as a protected file or QR code.
+   The daemon stores only a verifier for the secret.
+3. The accepting endpoint opens a server-authenticated TLS 1.3 bootstrap
+   connection pinned to the invitation fingerprint.
+4. It sends the 256-bit secret as an HTTP Bearer credential inside that pinned
+   TLS connection and presents its generated endpoint certificate and signed
+   extended Agent Card.
+5. The extended card’s required Axon identity/key-binding AgentExtension
+   carries the Agent Card JWS, task-statement, and evidence verification keys,
+   their RFC 7638 thumbprints, allowed purposes, generation, and validity. The
+   inviter verifies the card, key bindings, and proof of possession.
+6. The inviter atomically consumes the secret into a pending-pair record and
+   returns its own equivalently signed extended Agent Card and key bindings.
+7. Both endpoints verify and pin the symmetric identity records and display the
+   full identity summary. Local confirmation changes the pending record into an
+   active connection. All subsequent A2A traffic requires mutual TLS.
+
+The bootstrap endpoint is separate from the A2A endpoint, aggressively rate
+limited, small, and disabled when no invitation is active. Invitation secrets
+never become long-lived peer keys. The daemon compares the high-entropy
+secret’s stored verifier in constant time, consumes it in the same transaction
+that creates the pending peer, redacts the Authorization header from every log,
+and permits no redirect or proxy termination on the bootstrap path.
+
+Pairing is retry-safe, not exactly once. Until invitation expiry, the inviter
+retains the consumed-secret verifier, a digest of the canonical presented
+certificate/key/card transcript, and the encrypted serialized pending-pair
+response. An exact retry with the same secret and transcript returns the same
+pending peer and response. The same secret with a changed transcript is
+rejected as an attack. The acceptor persists and reuses its exact bootstrap
+request until a response or expiry. No second peer can be created.
+
+The invitation is a bearer credential: anyone who obtains it before use can
+become the pending peer. It therefore travels through an authenticated,
+confidential channel or an in-person QR flow. For a remote channel whose
+authenticity is uncertain, users compare the displayed transcript fingerprint
+through a second trusted channel before activation.
+
+Axon does not invent a challenge-response protocol for a shorter human code. If
+such a flow is later required, an ADR must select a standardized, reviewed PAKE
+and define its transcript and identity bindings.
+
+Self-issued X.509 endpoint certificates are acceptable in the personal profile
+because the full certificate is pinned out of band. They are not treated as
+public-PKI identities.
+
+The public <code>/.well-known/agent-card.json</code> is a minimal signed A2A
+card containing no private peer or processor data. It advertises mTLS and the
+required Axon extensions, and sets
+<code>capabilities.extendedAgentCard: true</code>. The signed extended card
+exchanged during bootstrap and later retrieved through the standard
+authenticated GetExtendedAgentCard operation carries the purpose-bound
+identity/key projection. Axon never substitutes the public card for that
+authenticated projection.
+
+### 8.3 Isolated and managed identities
+
+The isolated profile may use an operator CA or pinned self-issued certificates.
+The managed profile may use SPIFFE X.509-SVID and trust-domain federation.
+OIDC or OS/WebAuthn presence authenticates a local human authority issuer; a
+remote OIDC claim cannot impersonate that local issuer. SCIM group data is
+optional local policy input, not connection membership.
+
+Assurance labels are computed locally from successful validation. A peer cannot
+self-assert <code>managed</code>, <code>independent-verifier</code>, or similar
+labels.
+
+### 8.4 Rotation, removal, and recovery
+
+Personal v1 keeps rotation simple: changing a TLS, Agent Card JWS,
+task-statement, or evidence key requires explicit re-pairing. A later personal
+successor mechanism would be a registered Axon identity extension and require
+old-key authorization, new-key proof of possession, peer identity, purpose,
+monotonic generation, validity interval, and old/new thumbprints.
+
+Managed SPIFFE rotation follows a different rule. Identity continuity is the
+validated SPIFFE ID, trust domain, issuer bundle, purpose, and locally allowed
+federation—not an old leaf signature. A new X.509-SVID is accepted under issuer
+authorization, expiry, and revocation policy. Each live session and work order
+still binds its current leaf certificate; standing policy does not bind a
+routine managed identity to one leaf thumbprint.
+
+Managed Agent Card, task-statement, and evidence keys rotate through a signed
+issuer-authorized key-binding update containing purpose, predecessor
+thumbprint, monotonic generation, validity interval, and new-key proof of
+possession.
+
+Unexpected key, endpoint, issuer, or Agent Card security-projection changes
+suspend the connection and require review. A cosmetic description/example
+change updates the full-card history and UI but does not invalidate policy by
+itself. Removing a peer immediately denies new sessions and new work orders.
+
+V1 does not hide key escrow behind recovery. Loss of endpoint identity keys
+requires re-pairing. Restored databases enter a recovery state in which
+standing automatic policy is disabled until freshness is re-established.
+Managed recovery, if added, lists every recovery participant in the assurance
+report and audit.
+
+### 8.5 Time and expiry
+
+Expiry is an authority boundary. Within one boot, invitations, contracts, work
+orders, and processor calls use monotonic deadlines. Across boots, Axon stores
+the last trusted wall-clock checkpoint and database generation in the OS
+keystore or HSM, outside database backups.
+
+The default hard maximum lifetimes are:
+
+- invitation: 15 minutes;
+- unaccepted contract revision: 24 hours;
+- one-shot work order: 1 hour;
+- one processor call: 30 minutes.
+
+Deployments may lower them. Raising a hard maximum requires an ADR and threat
+tests.
+
+If wall time moves backward by more than five minutes, or by a lower
+operator-configured tolerance, the
+keystore/database checkpoint disagrees, or certificate validity cannot be
+established, Axon enters time-uncertain recovery. It refuses pairing, contract
+acceptance, new work orders, automatic policy, and managed certificate renewal
+until an operator restores trusted time and acknowledges the audit event.
+Restart cannot extend an already issued TTL.
+
+## 9. Direct transport and reliable delivery
+
+### 9.1 TLS profile
+
+The v1 network profile is:
+
+- the A2A 1.0 HTTP+JSON binding and its
+  <code>application/a2a+json</code> representation;
+- TLS 1.3 only;
+- server authentication during pairing and mutual authentication afterward;
+- certificate validation and peer pinning appropriate to the selected identity
+  profile;
+- TLS 0-RTT disabled;
+- TLS session tickets/resumption disabled in v1;
+- no plaintext, anonymous, TLS-version, or certificate-validation fallback;
+- no automatic redirect to a different origin;
+- TLS termination inside <code>axond</code> by default.
+
+A deployment that terminates TLS in a proxy has added that proxy to its
+plaintext trusted computing base and cannot describe the hop as endpoint
+end-to-end protection. The deployment report must say so.
+
+Compression is disabled initially. Parsers apply limits before allocation and
+before structured validation.
+
+### 9.2 Honest semantics
+
+Direct v1 transport provides authenticated, confidential delivery while both
+endpoints can establish a connection. It does not claim always-online delivery
+or asynchronous store-and-forward.
+
+It also does not provide NAT traversal, automatic router changes, or a hidden
+rendezvous service. The receiving A2A server must be reachable through a local
+network, a user-managed private network such as WireGuard, or an explicitly
+configured public HTTPS address. Axon still uses mTLS over that network. A
+connection can be directional: the client-only requester need not accept
+inbound traffic to poll the Task and send follow-up Messages. Both peers need
+reachable servers only when both must originate new tasks.
+
+The sender:
+
+1. assigns a stable A2A Message identifier; the receiving server assigns the
+   Task identifier;
+2. persists the exact outbound HTTP body, its RFC 9530
+   <code>Content-Digest</code>, selected AgentInterface URL and tenant value,
+   <code>A2A-Version</code>, normalized activated extension URI set, content
+   type, and HTTP method;
+3. retries with the same Message identifier, exact body bytes, and identical
+   covered profile fields;
+4. removes the outbox item only after a durable receiver response or explicit
+   local expiry.
+
+V1 accepts exactly one RFC 9530 <code>Content-Digest</code> value using
+<code>sha-256</code>. A missing, duplicate, mismatched, or unsupported digest
+algorithm rejects the request before Message parsing.
+
+The receiver validates <code>Content-Digest</code> and atomically stores the
+authenticated peer, Message identifier, exact body digest, selected interface
+and tenant, A2A version, activated extension set, content type, encrypted body,
+HTTP method, and serialized response before returning. A task proposal also stores its newly
+assigned Task identifier. A signed outcome instead stores and returns the fixed
+direct Message receipt defined in Section 14.5.
+
+Delivery is at least once with idempotent processing:
+
+- the required Axon delivery extension—not base A2A—defines
+  durable-before-response and retry behavior;
+- same peer, Message identifier, body digest, interface/tenant, A2A version,
+  extension set, content type, and HTTP method returns the byte-equivalent
+  saved response with the identical server-generated Task identifier;
+- the same peer and Message identifier with any different covered value is a
+  conflict and security event;
+- a duplicate never creates a second contract decision, work order, attempt,
+  artifact, or outcome.
+
+No “exactly once” claim is made. A receipt does not imply acceptance or
+execution.
+
+After payload retention ends, the receiver keeps a keyed replay tombstone
+containing the peer, Message identifier, covered-value commitment, response
+class, Task identifier, and encrypted serialized response needed for exact
+replay. The tombstone lasts through the configured task retention window and
+never less than the maximum sender retry window plus contract expiry. Only
+after that advertised retry horizon may the saved response be purged. Its
+commitment is not exported as a public content hash.
+
+### 9.3 Ordering and state conflicts
+
+Axon does not require a global message order. Each Task has one local
+compare-and-swap contract head. A new revision is accepted only when its
+predecessor equals that head and the Task is awaiting input. A signed
+acceptance atomically locks that exact head before a work order can be issued.
+Later siblings or revisions are rejected as stale; they cannot retroactively
+cancel authority already issued for the selected head. Remote revocation or
+cancellation remains advisory unless the work order explicitly grants it.
+
+Conflicting or stale messages may be retained as visible diagnostics but never
+become policy inputs.
+
+Clock time is informational for ordering. Security decisions use identifiers,
+digests, revision links, expiry bounds, and local monotonic time where
+available.
+
+### 9.4 Future secure-session provider
+
+A future relay or group implementation must sit behind a narrow provider
+interface:
+
+~~~text
+resolve and pin peer identity
+open authenticated direct or group session
+send stable event bytes
+receive authenticated origin and stable event bytes
+acknowledge or synchronize under an advertised durability class
+report membership and security state
+close or revoke
+~~~
+
+A production provider must demonstrate:
+
+- mandatory end-to-end encryption, including same-host paths;
+- authenticated binding from session membership to the Axon peer identity;
+- no weaker-suite fallback;
+- replay rejection and stable application identifiers;
+- exact durability semantics proven by crash tests;
+- bounded messages, metadata, decompression, and queues;
+- sender identity on every delivery;
+- removal and rekey behavior before groups are enabled;
+- protected key persistence and rollback handling;
+- an explicit metadata-leakage inventory;
+- rate limits, backpressure, reproducible builds, and a vulnerability process.
+
+If a relay can read content, it is an endpoint/proxy deployment, not an
+end-to-end Axon relay.
+
+For MLS, Axon uses an audited RFC 9420 implementation and a reviewed binding; it
+does not implement TreeKEM or define a new group cryptosystem. If SLIM is used,
+MLS, TLS verification, authenticated identities, stable deduplication, and the
+advertised durability class are mandatory. Insecure or MLS-disabled modes are
+not compatible with the Axon profile. Nested MLS and two competing membership
+states are prohibited.
+
+## 10. A2A profile and task contract
+
+### 10.1 Standard A2A objects
+
+Axon uses:
+
+- Agent Card for supported skills, endpoint, bindings, and Axon extension
+  advertisement;
+- Message and Part for conversation and structured task input;
+- Task and its standard lifecycle for tracked work, with durability added only
+  by the required Axon delivery extension;
+- Artifact and Part for outputs and evidence;
+- standard A2A operations and error semantics.
+
+Agent Card skills are advertisements, never grants. The card is fetched through
+the authenticated connection, signed with the standard A2A
+AgentCardSignature/JWS mechanism, and its digest and verification key are
+pinned. Axon does not invent another Agent Card signature field. A
+<code>jku</code> or other key URL is never fetched automatically; the
+verification key comes from pairing or a locally configured trust domain. A
+card change cannot widen standing local policy without review.
+
+The mandatory v1 Agent Card JWS profile uses a separate Ed25519 key,
+<code>alg: EdDSA</code>, <code>typ: JOSE</code>, and an RFC 7638
+thumbprint-based <code>kid</code>. Additional managed algorithms require a
+negotiated profile and vectors; <code>none</code>, symmetric peer-supplied
+keys, and unpinned remote key URLs are forbidden.
+
+External file URLs and push callback URLs are disabled in v1. A URI may be
+displayed as inert text but is never fetched. Later callback support requires a
+pre-registered, identity-bound local destination policy; a request field alone
+can never authorize egress.
+
+#### V1 nonblocking operation profile
+
+The Agent Card advertises:
+
+- protocol version <code>1.0</code> and the <code>HTTP+JSON</code>
+  AgentInterface;
+- an A2A MutualTlsSecurityScheme and a mandatory security requirement for that
+  interface;
+- each safety-critical Axon AgentExtension URI with
+  <code>required: true</code>;
+- <code>streaming: false</code> and
+  <code>pushNotifications: false</code>.
+
+Every authenticated v1 A2A operation supplies
+<code>A2A-Version: 1.0</code> and activates the complete required contract,
+identity/key-binding, passive-delivery, result/evidence, and outcome extension
+set with the standard <code>A2A-Extensions</code> service parameter. This rule
+applies to initial and follow-up SendMessage, GetTask, ListTasks, CancelTask,
+GetExtendedAgentCard, and the task-less outcome SendMessage. The Message
+<code>extensions</code> field lists the exact URIs that contribute to that
+Message. Missing, extra-conflicting, or unsupported required extensions fail
+before state lookup, Task creation, or content processing.
+
+Responses echo the activated <code>A2A-Extensions</code> set. Every status
+Message or Artifact containing Axon data lists the contributing URI in its
+standard <code>extensions</code> field. An Axon client never assumes extension
+semantics from metadata whose URI was not successfully negotiated.
+
+The initiating SendMessage request sets
+<code>SendMessageConfiguration.returnImmediately = true</code>. For a valid
+code-review proposal the server MUST return a Task in
+<code>TASK_STATE_SUBMITTED</code>, never a direct Message response, after the
+inert request is durably stored. The client polls the standard GetTask
+operation. V1 does not use streaming, SSE, push configuration, or peer-selected
+webhooks.
+
+This profile prevents the A2A binding’s default blocking behavior from holding
+an approval or model execution inside the receive request.
+
+Signed accept, reject, and revision-request records are delivered in the
+agent-role Message attached to Task status/history and become visible through
+GetTask polling:
+
+| Axon event | A2A state/behavior |
+|---|---|
+| durable inert proposal | <code>TASK_STATE_SUBMITTED</code> under the required Axon delivery extension |
+| accepted, awaiting work-order claim | remains <code>TASK_STATE_SUBMITTED</code> with signed accept Message |
+| revision requested | <code>TASK_STATE_INPUT_REQUIRED</code> with signed request Message |
+| locally rejected or proposal’s signed expiry reached | <code>TASK_STATE_REJECTED</code> |
+| authorized attempt actually running | <code>TASK_STATE_WORKING</code> |
+| result manifest, required slots, and outputs durably committed | <code>TASK_STATE_COMPLETED</code> |
+| failed or ambiguous attempt | <code>TASK_STATE_FAILED</code> with a non-sensitive Axon reason |
+
+<code>TASK_STATE_AUTH_REQUIRED</code> is disabled in v1; local approval is not
+a credential request to the client. Without an exact
+<code>remote_cancel</code> caveat, CancelTask returns the standard
+TaskNotCancelableError rather than accepting and ignoring the request.
+
+GetTask, ListTasks, CancelTask, and outcome references are scoped to the
+authenticated paired origin. A peer cannot enumerate or address another peer’s
+Tasks even if it learns an identifier; Axon returns the standard not-found
+shape without creating an ownership oracle.
+
+### 10.2 Contract revision
+
+The contract is a versioned Axon structured-data Part carried by the initiating
+A2A Message. The receiving endpoint associates it with the standard Task that
+the endpoint creates. It contains:
+
+~~~text
+schema version
+contract UUID and integer revision
+predecessor contract digest, except for revision zero
+task type URI, initiating A2A Message identifier, Context identifier if one was
+supplied, and existing Task identifier for a follow-up revision
+issuer-qualified requester and proposed performer
+objective text, explicitly non-authoritative
+ordered input manifest binding exact Message Parts
+required deliverables and media types
+required evidence slots and acceptable trust classes
+requested capability vector
+processor and data-handling constraints
+deadline, resource, response, byte, and cost limits
+result recipient and retention request
+creation and expiry times
+~~~
+
+JSON contract payloads conform to I-JSON constraints, reject duplicate keys,
+validate against JSON Schema Draft 2020-12, and are canonicalized with RFC 8785
+before digesting and DSSE signing.
+
+The Message contains exactly one contract-control Part whose
+<code>data</code> value is the DSSE envelope and whose media type is the
+versioned contract-envelope media type selected in Phase 0. The DSSE
+<code>payloadType</code> identifies the corresponding contract payload. A
+missing or second contract Part rejects the request. Each input manifest entry
+contains:
+
+~~~text
+logical input identifier
+initiating Message identifier
+zero-based Part index
+content kind: text or data
+media type and declared character set
+canonical-byte rule
+byte length and SHA-256 digest
+whether the worker and processor may receive it
+~~~
+
+For a text Part, the digested content is the exact UTF-8 encoding of the A2A
+string value with no Unicode normalization. For a data Part, it is RFC
+8785-canonical JSON. Raw and URL Parts are unsupported in v1. The contract Part
+itself is control data and is not a worker input. Every other Part must have
+exactly one manifest entry; an unmanifested, multiply referenced, kind-mismatched,
+or digest-mismatched Part rejects the proposal. Part metadata and filenames do
+not reach the worker unless a future schema explicitly manifests their
+individual fields.
+
+The standard SendMessageConfiguration
+<code>acceptedOutputModes</code> must match the contract’s deliverable media
+types; it cannot widen them. A push-notification configuration is forbidden.
+Request-level and Message metadata remain inert and never enter the worker
+unless a future required extension manifests a specific field.
+
+The requester identity in the signed contract MUST equal the identity mapped
+from the authenticated mTLS origin. The proposed performer MUST equal the local
+endpoint identity. The DSSE key MUST be pinned for the
+<code>contract-proposal</code> purpose. A mismatch is rejected before Task
+creation for an initial proposal or before revision acceptance for a follow-up.
+
+The requester signs a proposal. The performer signs a separate accept or
+reject decision referencing the exact proposal digest and the receiver-assigned
+A2A Task and Context identifiers. That decision is the cryptographic binding
+between the proposal and Task and uses a key pinned for the
+<code>contract-decision</code> purpose. Expiry follows the signed proposal
+expiry and the trusted-time rules; it is not a performer assertion.
+
+V1 has no performer-authored counterproposal. A performer may either reject the
+Task, or emit a signed revision-request status Message and move the nonterminal
+Task to <code>TASK_STATE_INPUT_REQUIRED</code>. In the latter case the requester
+may send a new requester-signed revision on that Task naming the predecessor.
+The revision request uses the contract-decision key and is not itself a new
+contract revision. Editing a proposal in place is impossible.
+
+Free-form objective text, filenames, requested skills, or model instructions
+cannot widen any typed field.
+
+### 10.3 Requested capabilities are not authority
+
+The contract may describe what the requester thinks the task needs. This helps
+the risk card and negotiation, but has no local force.
+
+Data-handling and processor fields are bilateral ceilings. A performer cannot
+send requester content to an external processor unless the accepted contract
+permits that class of disclosure and the local work order names the exact
+configured processor. A requester cannot force the performer to retain content
+longer, use a less private processor, or weaken local policy. Either side may
+choose stricter handling or reject the task.
+
+In v1 the result recipient MUST be the authenticated request origin on the same
+paired connection. A third-party recipient is an egress/delegation feature and
+is unsupported regardless of what free-form or typed request data says.
+
+The actual capability is always the intersection of:
+
+~~~text
+hard platform policy
+intersection current operator or organization policy
+intersection policy for the authenticated request origin
+intersection accepted contract constraints
+intersection one-shot local work order
+intersection available provider and sandbox guarantees
+intersection remaining budgets
+~~~
+
+An absent or unknown component denies that operation.
+
+### 10.4 Task, attempt, evidence, and outcome states
+
+A2A Task state reports producer-side task progress. In particular:
+
+- submitted means durably inert only because the required Axon passive-delivery
+  extension adds that stronger behavior to A2A;
+- working is reported only after a local work order is claimed and a worker
+  actually starts;
+- completed is committed only after the canonical result manifest, output
+  Artifacts, evidence-slot records, and required evidence envelopes are durably
+  stored in one transaction or recoverable commit protocol;
+- the exact failed, rejected, canceled, input-required, authentication, and
+  cancellation behavior is the matrix in Section 10.1.
+
+Axon does not overload A2A completion to mean verification or business
+acceptance. It separately records:
+
+~~~text
+contract: proposed | accepted | rejected | expired | superseded
+attempt: pending | claimed | running | succeeded | failed | ambiguous | cancelled
+evidence result: passed | failed | error | not_run | unavailable
+evidence disclosure: full | summary | redacted
+outcome: accepted | rejected | disputed
+~~~
+
+The Phase 0 profile contains an exact mapping to the pinned A2A version and
+conformance vectors. If a standard task-state name changes, Axon updates the
+profile instead of creating a competing lifecycle.
+
+### 10.5 Code-review v1 profile
+
+The first task profile uses existing representations:
+
+- claimed Git base and result object IDs, including their hash algorithm;
+- Git format-patch generated with <code>--full-index</code> and transported as
+  bounded UTF-8 text;
+- unified diff only as explicitly labeled compatibility syntax, because it has
+  no single normative specification;
+- optional bounded UTF-8 source context as separate A2A Parts;
+- SARIF 2.1.0 Plus Errata 01 with its pinned official schema and
+  <code>application/sarif+json</code> for machine-readable findings;
+- plain text for the human summary;
+- DSSE/in-toto for signed evidence.
+
+Git object IDs are unverified claims until a named repository or bundle
+verifier reconstructs and checks the objects. V1 does not make that claim. It
+records the Git hash algorithm and covers every transported output Artifact
+with a SHA-256 digest for Axon/in-toto integrity validation.
+
+Git binary patches are rejected in text-only v1; <code>--binary</code> is not an
+accepted profile. A future binary profile treats its bytes as inert input and
+requires a sandboxed Git verifier.
+
+V1 never auto-applies a patch and never imports Git objects into a host
+repository. A later Git bundle importer must run in a parser sandbox, validate
+prerequisites and object IDs, and still cannot auto-apply.
+
+## 11. Content, artifacts, and media
+
+### 11.1 Allowed v1 content
+
+V1 accepts:
+
+- bounded UTF-8 <code>text/plain</code>;
+- bounded UTF-8 <code>text/markdown</code>, displayed as escaped source;
+- <code>application/json</code> when a declared schema applies;
+- standard JSON reports such as SARIF and in-toto after profile validation.
+
+The implementation sets conservative hard limits before Phase 1. The initial
+target is an 8 MiB total HTTP body, 4 MiB per non-text Part, 1 MiB per text
+Part, JSON nesting depth 64, and no content encoding. Deployments may lower
+limits. Raising compile-time hard limits requires an ADR and resource tests.
+
+All original bytes, media type, declared character set, size, and digest are
+preserved. A parser’s normalized representation never replaces the signed
+original.
+
+### 11.2 SVG and diagram source
+
+SVG rendering is not and has never been an Axon feature.
+
+SVG output is transported only as bounded UTF-8 source text using standard A2A
+Part/Artifact fields. If preserving the exact artifact matters, its registered
+<code>image/svg+xml</code> media type is retained, but the Axon UI still shows
+escaped source or offers an explicit save operation.
+
+Axon MUST NOT:
+
+- parse SVG into a browser or XML DOM;
+- execute or sanitize-and-render it;
+- rasterize or preview it;
+- resolve entities, scripts, fonts, styles, links, or external references;
+- embed it with an image, object, iframe, data, or equivalent active element;
+- pass it to an OS thumbnailer.
+
+Mermaid and Graphviz are handled the same way: escaped, bounded, untrusted text
+only. Markdown is also source text in v1; no HTML rendering or link preview is
+needed.
+
+If SVG or diagram source is supplied to a model, the input manifest labels it
+as untrusted remote text and the processor disclosure remains subject to the
+work order.
+
+### 11.3 Unsupported and binary content
+
+Unsupported media is retained only as an inert descriptor when safe. It is not
+decoded, previewed, indexed, executed, or passed to a model.
+
+Arbitrary binary and large-artifact transfer do not ship in v1. A later feature
+must select an established, independently reviewed container or secure-session
+facility. Axon will not design an <code>aes-*-chunks-v1</code> format or any
+other streaming AEAD construction.
+
+Filenames are display labels, not paths. They are length-bounded, normalized
+for display, and never used directly for filesystem placement.
+
+## 12. Local authority
+
+### 12.1 Orthogonal capability vector
+
+Enforcement uses independent components rather than cumulative
+NONE/READ/WRITE/EXECUTE levels:
+
+| Component | Scope |
+|---|---|
+| respond | exact task/message, recipient, response count, bytes, deadline |
+| read_supplied_inputs | exact signed input Message-Part manifest |
+| read_snapshot | later: pinned root/snapshot and bounded path set |
+| processor_use | exact configured processor, approved input manifest, cost/byte budget |
+| stage_write | later: private overlay paths and byte/file budget |
+| run_profile | later: named immutable verifier/command profiles and resources |
+| apply | later: exact operation/path set with base digests |
+| egress | later: exact destination/service/protocol and request/byte budget |
+| secret_use | later: broker reference, purpose, audience; never secret bytes |
+| artifact_export | exact recipient, task, media types, count, bytes |
+| delegate | later: exact target, depth, fan-out, and cost budget |
+| remote_cancel | whether the authenticated origin may stop this exact attempt |
+
+Components do not imply one another. Running a verifier does not imply host
+write, network, secret, apply, or arbitrary command authority. Staging a patch
+does not imply permission to apply it.
+
+Friendly UI presets are templates only:
+
+- Review supplied change;
+- Verify with named profile;
+- Propose change in private overlay;
+- Apply exact change, later.
+
+The risk card always expands the effective vector.
+
+### 12.2 Roles
+
+Axon keeps four roles distinct:
+
+- request origin: authenticated peer plus exact A2A task/message and contract
+  digest;
+- authority issuer: local human, local policy engine, or trusted organization
+  policy issuer;
+- executor subject: local daemon/worker process and sandbox identity;
+- execution capability: one-use local descriptor bound to the executor and work
+  order.
+
+A reusable policy ceiling is not a bearer capability and is never possessed by
+the remote peer.
+
+### 12.3 One-shot work order
+
+A work order binds at least:
+
+~~~text
+version and work-order UUID
+local authority issuer and assurance
+audience: exact local daemon and executor
+request origin and paired certificate thumbprint
+A2A task, context, and message identifiers
+accepted contract revision and canonical digest
+explicit capability vector
+exact input/context manifest
+processor, runner, sandbox, and profile digests
+per-operation and aggregate budgets
+required evidence slots
+policy version and decision identifier
+not-before, deadline, and one-use nonce
+remote-cancel caveat, if any
+local signature or MAC
+~~~
+
+The executor receives the capability through a short-lived local descriptor
+bound to its OS process/cgroup and exact work-order digest. It is
+<code>CLOEXEC</code> except for the intended child, cannot be serialized into
+model context, and is consumed once.
+
+Work-order state is:
+
+~~~text
+pending -> claimed -> running -> succeeded | failed | ambiguous | cancelled
+~~~
+
+Claim, budget reservation, and nonce consumption are atomic. Revocation and
+operation-start linearization points are documented and tested.
+
+### 12.4 Standing policy
+
+V1 supports deny and allow once. Phase 2 may add deterministic rules such as:
+
+> Allow code_review.v1 from this exact peer, using only supplied inputs,
+> local processor X, no generic network, no secrets, under these byte, time,
+> and cost limits.
+
+Standing rules are local policy ceilings evaluated by a reconciler outside the
+receive path. They never turn message parsing into execution. A changed peer
+key, Agent Card, contract version, processor, sandbox, or extension version
+suspends an otherwise matching rule.
+
+## 13. Worker, filesystem, and sandbox
+
+### 13.1 V1 clean worker
+
+The v1 worker:
+
+- starts in a new process and empty task-specific directory inside the
+  normative Linux isolation backend;
+- inherits no ambient file descriptors, environment credentials, shell
+  profile, agent session, conversation history, or workspace;
+- receives only the exact approved A2A Parts and local non-secret processor
+  configuration;
+- has no host filesystem mount beyond runtime dependencies and private scratch;
+- has no generic network socket;
+- reaches an approved external model only through the processor broker;
+- cannot invoke arbitrary commands or tools;
+- writes only to a private output directory with byte/file limits;
+- returns output through a schema- and recipient-checking gate;
+- is destroyed at the terminal attempt state.
+
+The Phase 1 Linux backend requires:
+
+- separate user, mount, PID, network, IPC, and UTS namespaces;
+- <code>no_new_privs</code> and a reviewed default-deny seccomp profile;
+- cgroups v2 CPU, memory, process, and wall-time enforcement;
+- a minimal digest-pinned read-only runtime plus private tmpfs scratch/output;
+- no host home, workspace, device, Docker socket, SSH agent, D-Bus, keyring,
+  cloud metadata, or host Unix socket;
+- a private <code>/proc</code> that exposes only sandbox processes;
+- an explicit inherited-file-descriptor allowlist;
+- no network interface or DNS; an approved remote processor is reachable only
+  through one pre-opened broker channel with typed requests;
+- Landlock as defense in depth where the detected kernel ABI supports the
+  required rules.
+
+The sandbox launcher and policy are trusted, version-pinned components. Phase 0
+must select and publish the concrete reviewed namespace launcher and seccomp
+profile; Phase 1 cannot substitute an ordinary subprocess, working-directory
+change, or broadly privileged container.
+
+If the operating system cannot provide the selected isolation profile,
+execution fails closed. <code>axon doctor</code> reports every relevant kernel,
+keystore, socket, namespace, and sandbox capability.
+
+The personal profile’s same-user limitations remain visible: a malicious
+same-UID process is inside that profile’s TCB and may be able to observe or
+interfere with its sandbox. The isolated profile uses a dedicated service
+account and denies ptrace/process access from ordinary agent users.
+
+#### Processor calls are effects
+
+Sending plaintext to a remote processor discloses data and may incur cost, so
+each call has a durable sub-attempt:
+
+~~~text
+prepared -> dispatching -> completed | failed | ambiguous | cancelled
+~~~
+
+Before dispatch, the broker stores the provider, exact HTTPS origin and
+configuration digest, request-content digest, task/work-order binding, generated
+idempotency key, estimated cost bound, deadline, and response limit. Redirects
+and ambient HTTP proxies are disabled. TLS hostname validation, configured
+origin allowlists, address-class checks, and connection-time DNS validation
+prevent a task or rebinding response from selecting a different destination.
+Credentials remain in the broker.
+
+If the provider documents an idempotency facility with the required semantics,
+an exact retry may reuse its key. Otherwise, loss of a response after possible
+transmission marks the processor sub-attempt <code>ambiguous</code> and Axon
+does not retry automatically. The operator may authorize a new attempt after
+seeing the possible duplicate disclosure and cost.
+
+Cost limits are labeled estimates unless the provider exposes a hard,
+independently enforced reservation. A local processor still uses the same
+durable state because crashes can duplicate work even without data egress.
+
+### 13.2 Later read-only snapshots
+
+Host read access is not part of v1. When introduced, high-assurance reads use an
+immutable VCS or content-addressed snapshot, not a mutable path tree.
+
+For path-backed compatibility, the trusted gateway:
+
+- pins the root by descriptor and stable identity;
+- accepts structured relative path components, never shell strings;
+- rejects absolute paths, empty components, dot, dot-dot, NUL, and platform
+  aliases;
+- resolves with descriptor-relative facilities such as Linux
+  <code>openat2</code> using beneath/no-symlink/no-magic-link constraints;
+- refuses symlinks, reparse points, device files, sockets, and unexpected mount
+  crossings;
+- addresses hardlink disclosure rather than treating symlink checks as enough;
+- enforces path, file, byte, and total budgets;
+- records exact observed content digests when an immutable snapshot is
   unavailable.
-- Direct `c2c relay dm send` and the transparent connector path can pass raw
-  `content`. Threads must never traverse those commands or
-  `C2c_relay_connector`.
-- Static `Relay_e2e` keys do not provide forward secrecy or
-  post-compromise recovery.
-- A failed decrypt can currently leave raw wire content available to an
-  output path; Threads quarantines failures and never presents ciphertext as
-  peer prose.
-- Relay retries do not always carry a publisher-generated stable message ID.
-- `C2c_broker.drain_inbox` conflates drain with delivery and removes the live
-  queue.
-- Local room fan-out skips offline members and room copies do not always have
-  stable IDs.
-- The draft attachment design uses a plaintext SHA-256 as both identity and
-  lookup handle, leaking equality and inviting hash-as-authorization bugs.
-- The existing relay outbox can lose an append because the truncating rewrite
-  happens after its lock is released. This is recorded in
-  `.collab/findings/2026-07-15T23-12-51Z-root-relay-outbox-rewrite-race.md`.
-- The legacy `remote-outbox.jsonl` and dead-letter files contain plaintext and
-  can be created mode `0644`. Threads uses neither file and never stages
-  plaintext in a legacy retry path.
-
-Legacy DMs and rooms remain supported during rollout. Threads never dual-write
-to a legacy inbox because that would create both confidentiality drift and
-duplicate delivery.
-
-## 3. Scope and non-goals
-
-### 3.1 In scope
-
-- Direct and group agent conversations.
-- Private local and cross-host delivery.
-- Reliable offline delivery, replay rejection, ordering, and correlation.
-- The four permission presets: `NONE`, `READ`, `WRITE`, `EXECUTE`.
-- Text, Markdown, JSON, images, SVG, and graph representations.
-- Enterprise tenants, users, groups, devices, agent profiles, and audit.
-- Explicit retention, legal hold, and visible compliance participation.
-- Local development mode with conspicuous reduced-assurance labeling.
-
-### 3.2 Explicit non-goals and limits
-
-- Threads cannot stop an authorized recipient from copying plaintext.
-- Removing a member protects future epochs; it cannot revoke content already
-  seen or copied.
-- E2EE does not by itself hide timing, size, tenant, or routing metadata.
-- `READ` deliberately permits disclosure of allowed files to the peer and to
-  any model provider used by the worker.
-- `WRITE` can plant persistent malicious source, instructions, or build
-  configuration inside the permitted root. Containment is not semantic
-  correctness.
-- `EXECUTE` protects the host boundary; it cannot guarantee that workspace
-  outputs are desirable.
-- Root/kernel/hypervisor compromise and a malicious enterprise identity
-  issuer are outside the cryptographic endpoint threat model.
-- Secure deletion from SSDs, backups, model-provider logs, and host-client
-  transcripts cannot be guaranteed by this protocol.
-- Anonymous global agent search and private-message embedding search are not
-  included.
-
-## 4. Threat model and trusted computing base
-
-### 4.1 Treat as adversarial
-
-- A malicious, compromised, or prompt-injected peer agent.
-- Prompt injection in text, images, SVG, graphs, filenames, tool output, and
-  attachment metadata.
-- A Threads home/transport that observes, delays, drops, duplicates, reorders, replays, or
-  forks traffic.
-- A malicious member of a group thread.
-- Alias reuse, stale sessions, restored backups, key-rotation races, and
-  invitation replay.
-- Malicious workspace files, symlinks, hardlinks, mounts, devices, hooks,
-  plugins, build scripts, and executables.
-- A compromised attachment decoder, renderer, compiler, or command.
-- Resource-exhaustion attempts against CPU, memory, PIDs, storage, output,
-  model spend, queues, and logs.
-- Operator error and downgrade negotiation.
-
-### 4.2 Trusted computing base
-
-- The local kernel or isolation hypervisor.
-- `threadsd`, its identity/crypto provider, and encrypted state store.
-- The host-local consent/admin UI and its signing key.
-- The sandbox backend, trusted file applier, and audit writer.
-- The enterprise identity issuer and group directory for claims they issue.
-
-A process running under the same Unix user is inside the TCB unless `threadsd`,
-its keys, and its admin socket run under a separate service identity and
-authorization requires OS-mediated user presence. Mode `0600` protects against
-other users, not against every process under the same user.
-
-### 4.3 Security invariants
-
-The implementation must encode and test these invariants:
-
-1. Message arrival may only persist encrypted frame/protocol state (including
-   replay tombstones, cursors, and delivery receipts) and passively present
-   peer data. The transport loop may emit only fixed-schema ACK/flow-control
-   to the already configured authenticated home; peer fields cannot select a
-   destination or arbitrary body. Arrival never starts a model turn,
-   sends/replies at the application layer, or creates, changes, renews, or
-   consumes a grant, work order, approval verdict, workspace file, process, or
-   general outbound network effect.
-2. Missing or ambiguous policy resolves to `NONE`/deny.
-3. No plaintext application payload is accepted on a Threads endpoint.
-4. A remote identity is an authenticated tenant/agent/device/session key, not
-   an alias string.
-5. A closed or revoked thread ID is terminal and can never be reopened.
-6. A consumed invitation, KeyPackage, work-order nonce, event generation, or
-   idempotency key cannot authorize a second distinct operation.
-7. All filesystem decisions are made from a pinned root descriptor, not a
-   string-prefix or validate-then-open check.
-8. `EXECUTE` without a verified sandbox backend fails closed.
-9. State-changing execution after an ambiguous crash is never retried
-   automatically.
-10. The Threads home may order opaque bytes but cannot read content or mint group
-    membership.
-11. New members receive no historical plaintext by default.
-12. Compliance or recovery access is visible as an explicit participant or
-    policy accepted by all required participants; there is no hidden escrow.
-
-## 5. System architecture
-
-```text
-                       Enterprise control plane (optional)
-                  OIDC / SCIM / policy / certificate issuer
-                                  |
-                           signed short leases
-                                  |
-  agent client -- local socket --> threadsd <=== TLS 1.3 ===> Threads home
-      |                              |                          |
-      |                              |                          +-- opaque event queue
-      |                              |                          +-- encrypted blob CAS
-      |                              |                          +-- directory metadata
-      |                              |
-      |                        encrypted SQLite state
-      |                              |
-      |                     host-local authority plane
-      |                      grant + work order only
-      |                              |
-      +-- transcript adapter     dedicated worker
-                                      |
-                              typed tool gateway
-                                      |
-                         path broker / sandbox runner
-                                      |
-                            selected workspace root
-```
-
-### 5.1 `threadsd`
-
-`threadsd` is a small, long-lived daemon and the only local component that
-holds thread keys, MLS state, delivery cursors, grants, and work orders. It
-has distinct client and admin sockets; the client socket has no grant or
-work-order-authorize methods. Both use bounded framed requests, a protocol
-version handshake, OS peer credentials, and a supervisor-issued client
-binding that cannot be supplied through inherited environment variables.
-Legacy `C2C_MCP_SESSION_ID` and raw PID claims are metadata, never
-authentication.
-
-There are two deployment profiles:
-
-- Local development runs under the user with state in
-  `$HOME/.c2c/threads`, mode-`0700` directories, and mode-`0600` sockets. All
-  processes under that user are visibly treated as inside the TCB. The UI and
-  `doctor` label this reduced assurance; it is not the enterprise profile.
-- Enterprise runs `threadsd` under a dedicated service identity. Its client
-  and admin sockets have separate OS ACLs. The supervisor places each client
-  in a distinct OS sandbox/cgroup and passes a sealed, short-lived,
-  audience-bound descriptor or workload credential directly to that process.
-  The daemon verifies the OS process/cgroup identity and credential
-  possession together. The admin path additionally requires OS-mediated user
-  presence or a signed enterprise policy decision. The service is
-  non-dumpable, denies cross-process tracing, keeps keys outside client
-  processes, and fails closed where the host cannot provide these controls.
-
-The daemon is required because independent MCP stdio servers cannot safely
-coordinate one MLS ratchet, exactly-once outbox state, capability grants, and
-attachment references through unrelated JSON files. The legacy no-daemon c2c
-path remains available for legacy messages.
-
-### 5.2 Threads home / delivery service
-
-Every thread has one immutable logical `home_id`. The home:
-
-- authenticates the uploading device and tenant;
-- admits events from current participants;
-- assigns a monotonically increasing `home_seq`;
-- persists opaque ciphertext and per-recipient delivery rows;
-- serves cursor-based sync and signed receipts;
-- stores encrypted blobs and public directory metadata;
-- cannot decrypt MLS application content.
-
-The Threads home is a new service, listener, authentication stack, and
-tenant-partitioned store. It is not the current `Relay` service, the public
-legacy relay endpoint, or a route through `C2c_relay_connector`. Legacy relay
-aliases, Ed25519 TOFU, connector outboxes, protocol-version constants, and
-global storage are ineligible for Threads. Shared low-level HTTP/TLS code must
-sit below separate `Threads_home_auth`, `Threads_home_routes`, and
-`Threads_home_store` boundaries and pass cross-tenant isolation tests.
-
-A local-only thread can use a home embedded in `threadsd`. Enterprise and
-cross-host threads use the tenant delivery service. Hosted HA uses one
-quorum-backed database leader/term; clients queue locally instead of electing
-a second home. A home receipt includes its term and a hash-chain predecessor.
-Conflicting signed histories suspend the thread and raise a fork alert.
-
-### 5.3 Agent adapter
-
-An adapter maps safe thread messages to Claude, Codex, OpenCode, Pi, Grok,
-agy, or another host. It does not receive MLS private keys or local grant
-records. It preserves thread/event/request IDs and labels content as
-third-party data.
-
-Adapter delivery is persist-first:
-
-1. `threadsd` durably ingests and decrypts an event.
-2. It records a presentation attempt keyed by event ID.
-3. The adapter passively presents a notification, or injects data only at a
-   safe boundary in an already-active, locally authorized client turn.
-4. It records `client_consumed` only after the host acknowledges the
-   presentation boundary available on that client.
-
-Where a host lacks idempotent injection, the adapter documents an at-least-once
-ambiguous crash window instead of claiming exactly once.
-
-Remote arrival never calls a host API that creates, resumes, or submits a
-model turn. Passive presentation may update an inbox/UI/file watched for
-display, but wake and turn submission remain separately local. A restricted
-worker is constructed only after that local trigger and receives an
-event-bound reply capability, not the endpoint client's general tool registry.
-
-### 5.4 Dedicated worker
-
-An existing full-power coding session is never repurposed as a restricted
-Threads worker. `threadsd` launches a clean-context worker with only:
-
-- the selected proposal/task and thread context;
-- the permitted multimodal message parts;
-- tool descriptors permitted by the work order;
-- a private tool socket or inherited one-use capability descriptor.
-
-At `NONE`, there is no workspace mount and no tool socket. For other levels,
-the model can request typed operations, but enforcement occurs in the trusted
-gateway and sandbox beneath it.
-
-## 6. Identity, tenancy, and key hierarchy
-
-### 6.1 Identifiers
-
-All security identifiers are CSPRNG-generated values with typed prefixes.
-They are case-sensitive and never user-chosen. The grammar is exactly the
-listed prefix followed by unpadded base64url: 16 random bytes encode as 22
-characters and 32 random bytes as 43 characters.
-
-| Prefix | Bytes | Uniqueness scope | Meaning |
-|---|---:|---|---|
-| `tn_` | 16 | identity service | tenant/security boundary |
-| `pr_` | 16 | tenant | human or service principal |
-| `ag_` | 16 | tenant | stable agent profile |
-| `dv_` | 16 | tenant | enrolled device/workload |
-| `si_` | 16 | tenant | ephemeral `agent_instance_id` |
-| `mi_` | 16 | route | one device's membership incarnation |
-| `th_` | 16 | tenant | `c2c_thread_id` (not a Codex app-server thread) |
-| `rt_` | 16 | tenant/home | opaque home routing thread ID |
-| `fr_` | 16 | route/uploader device | stable outer-frame retry ID |
-| `ev_` | 16 | c2c thread | immutable encrypted event |
-| `hc_` | 16 | route | home-visible governance control record |
-| `rq_` | 16 | c2c thread | conversational request |
-| `kp_` | 16 | tenant/home | one-use KeyPackage reference |
-| `ap_` | 16 | c2c thread | inert action proposal |
-| `iv_` | 32 | tenant/home | invitation record (bearer secret is separate) |
-| `gr_` | 32 | host-local authority store | local grant |
-| `wo_` | 32 | host-local authority store | local work order |
-| `bl_` | 32 | tenant/home | random blob handle |
-| `up_` | 32 | tenant/home | expiring upload handle |
-
-`alias` and `display_name` remain useful UX fields. They never appear alone in
-an authorization decision or unique constraint.
-
-OCaml represents every row above with a private, non-interchangeable abstract
-ID type; handlers cannot pass an alias, Codex thread ID, or c2c session ID
-where an identity ID is required. Protocol fields and mixed adapter records
-use the explicit names `c2c_thread_id`, `agent_instance_id`, and
-`codex_thread_id`. The shorter terms “thread” and “session” in prose are not
-wire-field names.
-
-### 6.2 Enterprise chain
-
-The enterprise chain is:
-
-```text
-tenant trust bundle
-  -> human/service principal (OIDC issuer + subject)
-  -> registered agent profile and owner
-  -> enrolled device/workload certificate
-  -> short-lived agent-instance / MLS leaf certificate
-```
-
-- OIDC authenticates the operator during enrollment. Long-lived OIDC bearer
-  tokens are not put in messages.
-- SCIM synchronizes users and groups into the directory. Group claims are
-  versioned snapshots, not mutable strings copied into capability tokens.
-- A SPIFFE-compatible X.509 SVID is the preferred workload certificate. The
-  URI SAN identifies one tenant/device/agent instance.
-- MLS uses an X.509 credential whose end-entity public key equals the MLS leaf
-  signing key. The MLS Authentication Service validates the chain, tenant,
-  expected principal/agent/device reference IDs, expiry, and revocation before
-  accepting a KeyPackage, Add, Update, or Commit.
-- Transport mTLS and MLS leaf signing use different keys and certificates.
-- Capability/work-order signing uses a separate host-local admin key.
-
-Certificates are short-lived. A certificate refresh updates the MLS leaf
-before expiry. User/group disablement stops new sessions immediately and
-triggers configured removals from active threads; removal commits rotate the
-MLS epoch.
-
-### 6.3 Local development profile
-
-Local development creates a synthetic tenant and local CA under the global
-Threads state root. Pairing requires explicit fingerprint confirmation. This
-profile is shown as `local-dev`, is not called enterprise-verified, and cannot
-federate unless an operator explicitly enrolls it into a tenant.
-
-Existing c2c Ed25519 identities may help import a display alias or bootstrap a
-local fingerprint exchange. They are not silently promoted into enterprise
-principal credentials.
-
-### 6.4 Key storage and recovery
-
-- Hardware-backed keys or the OS key store are preferred for device/admin
-  identity.
-- MLS secret state and sensitive database columns are encrypted with a local
-  state key obtained from the OS key store. A mode-`0600` file fallback is
-  development-only and reported as degraded by `c2c doctor`.
-- Plaintext message archives are off by default. Stored application events and
-  blobs remain ciphertext; decrypted presentation caches are bounded and
-  short-lived.
-- Backups contain encrypted state plus a monotonic signed checkpoint. Restoring
-  state behind the last witnessed epoch/counter requires a rejoin; it never
-  silently resumes an old ratchet.
-- Organization recovery, if required, is an explicit MLS recovery participant
-  or a visibly negotiated export participant. The Threads home never holds a hidden
-  decryption key.
-
-## 7. Thread lifecycle and membership
-
-### 7.1 State machine
-
-```text
-OFFERED --all required accepts--> ACTIVE
-   |--reject---------------------> REJECTED
-   `--TTL------------------------> EXPIRED
-
-ACTIVE --membership/credential change--> SUSPENDED --valid commit--> ACTIVE
-ACTIVE --close--------------------------> CLOSING --ack/deadline--> CLOSED
-ACTIVE/SUSPENDED/CLOSING --security revoke-------------------------> REVOKED
-```
-
-`REJECTED`, `EXPIRED`, `CLOSED`, and `REVOKED` are terminal. Reopening creates
-a new `c2c_thread_id`, MLS group ID, KeyPackages, and invitation. A minimal
-terminal-ID tombstone is retained permanently so the identifier can never be
-accepted again. Participant fingerprints and other retention-sensitive fields
-may age out, but a keyed hash of the ID, terminal state, final epoch/home
-sequence, and terminal timestamp remains.
-
-### 7.2 Create and accept
-
-1. The initiator resolves exact agent/device identities and fetches fresh,
-   signed MLS KeyPackages.
-2. It validates each credential and atomically consumes each KeyPackage
-   reference at the home.
-3. It creates a random MLS group, adds invitees, and produces a Welcome.
-4. The home stores a principal-bound, expiring `thread.offer` and Welcome.
-5. An invitee validates the enterprise identity chain, full offer transcript,
-   group policy hash, and expected participants before exposing an accept UI.
-6. `accept` or `reject` binds the exact offer ID and transcript hash.
-7. Application traffic is refused until all participants required by policy
-   have accepted and the thread becomes `ACTIVE`.
-
-An invite link, where supported, contains a 256-bit random secret in addition
-to an authenticated intended principal. The home stores only its keyed hash,
-consumes it transactionally once, and requires proof of the intended instance
-key. A short human code is only a comparison/PAKE input, never a low-entropy
-bearer credential.
-
-### 7.3 Membership changes
-
-- Thread governance is fixed in the accepted policy: creator-admin, named
-  admins, or a quorum. It is independent of local workspace grants.
-- A member add/remove starts with governance approvals signed by the required
-  admin device keys. Each approval binds the proposal hash, old and target
-  roster hashes, current epoch, expected successor epoch, policy hash, commit
-  hash, and one-use nonce. The home stages this record before the matching MLS
-  Commit. Endpoints validate the threshold and every binding before advancing
-  MLS state. An unauthorized, missing, stale, or conflicting Commit is
-  quarantined without state advancement.
-- Application sends pause in `SUSPENDED` until the staged roster control and
-  matching Commit are accepted and applied in `home_seq` order.
-- Device replacement is a new MLS leaf; session IDs and old keys are never
-  reused.
-- Removing a device revokes local grants bound to that device and rotates the
-  MLS epoch before further application traffic.
-- New members do not decrypt prior epochs. Optional history transfer is a
-  visible, policy-authorized encrypted snapshot event produced by a current
-  member, not a server backdoor.
-- Credential expiry/revocation follows MLS Authentication Service rules; a
-  valid successor credential must preserve the expected agent/device identity.
-
-The home maintains a transport roster without decrypting MLS content. Roster
-and close transitions use a separate authenticated `home_control` envelope:
-
-```json
-{
-  "control_version": 1,
-  "control_id": "hc_...",
-  "kind": "roster_transition",
-  "tenant_id": "tn_...",
-  "routing_thread_id": "rt_...",
-  "prior_roster_sha256": "sha256:...",
-  "target_roster_sha256": "sha256:...",
-  "prior_mls_epoch": 12,
-  "successor_mls_epoch": 13,
-  "mls_commit_sha256": "sha256:...",
-  "governance_policy_sha256": "sha256:...",
-  "nonce": "...",
-  "approvals": [
-    {"device_id": "dv_...", "key_id": "...", "signature": "..."}
-  ]
-}
-```
-
-Approvals sign the JCS object with `approvals` omitted. The Threads home
-validates enrolled device keys and the already accepted governance threshold,
-then atomically assigns adjacent `home_seq` values to the control and exact
-MLS Commit. The old roster can fetch both; the target routing roster becomes
-effective only after the Commit sequence. Endpoints independently compare the
-control, Commit, MLS state, and encrypted roster proposal before applying.
-`close` uses the same envelope and threshold with a terminal-state hash.
-Conflicting transitions suspend the route and do not advance its roster.
-
-### 7.4 Closure
-
-Because the home cannot see encrypted relation kinds, `CLOSING` admits a
-bounded number/byte budget of opaque MLS application frames until the accepted
-close deadline. Endpoints accept only delivery receipts, closure control, and
-final responses to already-open conversational requests; they quarantine new
-requests or proposals. This avoids leaking semantic classes merely to enforce
-closure.
-Closing:
-
-- admits opaque application frames only until the governance-signed
-  count/byte/deadline bound is exhausted, then rejects them; `CLOSED` rejects
-  all new frames;
-- destroys retained current-epoch secrets after the configured offline grace;
-- expires queued blobs/events according to retention policy;
-- writes and witnesses the terminal tombstone.
-
-Inbound close is messaging control, not local authority. It cannot revoke a
-grant, cancel a work order, kill a process, or discard an overlay. It bounds
-and then closes future transport admission as specified above and becomes an
-inert local authority-plane notice.
-Existing locally authorized work follows its work-order deadline unless a
-local operator/admin decision separately revokes it. A `security revoke`
-transition may kill local work only when its source is host-local policy or a
-locally trusted identity-revocation service, never a peer event.
-
-## 8. Message plane: events, requests, and responses
-
-### 8.1 Outer delivery frame
-
-The API uses strict JSON; MLS messages retain their RFC-defined binary wire
-format inside base64url. The home-visible frame contains routing and bounded
-integrity metadata, not plaintext sender names, MIME types, filenames, message
-relations, or content hashes:
-
-```json
-{
-  "protocol": "c2c.threads",
-  "version": 1,
-  "tenant_id": "tn_A4...",
-  "routing_thread_id": "rt_7m...",
-  "frame_id": "fr_J8...",
-  "frame_class": "mls_application",
-  "mls_epoch": 12,
-  "created_at_ms": 1784172345000,
-  "expires_at_ms": 1784258745000,
-  "ciphertext_sha256": "sha256:...",
-  "ciphertext_b64": "...",
-  "blob_refs": [
-    {"storage_digest": "sha256:...", "ciphertext_size": 48191}
-  ],
-  "blob_refs_sha256": "sha256:<JCS(blob_refs)>",
-  "critical_extensions": []
-}
-```
-
-`frame_id` is generated once by the uploader and is stable for the exact
-ciphertext retry. The home deduplicates only metadata it can authenticate:
-`(tenant_id, routing_thread_id, uploader_device_id, frame_id)`. The same key
-and ciphertext hash returns the original `home_seq` and signed receipt; the
-same key with a different hash is `frame_id_conflict`. The home never attempts
-to deduplicate on encrypted `event_id`, `sender_seq`, request ID, or
-idempotency key. Those constraints are enforced by endpoints after decrypt.
-
-The MLS `authenticated_data` field is the RFC 8785 canonical encoding of:
-
-```json
-{
-  "aad_version": 1,
-  "protocol": "c2c.threads",
-  "version": 1,
-  "tenant_id": "tn_A4...",
-  "routing_thread_id": "rt_7m...",
-  "frame_id": "fr_J8...",
-  "frame_class": "mls_application",
-  "mls_epoch": 12,
-  "created_at_ms": 1784172345000,
-  "expires_at_ms": 1784258745000,
-  "blob_refs_sha256": "sha256:<JCS(blob_refs)>",
-  "critical_extensions": []
-}
-```
-
-After MLS authentication, every endpoint byte-compares these values with the
-received outer frame and recomputes the complete ordered blob-reference
-digest. A mismatch is quarantined. `ciphertext_sha256` and `ciphertext_b64`
-are necessarily outside this object; MLS authenticates the ciphertext and the
-signed home receipt binds its exact hash.
-
-The authenticated upload connection identifies the sender device to the home.
-MLS authenticates the group sender to recipients. The outer frame does not add
-a second long-term author signature that would expose the sender and duplicate
-MLS. The home returns a signed commit receipt binding:
-
-```text
-tenant_id, routing_thread_id, frame_id, MLS epoch,
-ciphertext hash, home term, home_seq, accepted_at_ms,
-previous_commit_hash, commit_hash
-```
-
-Clients exchange the latest home receipt hash inside encrypted application
-messages. Divergent receipts reveal a fork to participants; an enterprise
-witness makes truncation/fork evidence durable outside the home.
-
-Unknown major versions, duplicate JSON keys, malformed UTF-8, excessive
-nesting, unknown critical extensions, and fields outside declared bounds are
-rejected. Unknown non-critical extensions are preserved end to end.
-
-### 8.2 Encrypted application payload
-
-The MLS `PrivateMessage` plaintext is canonical JSON generated by the local
-gateway, with integer timestamps and no duplicate keys:
-
-```json
-{
-  "content_version": 1,
-  "c2c_thread_id": "th_R2...",
-  "event_id": "ev_V9...",
-  "sender": {
-    "principal_id": "pr_...",
-    "agent_id": "ag_...",
-    "device_id": "dv_...",
-    "agent_instance_id": "si_..."
-  },
-  "sender_seq": 87,
-  "created_at_ms": 1784172345000,
-  "relation": {
-    "kind": "message",
-    "in_reply_to": null,
-    "request_id": null,
-    "response_index": null,
-    "final": null
-  },
-  "parts": [
-    {
-      "part_id": "p1",
-      "media_type": "text/plain; charset=utf-8",
-      "disposition": "inline",
-      "inline_text": "Please review the attached graph."
-    }
-  ],
-  "extensions": {},
-  "critical_extensions": []
-}
-```
-
-The gateway verifies that the encrypted sender IDs match the authenticated MLS
-leaf credential. It rejects a mismatch even when decryption succeeds.
-
-Initial limits:
-
-- 256 KiB maximum encrypted application frame;
-- 64 KiB maximum inline text/JSON part;
-- 32 parts per event;
-- JSON nesting depth 16;
-- all IDs at most 128 ASCII characters and validated by type;
-- no floating-point security fields.
-
-### 8.3 Relation kinds
-
-Supported v1 relation kinds are:
-
-- `message`: ordinary conversation.
-- `reply`: conversational reply with `in_reply_to`.
-- `request`: asks named responders for one or more responses.
-- `response`: correlated response; still an ordinary message, not an RPC
-  return value.
-- `action_proposal`: inert peer proposal for a possible local work order.
-- `action_result`: sanitized result emitted by a locally completed work order.
-- `receipt`: encrypted endpoint receipt.
-- `control`: thread-level application control coordinated with MLS changes.
-
-No relation kind is authority to call a tool or resolve a host approval.
-
-### 8.4 Request/response correlation
-
-A request adds:
-
-```json
-{
-  "request_id": "rq_...",
-  "responders": ["ag_..."],
-  "response_mode": "single",
-  "deadline_ms": 1784175945000
-}
-```
-
-A response binds the request and request event:
-
-```json
-{
-  "request_id": "rq_...",
-  "in_reply_to": "ev_request...",
-  "response_index": 0,
-  "final": true,
-  "status": "ok"
-}
-```
+
+Permission checks and I/O use the same resolved object. A check-then-open path
+sequence is forbidden.
+
+### 13.3 Later stage and apply
+
+Worker writes go only to a private overlay. Host apply is a separate trusted
+operation with a separate capability and approval. It requires:
+
+- exact base object/digest and destination;
+- create, replace, or delete semantics per path;
+- descriptor-based resolution;
+- a real compare-and-swap or versioned backend, not a precheck followed by
+  blind rename;
+- atomicity and crash behavior documented per backend;
+- no symlink or hardlink escape;
+- an evidence statement over the applied result.
+
+The worker never commits, pushes, deploys, or publishes directly.
+
+### 13.4 Later named verifier profiles
+
+Execution, when added, is limited to immutable named profiles. A profile pins:
+
+- executable and dependency digests;
+- argv template and typed parameters;
+- working snapshot;
+- environment allowlist;
+- filesystem, network, secret, CPU, memory, process, output, and time limits;
+- sandbox backend and version;
+- result parser and expected artifact schema.
+
+There is no shell expansion and no peer-selected executable, argv prefix, PATH,
+working directory, environment, URL, or secret.
+
+On Linux the isolated backend should combine an unprivileged service identity,
+no-new-privileges, namespaces or a microVM boundary, seccomp, cgroups, a
+minimal read-only runtime, private temporary storage, and Landlock where its
+feature set satisfies the profile. Capability probing is normative; a missing
+control is a denial unless the profile explicitly names an independently
+reviewed equivalent backend.
+
+## 14. Evidence and requester outcome
+
+### 14.1 Canonical result manifest
+
+Before Task completion, the producer creates
+<code>result-manifest-v1</code>. It contains:
+
+~~~text
+schema version
+A2A Task and Context identifiers
+accepted contract UUID, revision, and canonical digest
+attempt and work-order receipt digests
+sorted output entries:
+  logical role, A2A Artifact ID, Part index, media type, size, SHA-256
+sorted evidence entries:
+  logical role, payload type, size, SHA-256, signer/key reference
+required evidence-slot mapping:
+  slot ID, evidence entry, result, disclosure
+declared omissions and redactions
+~~~
+
+Sorting is bytewise by logical role, object identifier, Part index, and digest
+as specified by the schema. The JSON is validated, RFC 8785-canonicalized, and
+DSSE-signed by the producer’s task-result key. Evidence statements reference
+the output subjects and attempt; they do not reference the enclosing manifest,
+which avoids a digest cycle.
+
+The output Artifacts, evidence envelopes, slot records, and result manifest are
+staged first. The Task moves to <code>TASK_STATE_COMPLETED</code> only when all
+referenced bytes and the manifest commit durably. Validation, output-gate, or
+evidence failure produces <code>TASK_STATE_FAILED</code>, never a partial
+completed result.
+
+The requester outcome binds the canonical result-manifest digest. A “bundle
+digest” anywhere in Axon means this precisely defined digest, not an archive’s
+incidental byte layout.
+
+### 14.2 Evidence model
+
+Evidence uses a pinned version of the in-toto Attestation Framework in DSSE
+envelopes. Axon defines only the minimal predicate semantics required for its
+task and authorization facts.
+
+The v1 profile pins in-toto Statement v1 and DSSE v1. In-toto attestations use
+the payload and storage media types required by the in-toto envelope
+specification. Contracts, decisions, result manifests, and outcomes use
+project-controlled versioned payload media types and are DSSE statements, not
+mislabeled in-toto attestations. Phase 0 assigns the media types through the
+normal standards/registration process.
+
+The mandatory task/evidence signature algorithm is Ed25519 under RFC 8032; keys
+are represented as public JWKs and identified by RFC 7638 thumbprints. A
+managed algorithm profile may add a reviewed HSM-compatible algorithm only
+through authenticated negotiation and conformance vectors. Algorithm,
+payload-type, key purpose, and identity binding are all verified; an unknown or
+cross-purpose key fails closed.
+
+A result bundle may contain independently signed statements for:
+
+1. authorization: request digest, local issuer, effective capability vector,
+   policy decision, and executor audience;
+2. execution: exact materials, processor/runner/sandbox identity, external
+   parameters, outputs, resource use, and terminal state;
+3. verification: verifier identity and trust class, exact subjects, check
+   profile, and passed/failed/error/not-run result;
+4. requester outcome: exact result-manifest digest and
+   accepted/rejected/disputed state.
+
+V1 validates only objective integrity and provenance facts:
+
+- contract proposal and decision signatures and identity bindings are valid;
+- every approved input manifest digest matches its Message Part;
+- the producer/executor self-attestation covers the accepted inputs and exact
+  outputs;
+- the result manifest and output schemas are valid;
+- optional SARIF is structurally valid and its attested digest matches.
+
+These checks do not establish that the code review is correct. The UI says
+“Independent verifier: none” unless a separately trusted named verifier
+actually evaluated the exact outputs. The v1 command is
+<code>axon evidence validate</code>; “verified review” is reserved for the
+later semantic-verifier path.
+
+SLSA Provenance is emitted only when the operation actually matches its build
+provenance model. Merely serializing SLSA JSON does not grant a SLSA level.
+
+SARIF is an output report, not an authority record. It is parsed as hostile
+input with strict limits. Its original bytes are preserved and their SHA-256
+digest is covered by an attestation; SARIF is not assumed to sign itself. Axon
+never fetches a SARIF <code>$schema</code>, artifact URI, help URI, or external
+property reference.
+
+DSSE supplies integrity framing, not identity trust, revocation history, or
+trusted time. A portable personal-profile verification pack therefore includes
+the exported, locally signed pairing record, security-projection Agent Card,
+verification keys and purposes, validity bounds, and rotation/re-pair history.
+An independent validator can prove continuity with that exported pairing root;
+it cannot infer a legal or real-world identity that was never certified.
+
+Managed verification uses its configured X.509/SPIFFE trust chain and historical
+trust material. A claimed signing time is informational unless accompanied by
+a validated RFC 3161 timestamp or configured transparency checkpoint. Public
+timestamp/transparency submission remains explicit because it can leak
+metadata.
+
+### 14.3 Required slots and redaction
+
+The contract enumerates required evidence slots. Every slot has two orthogonal
+fields:
+
+~~~text
+result = passed | failed | error | not_run | unavailable
+disclosure = full | summary | redacted
+~~~
+
+Omission cannot look like success. A redacted view does not satisfy a contract
+that requires visible passing evidence. A partner-facing summary is separately
+signed and preserves the underlying result state rather than deleting or
+relabeling a failure.
+
+Portable artifact subjects use standard digest maps, initially SHA-256.
+Raw digests of private low-entropy content MUST NOT enter a public audit,
+Sigstore/Rekor service, or other transparency log by default: they enable
+dictionary guessing and cross-context correlation. Private audit uses keyed
+commitments. Publishing a portable artifact digest requires an explicit export
+decision that discloses this risk.
+
+### 14.4 Trust classes
+
+The verifier presents each claim as:
+
+- self-attested: signer and producer are the same trust domain;
+- independently verified: a separately trusted verifier checked the exact
+  subjects;
+- hardware-attested: a configured hardware-backed verifier attested the
+  declared execution facts.
+
+Trust class is derived by the recipient’s policy from validated identities and
+chains. It is not copied from a self-asserted field.
+
+### 14.5 Outcome
+
+Producer completion and requester acceptance are separate. After validating
+the result manifest and any configured semantic verification, the requester
+signs an outcome referencing:
+
+- task and accepted contract revision;
+- exact canonical result-manifest digest;
+- accepted, rejected, or disputed state;
+- optional bounded reason code and human note;
+- requester identity and signing time.
+
+An outcome cannot retroactively change what ran. A disputed outcome preserves
+all prior evidence.
+
+A2A does not permit another Message to be attached to a terminal Task. The
+requester therefore sends the signed outcome in a new task-less SendMessage:
+
+- it uses the same A2A Context identifier;
+- <code>referenceTaskIds</code> contains the completed Task identifier;
+- it carries the signed Axon outcome Part;
+- it does not set <code>taskId</code>;
+- the producer durably records it and returns a fixed, direct Message receipt
+  generated without a model or tool.
+
+The outcome Message does not create another Task. Its stable Message identifier
+and signed outcome digest use the normal deduplication rules.
+
+## 15. State, privacy, audit, and recovery
+
+### 15.1 Local state
+
+The endpoint stores:
+
+- paired identities and key history;
+- exact encrypted A2A objects and deduplication digests;
+- contract revisions and signed decisions;
+- local policy ceilings and one-shot work orders;
+- attempts and state transitions;
+- artifacts, attestations, verifier summaries, and outcomes;
+- outbox/inbox retry state;
+- body-free audit records with keyed local commitments.
+
+Business records are first-class. Free-form conversation history is optional
+and has a short explicit retention policy rather than becoming an unlimited
+archive.
+
+Sensitive columns and blobs are encrypted before database persistence with an
+audited envelope-encryption library and a key protected by the OS keystore or
+configured HSM. Axon adopts the library’s reviewed ciphertext format; it does
+not create one. WAL files, temporary files, crash dumps, and backups must not
+contain plaintext task bodies.
+
+Full-disk encryption is recommended but is not presented as a substitute for
+application-layer protection against accidental database or backup disclosure.
+
+### 15.2 Metadata and processor disclosure
+
+Direct peers and network observers can learn endpoint addresses, timing,
+approximate sizes, and connection frequency. TLS does not hide this metadata.
+
+Each processor is a separate plaintext trust boundary. Configuration records
+whether it is local or remote and, when known, its operator, region, retention,
+training, and subprocessors. The risk card shows this before disclosure.
+“End-to-end encrypted transport” never implies that an approved remote model
+cannot read its input.
+
+### 15.3 Audit
+
+The audit records security-relevant facts before effects:
+
+- authenticated peer and local issuer references;
+- object and contract digests;
+- policy and work-order identifiers;
+- capability components and budgets;
+- state transitions and ambiguous outcomes;
+- processor, runner, sandbox, and verifier identities;
+- export, deletion, recovery, key change, and policy change.
+
+It excludes prompts, message bodies, source, filenames, paths, credentials, and
+raw secrets. Private object correlation uses keyed local commitments where a
+plain low-entropy hash would leak content.
+
+The daemon writes records append-only and hash-links them, making accidental or
+out-of-domain modification locally tamper-evident. A local signature in the
+same personal-user security domain cannot prevent a same-UID attacker from
+rewriting the log or truncating its tail. Stronger integrity requires periodic
+checkpoints in an HSM, TPM monotonic facility, or independent configured
+witness. Exported audit claims use DSSE/in-toto rather than a second custom
+signature format.
+
+Audit insertion and authorization/effect state change share a transaction or a
+write-ahead protocol that cannot perform an unrecorded effect.
+
+### 15.4 Telemetry
+
+Telemetry is disabled by default. When enabled it uses OpenTelemetry and a
+public low-cardinality <code>axon.*</code> attribute schema. It never exports
+task objectives, prompts, content, artifact bytes, filenames, host paths,
+policy details, peer-provided trace parents, credentials, or keys.
+
+Peer trace context is an untrusted span link, not an automatically trusted
+parent. Experimental GenAI semantic conventions stay behind a pinned
+compatibility option. Telemetry is operational sampling, never audit evidence.
+
+### 15.5 Export, deletion, and recovery
+
+Users can export their peer records, contracts, original input Parts, output
+Artifacts, evidence, outcomes, and public audit summaries in documented
+standard formats. A hosted deployment cannot withhold export.
+
+Deletion semantics distinguish payload deletion from required integrity
+metadata. The UI states what remains and why. Secure deletion claims are
+limited by filesystem, SSD, snapshot, backup, and replica behavior.
+
+Backups are encrypted and versioned. Restoring old state cannot silently resume
+automatic effects.
+
+Before a transaction that issues or consumes authority, the daemon reserves a
+new monotonic state generation in the OS keystore, TPM, HSM, or configured
+external checkpoint and commits that generation in the database transaction.
+A crash between the two may conservatively force recovery, but cannot make an
+older database appear current. Startup compares the external checkpoint with
+the database before accepting sessions or work.
+
+The supported backup format excludes the live external checkpoint. An official
+restore therefore enters recovery, invalidates pending/claimed work and
+automatic policy, and requires operator review and re-pairing when identity
+freshness cannot be established. If a platform keystore cannot protect an
+independent generation, Axon reports rollback detection as unavailable and
+does not support restoration of reusable authority on that profile.
+
+## 16. Public interfaces and adapters
+
+### 16.1 Network interface
+
+The canonical agent network interface is A2A. Axon publishes an Agent Card and
+implements only the operations required by the pinned profile. MCP may be a
+convenience adapter for a local agent, but it is not Axon’s network
+interoperability or authority model.
+
+A2A parsing and validation are independent of any particular official SDK.
+Axon tests with at least two SDKs and preserves unknown standard fields when
+safe.
+
+### 16.2 Local interfaces
+
+The daemon exposes separate local surfaces:
+
+- an OS-protected user/admin socket for pairing, policy, approval, recovery,
+  and audit;
+- a narrow adapter/worker socket for task input, progress, result submission,
+  and evidence references.
+
+The worker surface cannot pair peers, create standing policy, approve a
+contract, issue a work order, sign requester outcome, or export unrelated
+content.
+
+On Unix, peer credentials and file permissions bind the caller process and
+user. Isolated deployments use distinct service identities. Other platforms
+need an equivalent authenticated local IPC mechanism before support is
+advertised.
+
+In the personal profile, same-UID socket access is convenience authentication,
+not proof of user intent; same-UID processes are in the profile’s TCB. The
+isolated profile places authority/admin methods behind a separate service
+identity and an OS-mediated local user-presence/authorization mechanism. Worker
+descriptors remain process- and work-order-bound in both profiles.
+
+The local control API uses a versioned OpenAPI 3.1 description and RFC 9457
+Problem Details where A2A errors do not apply. Generated TypeScript and Python
+clients are published. Custom errors do not leak whether a hidden path, secret,
+policy rule, or internal peer exists.
+
+### 16.3 Adapter contract
+
+An adapter:
+
+- declares its processor and plaintext handling;
+- receives a task-bound input manifest, never the database or full session;
+- cannot access raw processor credentials;
+- emits bounded progress and result artifacts;
+- cannot select a new recipient or network destination;
+- cannot convert text into authority;
+- survives cancellation and deadline enforcement by the trusted gateway;
+- is tested for passive arrival and duplicate delivery.
+
+Two production-real adapters are Phase 1 gates. A demo echo adapter does not
+count.
+
+### 16.4 Operator commands
+
+The initial command groups are:
+
+~~~text
+axon init
+axon demo review
+axon serve
+axon endpoint check
+axon pair diagnose
+axon pair create|accept|list|remove
+axon peer show
+axon review
+axon task inbox|show|approve|deny|watch|cancel
+axon outcome accept|reject|dispute
+axon evidence validate|export
+axon processor add|list|test
+axon policy show
+axon doctor
+~~~
+
+Phase 2 may add narrowly scoped <code>policy allow|revoke</code> and verifier
+commands. Relay, directory, organization, and apply commands are not reserved
+until those designs pass their release gates.
+
+## 17. Open-source product and operations
+
+### 17.1 Open-source covenant
+
+The complete secure connection path is open source and self-hostable:
+
+- A2A profile and Axon extensions;
+- daemon and direct transport;
+- pairing, policy, work-order, worker, and evidence engines;
+- official adapters and generated clients;
+- schemas, golden vectors, threat model, and conformance suite;
+- migration, backup, export, and recovery tooling.
+
+The proposed project license is Apache-2.0, subject to a dedicated maintainer
+licensing decision before Phase 1. The repository must contain an OSI-approved
+license before any “open source” release claim.
+
+A hosted service may charge for operation, availability, managed runners,
+organization integrations, support, and compliance packaging. It does not
+provide a stronger protocol, exclusive cross-domain connectivity, restricted
+export, or essential security controls unavailable to self-hosters.
+
+### 17.2 Required project foundations
+
+Before the first public release the repository contains:
+
+- LICENSE;
+- GOVERNANCE.md and MAINTAINERS.md;
+- CONTRIBUTING.md and CODE_OF_CONDUCT.md;
+- SECURITY.md with private vulnerability reporting and response targets;
+- compatibility and deprecation policy;
+- public extension registry and ADR process;
+- signed releases, SBOMs, and dependency provenance;
+- reproducible-build documentation and published conformance results.
+
+Security-sensitive changes require review from maintainers who did not author
+the change. Cryptographic, identity, authorization, sandbox, and evidence
+changes include updated threat cases and vectors.
+
+### 17.3 Operations
+
+The default install has:
+
+- no mandatory cloud control plane;
+- no telemetry;
+- local encrypted state;
+- secure generated configuration;
+- explicit listen addresses;
+- automatic local database migrations with rollback-tested backups;
+- a health report that separates availability from security posture.
+
+<code>axon doctor</code> reports certificate expiry, unexpected key/card
+changes, keystore quality, database encryption, retention, socket exposure,
+processor disclosure, sandbox capabilities, version support, pending recovery,
+and whether any proxy can read plaintext.
+
+## 18. Versioning and compatibility
+
+A2A, Axon extensions, evidence predicates, policy records, and local APIs are
+versioned independently.
 
 Rules:
 
-- A `request_id` is unique in one thread and bound to exactly one request
-  event.
-- Streams are ordered independently per `(request_id, responder_agent_id)`
-  from index zero.
-- There is at most one final response per responder. An identical event retry
-  is deduplicated; a different second final is quarantined.
-- Unknown requests, unauthorized responders, skipped indexes, and responses
-  after terminal expiry are quarantined with bounded diagnostics.
-- `cancel` is advisory and cannot interrupt a host turn or process.
-- Deadline expiry is local state. The broker never fabricates a peer response.
-- Receipt, response, and effect completion are distinct concepts.
-
-### 8.5 Normative schema bundle
-
-The JSON snippets in this document illustrate the contract; implementation
-starts by checking in the normative JSON Schema 2020-12 bundle under
-`data/threads/schema/v1/` and generated OCaml codecs/golden vectors. The bundle
-contains at least:
-
-| Schema ID | Contract |
-|---|---|
-| `outer-frame-v1` | Required routing fields, `frame_class` (`mls_application`, `mls_handshake`, `home_control`), exact ciphertext/blob hashes, limits, and MLS authenticated-data comparison |
-| `application-event-v1` | Sender, event/order fields, relation tagged union, ordered content-part tagged union, and extensions |
-| `thread-offer-v1` / `thread-decision-v1` | Principal-bound offer, policy/roster transcript, KeyPackage/Welcome references, expiry, and exact accept/reject binding |
-| `home-control-v1` | Roster/close tagged union, governance threshold approvals, commit/roster/policy hashes, nonce, and transition bounds |
-| `sync-request-v1` / `sync-response-v1` | Route, cursor, limit, ordered frame/tombstone/boundary union, next cursor, `has_more`, and signed chain head |
-| `transport-ack-v1` | Device, persisted-through sequence, sorted non-overlapping missing ranges, and prior receipt hash; never an application event |
-| `endpoint-receipt-v1` | Receipt enum, referenced event/frame, actor, timestamp, and optional bounded diagnostic |
-| `blob-*-v1` | Prepare/chunk/commit/fetch request and response bodies, hashes, quotas, entitlement, expiry, and idempotency semantics |
-| `directory-profile-v1` | Signed leased public fields, capability/media limits, sequence, and expiry |
-| `problem-v1` | Stable code, correlation ID, `retryable`, optional `retry_after_ms`, and bounded non-sensitive message |
-
-For all schemas:
-
-- `required` and `additionalProperties: false` are explicit at every object.
-  Extensibility exists only inside bounded `extensions` maps and declared
-  critical-extension arrays. Optional fields are omitted; `null` is accepted
-  only where the schema union says so.
-- Security IDs use a schema-specific prefix and 128-bit-or-greater base64url
-  payload. Event-local `part_id` uses `p[1-9][0-9]{0,2}`. Strings, arrays,
-  maps, nesting, Unicode normalization policy, enums, and byte sizes have
-  explicit minima/maxima.
-- JSON integers, including timestamps, sequence numbers, epochs, chunk
-  indexes, and budgets, are in `0..9007199254740991`. V1 rejects exhaustion;
-  a future version uses canonical decimal strings rather than silently losing
-  precision. Floating-point values are forbidden in signed/hashed objects.
-- Every derived hash declares its exact input. Object hashes use
-  `SHA-256("c2c.threads/<schema-id>\0" || JCS(object-with-derived-hash-and-
-  signature-fields-omitted))`; raw ciphertext/container/chunk hashes use the
-  exact bytes. Arrays retain order. Signatures use the same domain-separated
-  JCS input with the signature collection omitted.
-- Decoders reject duplicate keys before schema validation. Encode/decode and
-  canonicalize/parse are differential-tested across OCaml, the MLS bridge,
-  and one independent implementation.
-
-Each schema ships golden valid/minimum/maximum vectors, canonical bytes,
-hash/signature inputs, and invalid vectors for duplicate/unknown fields,
-boundary overflow, wrong unions, reordered or overlapping ranges, and altered
-critical extensions. No network handler is implemented before its schema and
-vectors exist.
-
-HTTP mapping is also normative: malformed/unsupported input is `400`, failed
-authentication `401`, policy denial `403`, uniform absent-or-cross-tenant
-lookup `404`, idempotency/state/epoch conflict `409`, terminal resource `410`,
-size limit `413`, authenticated but quarantined semantic/crypto input `422`,
-quota/rate limit `429`, and transient home failure `503`. Only `429`/`503` and
-explicitly classified transport failures are automatically retryable; the
-`problem-v1` body and `Retry-After` agree.
-
-## 9. Cryptography and replay safety
-
-### 9.1 MLS profile
-
-All direct and group threads use MLS 1.0 `PrivateMessage` framing.
-
-- Mandatory suite: `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
-  (`0x0001`), the MLS 1.0 mandatory-to-implement suite.
-- Enterprise FIPS profile may require
-  `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (`0x0002`) if the selected,
-  validated provider supports it.
-- The suite is fixed when the thread is created. An unsupported or
-  policy-forbidden suite is a hard failure, never a downgrade.
-- Use an audited MLS implementation behind `C2c_threads_crypto.S`; do not
-  implement TreeKEM, HPKE, or the MLS key schedule in project OCaml.
-- The initial provider target is a pinned OpenMLS build behind a narrow C ABI
-  or isolated helper. It must pass RFC/library vectors and cross-implementation
-  interop before release.
-- KeyPackages are one-use and replenished before exhaustion.
-- Use bounded skipped-generation caches and reject enormous generation gaps
-  to prevent key-derivation DoS.
-- Send an Update/Commit on membership change, credential rotation, suspected
-  compromise, and at a tenant-configured time/message interval.
-
-TLS 1.3 with server authentication and device mTLS is still required around
-MLS transport to reduce metadata exposure, injection, and selective-delivery
-attacks. TLS 0-RTT is disabled for all state-changing endpoints because of its
-replay properties.
-
-### 9.2 Associated context
-
-The encrypted application payload and validated MLS credential together bind:
-
-```text
-protocol and content version
-tenant and thread/group ID
-MLS epoch and authenticated leaf
-principal/agent/device/session IDs
-event ID and sender sequence
-relation kind and reply/request pointers
-attachment ciphertext digest, size, part ID, and media type
-critical extension set
-```
-
-The home receipt separately binds routing, exact MLS ciphertext, and
-`home_seq`. Changing any bound field fails validation or AEAD authentication.
-
-### 9.3 Replay and crash rules
-
-- `threadsd` serializes MLS operations through one in-process actor per group.
-- Outbound protection operates on a cloned MLS state. One SQLite transaction
-  compare-and-swaps the old state version to the new encrypted state, reserves
-  `sender_seq`, and persists the exact ciphertext/outbox row. Only after commit
-  may transport begin.
-- Retries resend the exact persisted ciphertext. They never call MLS protect a
-  second time for the same event.
-- Inbound ingestion atomically persists the advanced MLS state, used
-  generation/replay tombstone, event row, and delivery state before presenting
-  plaintext.
-- Endpoint post-decrypt unique constraints cover
-  `(c2c_thread_id, epoch, sender_leaf, generation)`, `event_id`, and
-  `(c2c_thread_id, sender_device, idempotency_key)`. The opaque home uses only
-  its outer-frame uniqueness key defined in Section 8.1.
-- Same idempotency key and same canonical payload hash returns the prior
-  result. Same key with a different hash returns `idempotency_conflict`.
-- Frames from old epochs are rejected after the bounded offline/skipped-key
-  window; removed members never regain a current key.
-- A state rollback behind a witnessed checkpoint forces rejoin/recovery.
-- Resume tickets are short-lived, rotating, device-bound, and single-use.
-
-No timestamp alone is a replay defense. Epochs, generations, random IDs,
-unique constraints, and consumed-state records are authoritative; time only
-bounds retention and expiry.
-
-### 9.4 Privacy at rest
-
-- Relay/home stores only MLS ciphertext, encrypted blobs, routing handles,
-  quotas, sequence metadata, and receipts.
-- Local event rows remain ciphertext. Decrypted content is passed through a
-  bounded locked-memory buffer. If an adapter requires spill, it uses an
-  application-encrypted temporary row under the state key; mode bits alone do
-  not make a plaintext cache acceptable. Decrypted content is never written
-  to a plaintext archive.
-- MLS state, blob keys, grant details, and sensitive audit fields are
-  application-encrypted under an OS-keystore state key.
-- Filenames, MIME types, alt text, plaintext hashes, reply relations, and
-  request IDs stay inside MLS ciphertext.
-- Optional padding buckets reduce size leakage but are a deployment policy;
-  timing and routing metadata remain visible.
-
-## 10. Reliable delivery and ordering
-
-### 10.1 Guarantees
-
-Threads promises:
-
-- at-least-once network delivery;
-- exactly-once durable home admission for one authenticated outer-frame key;
-- exactly-once endpoint append for one decrypted event/idempotency key;
-- per-routing-thread total home order through `home_seq`;
-- per-sender authenticated order through MLS generation and `sender_seq`;
-- eventual delivery while the home, recipient membership, retention window,
-  and quota remain valid.
-
-Threads does not promise:
-
-- exactly-once model attention;
-- exactly-once transcript injection on a host without an idempotent API;
-- exactly-once arbitrary command execution across process or host crashes;
-- availability against a malicious home that withholds traffic.
-
-### 10.2 Sender flow
-
-1. Validate thread state, membership, epoch, payload, blobs, and local quota.
-2. Generate stable `event_id` and idempotency key once.
-3. Canonicalize payload, advance cloned MLS state, and persist the new state,
-   ciphertext, and outbox row in one transaction.
-4. Send with bounded exponential backoff and jitter.
-5. Home transaction authenticates the device, checks tenant/transport-roster
-   membership/epoch, deduplicates the stable outer frame key and ciphertext
-   hash, allocates `home_seq`, writes frame/delivery/blob references, advances
-   its hash chain, and commits. It does not inspect encrypted event IDs or
-   application idempotency keys.
-6. Only after durable commit does the home return `accepted`.
-7. Sender records the signed receipt and removes the retry claim.
-
-### 10.3 Recipient flow
-
-Sync is cursor based and non-destructive:
-
-```text
-home_sync(routing_thread_id, membership_incarnation_id,
-          after_home_seq, limit) -> frames, next_cursor
-home_ack(routing_thread_id, membership_incarnation_id,
-         persisted_through, selective_missing_ranges)
-```
-
-The client maps the opaque `routing_thread_id` to `c2c_thread_id` only inside
-encrypted local state. Home APIs, deliveries, cursors, and blob entitlements
-never use encrypted `c2c_thread_id`, `event_id`, request ID, or `part_id`.
-
-Recipients buffer only bounded gaps and apply events strictly in contiguous
-`home_seq` order. A gap triggers fetch/NACK. An event may be skipped only after
-a signed home tombstone proves it expired or was administratively removed.
-Such a tombstone is valid only for an application frame and binds the omitted
-`home_seq`, routing thread, exact ciphertext hash, expiry/removal reason, and
-prior receipt-chain hash. A missing control or MLS Commit can never be skipped;
-it suspends the thread and requires recovery/rejoin.
-
-The home records `visible_from_seq` and `visible_through_seq` for every device
-membership incarnation. Every transport frame in that interval is fetchable
-by that device; the log never selectively hides a sequence inside an interval.
-A signed membership-start boundary lets a new member initialize its cursor at
-`visible_from_seq - 1`, and a removed member receives through the matching
-removal Commit. This preserves a global sequence without granting history.
-Per-recipient transport ACKs/delivery rows are outside the sequenced event
-log. Only explicit group-visible receipt events consume `home_seq`.
-
-### 10.4 Receipt meanings
-
-Receipt names are precise:
-
-- `accepted`: home durably committed and assigned `home_seq`.
-- `endpoint_persisted`: recipient `threadsd` durably stored the frame.
-- `client_consumed`: recipient adapter advanced its presentation ledger.
-- `read`: optional explicit human/agent signal, disabled by default.
-- `expired`: delivery TTL elapsed and a terminal delivery record/DLQ exists.
-- `quarantined`: authentication, epoch, schema, media, or policy validation
-  failed; content was not presented.
-
-Cumulative ACKs plus selective missing ranges avoid receipt storms. Receipts
-are encrypted application events where participant visibility is appropriate;
-home-level `accepted` receipts are signed transport metadata.
-
-### 10.5 Backpressure and limits
-
-The home enforces tenant, sender, recipient, thread, event-byte, blob-byte,
-outstanding-event, and request-rate quotas before expensive work. Clients
-bound:
-
-- gap buffer count and bytes;
-- skipped MLS generations;
-- retry age and attempt count;
-- decompressed/decoded media size;
-- local outbox and DLQ size;
-- audit label cardinality.
-
-Quota failure is explicit and durable where an already accepted event expires;
-there is no silent truncation or deletion.
-
-## 11. Multimodal content and encrypted blobs
-
-### 11.1 Supported v1 media
-
-At minimum:
-
-- `text/plain; charset=utf-8`
-- `text/markdown; charset=utf-8`
-- `application/json`
-- `image/png`
-- `image/jpeg`
-- `image/webp`
-- `image/svg+xml`
-- `application/vnd.c2c.graph+json;version=1`
-- `text/vnd.mermaid`
-- `text/vnd.graphviz`
-
-Text/JSON up to the inline cap can be embedded directly. Binary parts are
-never base64-expanded inside the application event.
-
-### 11.2 Blob manifest
-
-Blob metadata lives inside the encrypted application payload:
-
-```json
-{
-  "part_id": "p2",
-  "media_type": "image/png",
-  "disposition": "inline",
-  "name": "terminal.png",
-  "alt_text": "terminal showing a failed test",
-  "blob": {
-    "blob_id": "bl_...",
-    "storage_digest": "sha256:<ciphertext-container>",
-    "content_digest": "sha256:<plaintext>",
-    "plaintext_size": 48123,
-    "ciphertext_size": 48191,
-    "chunk_size": 1048576,
-    "chunk_count": 1,
-    "aead": "aes-256-gcm-chunks-v1",
-    "nonce_prefix_b64": "<8 random bytes>",
-    "blob_key_b64": "<32 random bytes>"
-  }
-}
-```
-
-The outer frame exposes only storage digest and ciphertext size needed for
-delivery admission.
-
-### 11.3 Encryption and chunking
-
-- Generate a fresh random 256-bit data key for every blob, even for identical
-  plaintext.
-- Encrypt 1 MiB chunks with AES-256-GCM. The 96-bit nonce is an 8-byte random
-  per-blob prefix plus a 32-bit big-endian chunk index. A key is never reused
-  across blobs and a chunk index is never repeated.
-- AEAD associated data binds version, tenant, thread, event, part, media type,
-  declared sizes, chunk index, and chunk count.
-- `content_digest` is verified after decrypt but remains encrypted in the MLS
-  manifest. `storage_digest` covers the complete encrypted container.
-- Equal plaintext therefore produces unrelated home-visible digests.
-- Use a reviewed crypto provider and golden vectors for the container. If the
-  provider cannot guarantee the construction, ship no blob support rather
-  than replace it with unauthenticated streaming.
-
-### 11.4 Upload/download protocol
-
-```text
-prepare -> idempotent chunk PUTs -> commit -> reference in event
-```
-
-- `prepare` authenticates the tenant/device, reserves quota, returns a random
-  upload ID, and expires quickly.
-- A chunk PUT is idempotent on `(upload_id, index, ciphertext digest)`; a
-  different body for the same tuple is a conflict.
-- `commit` validates all chunk hashes, total size, container digest, and quota
-  in one transaction.
-- The home rejects an event referencing an uncommitted or wrong-tenant blob.
-- At frame admission the home atomically creates one entitlement per ordered
-  outer `blob_refs[index]` and eligible recipient membership incarnation. The
-  key is `(tenant_id, routing_thread_id, home_seq/frame_id, blob_ref_index,
-  storage_digest, recipient_device_id, membership_incarnation_id)`. It uses no
-  encrypted event or part identifier. Current or former membership by itself
-  is never sufficient; knowing `storage_digest` or `blob_id` is not
-  authorization.
-- Download authorization is short-lived and bound to that exact entitlement.
-  After decrypt, the endpoint verifies that the index/digest is bound by MLS
-  authenticated data to the encrypted event/part manifest. Public object URLs
-  are never generated.
-- Transactional `blob_refs` drive retention, legal hold, and mark/sweep GC.
-
-Initial defaults reuse the existing proposal's conservative caps: 4 MiB per
-blob and 8 MiB total per event. Chunking permits a tenant to configure larger
-limits without whole-object buffering.
-
-### 11.5 Safe media handling
-
-- MIME is allowlisted and independently sniffed. A mismatch is quarantined or
-  presented as opaque bytes, never trusted by extension/name.
-- Images enforce input bytes, decoded dimensions, pixel count, frame count,
-  recursion, and decompression-ratio limits.
-- SVG is active content. It is never injected as raw browser DOM and never
-  resolves scripts, styles, fonts, URLs, `foreignObject`, entities, or file
-  references. Render only through a no-network parser sandbox to a raster, or
-  present inert source.
-- Mermaid and Graphviz are inert text. Rendering happens in the same bounded
-  no-network sandbox.
-- The graph JSON schema contains bounded nodes and edges with scalar
-  attributes only; it forbids HTML, scripts, executable URLs, and renderer
-  directives. Suggested defaults are 10,000 nodes and 20,000 edges.
-- Unsupported media remains an inert attachment descriptor. It is not
-  silently converted, opened, or fed to a model.
-- External URLs are never auto-fetched.
-- Inbound blobs never materialize in the workspace automatically. Importing a
-  blob is a separate `WRITE` operation and work order.
-- Malware/DLP inspection occurs at authorized endpoints before encryption or
-  after decryption. Server-side plaintext scanning is incompatible with E2EE
-  unless a visible scanner participant is added.
-
-### 11.6 Client negotiation
-
-Directory and thread-accept profiles advertise supported media types and
-adapter limits. A sender may still send an allowed type unsupported by one
-adapter; that adapter preserves the event and presents a safe descriptor.
-
-At `NONE`, communication attachments may be shown to the model because they
-are peer-supplied message content, not local workspace access—but only inside
-an independently local-authorized turn after media validation. Attachment
-arrival itself never starts that turn. This never grants the peer a local file
-read or imports the attachment into the root.
-
-## 12. Authority plane and permission model
-
-### 12.1 Why the planes must be separate
-
-The existing B098 rule is load-bearing: c2c is a bus, not an RPC surface. A
-peer message cannot approve, execute, write, or resolve a host dialog. A
-conventional remote filesystem API inside the inbox would delete that
-invariant.
-
-Threads therefore uses:
-
-1. A message plane carrying conversation, `action_proposal`, and
-   `action_result` data.
-2. A host-local authority plane carrying grants and work orders. It is exposed
-   only through an operator/admin socket or UI requiring local authority and
-   is never an MCP tool available to a peer-controlled model.
-
-An action proposal does not open an approval prompt, start a worker, mint a
-grant, or consume a prior approval. The operator explicitly selects a stored
-proposal and creates a work order. Unattended message-triggered automation is a
-different future product and requires an explicit revision of B098.
-
-`NONE` is an access ceiling, not wake authority. Receipt of a local or remote
-Threads event does not itself start a model turn. A response can be produced
-only inside a turn that the receiving host has independently authorized (for
-example, an already-active client or an operator-started clean worker). Under
-the current B098 exception, only eligible local-broker mail may use the
-existing gated Codex auto-turn path; a remote Threads event is queued and
-presented without auto-turn. Push notifications, hooks, retries, attachment
-completion, and presence changes cannot widen this rule.
-
-### 12.2 Permission presets
-
-The UX remains simple and cumulative:
-
-| Level | Effective ceiling |
-|---|---|
-| `NONE` | Conversation input and recipient-fixed response only. No workspace, tools, local memory, arbitrary MCP, shell, or host send capability. |
-| `READ` | `NONE` plus bounded list/stat/read of allowed regular files below one pinned root. |
-| `WRITE` | `READ` plus transactional create/replace of allowed regular files. Delete, rename, chmod, links, and protected paths remain denied unless separately caveated. |
-| `EXECUTE` | `WRITE` plus named command profiles in a verified sandbox. |
-
-No level implies:
-
-- network or DNS;
-- host home, other repositories, or parent directories;
-- credentials, environment secrets, SSH agents, cloud metadata, Docker,
-  sockets, devices, keyrings, GUI, or TTY;
-- package installation;
-- arbitrary executable paths, shell strings, plugins, hooks, or MCP servers;
-- destructive operations outside the exact work-order caveats.
-
-Each endpoint grants independently to one authenticated remote device/session.
-A peer's requested or advertised level is data only.
-
-### 12.3 Effective-policy intersection
-
-Effective rights are the intersection of:
-
-```text
-hard platform safety
-AND tenant maximum
-AND IdP group policy
-AND endpoint-local grant
-AND exact work-order scope
-AND current peer device/session membership
-AND current subject membership incarnation and credential
-AND path/command allowlists
-AND verified sandbox capabilities
-AND remaining time/use/resource budgets
-```
-
-Denies win. Unknown level/version, invalid signature, identity/key change,
-expired record, root replacement, stale epoch, exhausted budget, unsupported
-sandbox, audit failure, or contradictory policy resolves to deny/`NONE`.
-Trust tiers (`same_repo`, `same_host`, `relay`) may inform display risk; they
-never grant rights.
-
-### 12.4 Local grant
-
-A grant is local-only, signed, proof-of-possession bound, and never sent to the
-peer or model transcript:
-
-```json
-{
-  "version": 1,
-  "grant_id": "gr_<256-bit-random>",
-  "c2c_thread_id": "th_...",
-  "subject": {
-    "tenant_id": "tn_...",
-    "principal_id": "pr_...",
-    "agent_id": "ag_...",
-    "device_id": "dv_...",
-    "agent_instance_id": "si_...",
-    "mls_leaf_fingerprint": "sha256:...",
-    "membership_incarnation_id": "mi_..."
-  },
-  "root": {
-    "display_path": "/work/project",
-    "device": 123,
-    "inode": 456,
-    "mount_id": 7
-  },
-  "ceiling": "READ",
-  "path_policy_hash": "sha256:...",
-  "command_policy_hash": "sha256:...",
-  "sandbox_profile_hash": "sha256:...",
-  "issued_epoch": 12,
-  "not_before_ms": 1784172345000,
-  "expires_at_ms": 1784175945000,
-  "max_jobs": 1,
-  "issuer_key_id": "admin-key-7",
-  "signature": "..."
-}
-```
-
-Defaults are one job and a short TTL. `EXECUTE`, long-lived, multi-job, delete,
-or protected-path grants require an explicit tenant caveat and may require
-fresh user presence or two-person approval.
-
-The subject proves possession through the authenticated MLS leaf and work
-session binding; there is no copyable bearer token. `issued_epoch` is audited
-provenance, not an epoch lock. Ordinary Update/Commit epochs do not invalidate
-a grant. Subject removal, device/leaf replacement, membership-incarnation
-change, session replacement, or explicit host-local security revocation does.
-
-### 12.5 Action proposal and work order
-
-A peer may send:
-
-```json
-{
-  "proposal_version": 1,
-  "proposal_id": "ap_...",
-  "summary": "Run the OCaml unit tests and return failures",
-  "requested_ceiling": "EXECUTE",
-  "operations": [
-    {
-      "op": "exec",
-      "profile": "dune-test",
-      "parameters": {"targets": ["@runtest"]}
-    }
-  ]
-}
-```
-
-It remains inert. A local operator action creates a signed work order binding:
-
-- exact proposal event ID and canonical content hash;
-- grant, thread, remote device/session key, membership incarnation, and the
-  proposal's MLS epoch as provenance;
-- normalized operation types/parameters or bounded operation grammar;
-- selected root identity and protected-path policy;
-- base hashes for possible mutations;
-- command and sandbox profile hashes;
-- per-operation and aggregate byte/file/CPU/memory/PID/output/time budgets;
-- one-use nonce, deadline, and issuer signature.
-
-Work-order state is monotonic:
-
-```text
-pending -> claimed -> running -> succeeded | failed | ambiguous | cancelled
-```
-
-The executor durably moves to `claimed` and appends a pre-effect audit record
-before any effect. A crash after a command starts but before its outcome is
-durable becomes `ambiguous`; it never automatically starts again.
-
-A host-local revocation prevents new operations, kills the work
-cgroup/microVM, and drops an uncommitted overlay. It cannot undo a committed
-write. Root identity change, expiry, grant exhaustion, locally verified
-subject removal/key replacement, or an explicit operator/admin decision
-revokes pending work. A peer close/remove proposal alone never does.
-
-## 13. Filesystem confinement
-
-### 13.1 Root pinning and path format
-
-The operator selects one root. `threadsd` opens it once with
-`O_PATH|O_DIRECTORY` and records `statx` device, inode, and mount identity.
-Protocol paths are relative virtual POSIX paths.
-
-Reject:
-
-- absolute paths, NUL, `..`, empty components, excessive depth/length;
-- alternate separators and platform-special forms;
-- Windows drive/UNC/device/ADS or reparse forms on Windows;
-- URL/percent/double encoding;
-- paths targeting a changed root identity.
-
-On Linux, resolve in one kernel operation from the root FD with `openat2` and:
-
-```text
-RESOLVE_BENEATH
-| RESOLVE_NO_MAGICLINKS
-| RESOLVE_NO_SYMLINKS
-| RESOLVE_NO_XDEV
-```
-
-Use the returned FD for the operation. Never validate a path and reopen it by
-string. Only regular files/directories are allowed. Reject symlinks,
-hardlink-sensitive mutations, devices, FIFOs, sockets, mount crossings, and
-magic links.
-
-Creates use a verified parent dirfd, `O_CREAT|O_EXCL|O_NOFOLLOW`, fixed modes,
-and `umask 077`. Rename/delete, when caveated, use `*at` calls against verified
-dirfds.
-
-### 13.2 Read rules
-
-`READ` exposes only typed operations:
-
-- `fs.list(relative_dir, cursor, limit)`;
-- `fs.stat(relative_path)`;
-- `fs.read(relative_path, offset, length, expected_hash?)`.
-
-Default limits cover bytes per read/job, total disclosed bytes, directory
-entries, file count, and file size. Sparse files, changing files, and special
-files fail safely. Responses include content hash and observed metadata so the
-worker can detect a concurrent change.
-
-Protected read patterns should include credential/env files and framework
-keys by default. Organizations can add repository-specific secret detection
-and DLP, but must not imply that a generic filename list finds every secret.
-
-### 13.3 Write rules and transactional apply
-
-`WRITE` operates in a read-only snapshot/lower tree plus private writable
-copy/overlay:
-
-1. Worker changes only the private upper tree.
-2. Trusted applier produces a manifest of relative paths, base hashes, result
-   hashes, byte counts, and operations.
-3. It re-resolves every path from the root FD.
-4. Creates write and fsync a same-directory mode-`0600` temp, then install
-   with `renameat2(RENAME_NOREPLACE)` or the platform equivalent and fsync the
-   parent.
-5. A replacement is automatic only under an enforceable exclusive workspace
-   lease held across final identity/hash validation and commit, or through a
-   filesystem/repository backend with a real versioned compare-and-swap.
-   Hash-check followed by ordinary rename is not CAS. On generic POSIX with
-   possible outside writers, replacement returns a patch/isolated-worktree
-   merge proposal for a host-local applier instead of overwriting the target.
-6. Conflict leaves the host file untouched and returns a structured conflict.
-
-Copy-up/replacement prevents mutation through an existing outside hardlink.
-Direct in-place writes are not part of the high-assurance profile.
-
-Default protected mutation paths include:
-
-```text
-.git/**
-.c2c/**
-.claude/**
-.codex/**
-.opencode/**
-.gemini/**
-**/.env*
-**/*credential*
-**/*secret*
-client/MCP configuration
-hooks and signing configuration
-CI/release workflows
-agent instruction/policy files
-```
-
-These are conservative defaults, not a complete secret classifier. Delete,
-rename, chmod, xattrs, symlink/hardlink creation, and protected paths require
-separate signed work-order caveats.
-
-## 14. Command execution sandbox
-
-### 14.1 Args are not a security boundary
-
-Checking that strings in `argv` look like local paths cannot contain an
-arbitrary program. Programs synthesize paths, read configuration, interpret
-response files, load plugins, execute hooks, spawn children, or access the
-network without a path argument. OS containment is authoritative; argument
-validation is defense in depth.
-
-The peer/worker selects a named command profile and structured parameters,
-never an executable path or shell command string.
-
-### 14.2 Command profile
-
-Each profile fixes:
-
-- executable file descriptor, immutable package identity, and SHA-256 digest;
-- direct `execveat`/equivalent, with no `PATH` search;
-- typed parameter grammar and known flags;
-- which parameters are workspace paths and their `/workspace/...` rewrite;
-- fixed cwd;
-- environment allowlist and private `HOME`/temporary directory;
-- stdin type and byte cap;
-- subprocess/workspace-executable policy;
-- wall time, CPU, memory, PIDs, file descriptors, output, file-size, and I/O
-  budgets;
-- sandbox backend/profile hash.
-
-Reject unknown flags, response-file syntax, shell `-c`, `eval`, command
-substitution, alternate cwd/config/loader options, plugin/hook injection,
-`LD_PRELOAD`/`DYLD_*`, proxy/credential variables, and inherited arbitrary
-environment.
-
-Workspace executables and scripts are off by default. If a profile permits
-them, they execute only inside the sandbox and may not weaken the host boundary.
-
-### 14.3 Linux high-assurance backend
-
-At minimum:
-
-- separate unprivileged UID/user namespace;
-- private mount, PID, IPC, UTS, and network namespaces;
-- pivot into a minimal immutable runtime;
-- a per-work-order filtered snapshot visible as `/workspace`; it contains
-  only read-allowed inputs and the private writable output overlay, with
-  protected and ungranted paths absent rather than merely hidden by prompts;
-- no host home, broker/thread state, keys, audit store, Docker socket, SSH
-  agent, TTY, devices, or host `/proc`;
-- empty network namespace by default;
-- `PR_SET_NO_NEW_PRIVS` and all capabilities dropped;
-- seccomp denial of mount, `setns`, namespace creation, `ptrace`, BPF, keyring,
-  raw devices, and other escape surfaces;
-- cgroup-v2 CPU, memory, PID, I/O, and wall-clock enforcement;
-- RLIMIT file-size/fd/core limits;
-- bounded stdout/stderr and whole-cgroup kill on timeout/revoke;
-- Landlock filesystem/network restrictions with separate read/write rules
-  matching the filtered snapshot, as defense in depth rather than the sole
-  boundary.
-
-The unfiltered selected root and lower tree are never mounted into the command
-namespace. Command profiles cannot bypass `READ` policy by opening a protected
-file directly; snapshot construction uses the same root-FD resolver and
-work-order path policy as typed reads.
-
-If the backend probe cannot enforce the required controls, `EXECUTE` fails
-closed. A high-assurance enterprise deployment should prefer an ephemeral
-microVM or equivalently isolated runner.
-
-macOS and Windows start with `NONE`; elevated levels ship only after native
-sandbox backends meet the same contract. A weaker fallback is not automatic.
-
-## 15. Durable state and audit
-
-### 15.1 State root
-
-Threads state is cross-repository rather than repo-broker scoped.
-Local-development state is per-user, while enterprise state is service-global
-at an administrator-provisioned path:
-
-```text
-C2C_THREADS_STATE_ROOT
--> $C2C_STATE_HOME/c2c/threads        (when explicitly set)
--> $HOME/.c2c/threads                 (default)
-```
-
-This resolution is the user-owned local-development profile only. Enterprise
-service state lives in an administrator-provisioned path owned by the
-dedicated `threadsd` service identity; it is never selected through a client
-environment variable. Each tenant has an isolated mode-`0700` directory and
-`threads.db` mode `0600`. Generic `XDG_STATE_HOME` does not silently relocate
-local-development state, matching the current split-brain lesson.
-
-### 15.2 SQLite store
-
-Use SQLite WAL, foreign keys, `busy_timeout`, explicit schema migrations, and
-`synchronous=FULL` for local durable state. Put persistence behind
-`C2c_threads_store.S`; hosted homes can use PostgreSQL with equivalent unique
-constraints and transactions.
-
-Minimum tables:
-
-```text
-schema_migrations
-identities / credentials / key_packages
-threads / thread_tombstones
-participants / membership_intervals / home_controls
-mls_states
-home_frames / events
-outbox
-deliveries / cursors / presentation_ledger
-idempotency
-requests / request_responders / responses
-invites / consumed_tokens
-blobs / blob_chunks / blob_refs / blob_entitlements / uploads
-grants
-work_orders / effect_ledger
-audit_events / audit_checkpoints
-```
-
-Required uniqueness includes:
-
-```text
-# Threads home (opaque transport identifiers only)
-home_frames(tenant_id, routing_thread_id, uploader_device_id, frame_id)
-deliveries(tenant_id, routing_thread_id, home_seq,
-           recipient_device_id, membership_incarnation_id)
-cursors(tenant_id, routing_thread_id,
-        recipient_device_id, membership_incarnation_id)
-blob_entitlements(tenant_id, routing_thread_id, home_seq, blob_ref_index,
-                  storage_digest, recipient_device_id,
-                  membership_incarnation_id)
-
-# Endpoint post-decrypt state
-events(tenant_id, event_id)
-events(tenant_id, c2c_thread_id, home_seq)
-events(tenant_id, c2c_thread_id, sender_device_id, sender_seq)
-idempotency(tenant_id, c2c_thread_id, sender_device_id, idempotency_key)
-requests(tenant_id, c2c_thread_id, request_id)
-request_responders(tenant_id, c2c_thread_id, request_id, responder_agent_id)
-responses(tenant_id, c2c_thread_id, request_id, responder_agent_id, response_index)
-one final response per (tenant_id, c2c_thread_id, request_id, responder_agent_id)
-consumed_tokens(tenant_id, kind, token_hash)
-work_orders(tenant_id, work_order_id)
-work_orders(tenant_id, nonce)
-effect_ledger(tenant_id, work_order_id, operation_index)
-```
-
-These are separate unique indexes, not one composite catch-all. Every hosted
-or multi-tenant primary/foreign key begins with `tenant_id`, including tables
-not abbreviated above. `home_frames` stores the ciphertext hash and original
-receipt so equal retries return it and unequal retries conflict. Inner
-`events`, requests, and idempotency rows are endpoint-side post-decrypt state;
-the opaque home never uses them for admission. Home delivery, cursor, and blob
-rows use only route/frame/sequence, device, and membership-incarnation data
-available at admission. A response foreign-keys its parent request and
-responder row; a partial unique index enforces one `final=true` row per
-responder.
-
-No operation reports success before the transaction containing its durable
-state commits.
-
-### 15.3 Effect idempotency
-
-File apply uses base/result hashes and compare-and-swap semantics. A repeated
-identical work-order operation returns its stored result. A repeated ID with
-different normalized input is rejected.
-
-Commands cannot be made honestly exactly once after an arbitrary crash. The
-effect ledger records:
-
-```text
-prepared -> started -> terminal
-```
-
-A restart finding `started` without a durable terminal result marks it
-`ambiguous`, kills any surviving job, and requires a new local decision.
-
-### 15.4 Audit stream
-
-The best-effort rotating `Broker_log` is not authorization evidence. Threads
-uses a dedicated durable audit stream. In enterprise-required audit mode, a
-privileged operation is denied if its pre-effect record cannot be committed.
-
-Record:
-
-- authentication, invitation, membership, credential, and thread lifecycle;
-- grant create/revoke/expire/exhaust;
-- work-order create/claim/start/terminal/ambiguous;
-- every allow/deny decision and stable reason code;
-- policy, command, sandbox, and executable hashes;
-- tenant/thread/device/session/grant/work-order/operation IDs;
-- root identity, tokenized/encrypted relative path, base/result hashes;
-- exit status and bounded resource usage;
-- previous record hash, checkpoint, and signer.
-
-Do not log:
-
-- message/file bodies;
-- raw keys or grant secrets;
-- inherited environment;
-- unrestricted argv/path text;
-- model prompts/responses by default;
-- unbounded peer-supplied labels.
-
-Hash-chain records and periodically sign checkpoints with a hardware/service
-key. Export checkpoints and events to tenant WORM/SIEM storage. A local hash
-chain alone cannot prove that a compromised host did not truncate its tail.
-
-## 16. Enterprise discovery and federation
-
-### 16.1 Directory hierarchy
-
-```text
-tenant
-  principal (human or service account)
-    agent profile
-      enrolled devices
-        active agent instances and fresh MLS KeyPackages
-  IdP/SCIM directory groups
-  explicit thread memberships
-```
-
-Every database key, queue, object prefix, cache key, quota, audit record, and
-API route includes `tenant_id`. Cross-tenant identifiers are rejected before
-object lookup and return uniform not-found responses to reduce enumeration.
-
-### 16.2 Signed leased profile
-
-```json
-{
-  "profile_version": 1,
-  "tenant_id": "tn_...",
-  "agent_id": "ag_...",
-  "owner_principal_id": "pr_...",
-  "display_name": "ocaml-reviewer",
-  "description": "Reviews OCaml changes",
-  "threads_protocol_versions": [1],
-  "media_types": [
-    "text/plain",
-    "image/png",
-    "application/vnd.c2c.graph+json;version=1"
-  ],
-  "declared_functions": ["answer", "review"],
-  "directory_groups": ["grp_engineering"],
-  "topics": ["ocaml", "security-review"],
-  "key_package_refs": ["kp_..."],
-  "presence": "available",
-  "profile_seq": 8,
-  "expires_at_ms": 1784175945000,
-  "signing_key_id": "...",
-  "signature": "..."
-}
-```
-
-Claims are validated against the tenant directory; an agent cannot self-sign
-itself into a group. Presence and KeyPackages are short leases and disappear
-when stale.
-
-### 16.3 Search privacy
-
-V1 discovery supports exact filters for tenant-visible name, owner, group,
-declared function, protocol/media compatibility, and presence. Results are
-ACL-filtered before ranking and use rate limits, cursor pagination, audit,
-blocklists, and uniform denial behavior.
-
-Interest/topic discovery is v2:
-
-- opt in per profile;
-- use an organization-controlled taxonomy first;
-- if embeddings are enabled, derive them only from the public profile fields
-  explicitly selected by the owner;
-- never index private messages, attachments, workspace content, filenames,
-  cwd, local memory, or audit details;
-- provide withdraw/reindex and explainable matched fields.
-
-Cross-tenant federation requires bilateral trust bundles, directory
-allowlists, and policy. A group authorizes discovery/invitation, not automatic
-thread membership or workspace access.
-
-SCIM removal may trigger an auditable thread removal/rekey if tenant policy
-chooses that behavior. It never silently gives newly added group members access
-to existing threads.
-
-## 17. Proposed APIs
-
-All commands below are new proposed surfaces, not current CLI claims.
-
-### 17.1 Operator CLI
-
-```text
-c2c threads create --to <agent-id> [--expires 24h]
-c2c threads accept|reject <thread-id>
-c2c threads send <thread-id> --text <text> [--attach <path> ...]
-c2c threads reply <thread-id> --to-event <event-id> [--text <text>]
-c2c threads list|show|history|watch|close
-c2c threads sync|retry|dlq|resync
-c2c threads policy show <thread-id>
-
-c2c threads access request <thread-id> <level>     # sends inert proposal
-c2c threads access grant <thread-id> <agent-id> <level>
-  --root <path> --ttl <duration> --max-jobs 1
-c2c threads access revoke <grant-id>
-c2c threads work authorize <proposal-event-id> --grant <grant-id>
-c2c threads work show|cancel <work-order-id>
-
-c2c directory publish|withdraw|search|show
-c2c doctor threads
-```
-
-`access grant/revoke` and `work authorize/cancel` use the host-local admin
-socket and are never callable through agent MCP. Non-interactive use requires
-an explicit enterprise policy issuer, not an environment-variable bypass.
-
-### 17.2 Agent/MCP surface
-
-There are two non-overlapping registries. A normal endpoint agent, acting for
-its local user rather than as a restricted peer worker, may receive:
-
-```text
-thread_create
-thread_accept / thread_reject
-thread_send / thread_reply
-thread_sync / thread_history
-thread_close
-thread_propose_action
-thread_work_status
-directory_search (read-only, policy-filtered)
-```
-
-The dedicated restricted worker never receives that registry. At `NONE` it
-gets only a request-bound `thread_response_submit` sink scoped to one
-`c2c_thread_id`, request/event, responder identity, byte budget, deadline, and
-maximum response count. With a local work order it additionally gets only the
-typed path/command operations caveated into that order and an
-`action_result_submit` sink. It cannot create/accept/close threads, enumerate
-history, search the directory, choose another recipient, or send an
-uncorrelated message.
-
-Neither registry contains grant creation, work-order authorization, tenant
-administration, compliance enrollment, key export, audit deletion, or policy
-weakening.
-
-### 17.3 Threads home HTTP/stream surface
-
-```text
-GET  /v1/threads/capabilities
-POST /v1/threads
-POST /v1/threads/{routing_thread_id}/accept|reject|close
-POST /v1/threads/{routing_thread_id}/events
-GET  /v1/threads/{routing_thread_id}/sync?after=&limit=
-POST /v1/threads/{routing_thread_id}/acks
-
-POST /v1/blobs/prepare
-PUT  /v1/blobs/{upload_id}/chunks/{index}
-POST /v1/blobs/{upload_id}/commit
-GET  /v1/blobs/{storage_digest}
-
-GET  /v1/directory/agents?...&cursor=
-```
-
-Use TLS 1.3, mTLS device identity, request body limits, idempotency keys,
-audience binding, and per-tenant rate limits. State-changing endpoints reject
-TLS early data.
-
-`/v1/threads/capabilities` is a signed, cache-bounded Threads capability
-document with `threads_protocol_versions`, MLS suites, media limits, and home
-identity. It is not the legacy relay version endpoint.
-
-### 17.4 Transcript form
-
-Adapters may render a model-visible wrapper such as:
-
-```xml
-<c2c event="thread_message" c2c_thread_id="th_..."
-     event_id="ev_..." home_seq="142" from="ocaml-reviewer"
-     request_id="rq_..." trust="external-data">
-  ...safe rendered parts...
-</c2c>
-```
-
-The wrapper is presentation, not the wire signature format. It preserves the
-existing explicit DATA/not-operator-input labeling and never embeds grants or
-work-order credentials.
-
-## 18. Error model
-
-Stable machine codes include:
-
-```text
-unsupported_version
-unknown_critical_extension
-tenant_not_found                 # uniform cross-tenant/nonexistent response
-not_participant
-credential_invalid
-thread_not_active
-thread_terminal
-stale_epoch
-replay
-generation_gap_too_large
-frame_id_conflict
-idempotency_conflict
-home_sequence_gap
-home_fork_detected
-quota_exceeded
-blob_uncommitted
-blob_integrity_failed
-media_quarantined
-policy_denied
-grant_expired
-grant_revoked
-work_order_consumed
-root_changed
-path_denied
-base_conflict
-sandbox_unavailable
-audit_unavailable
-execution_ambiguous
-```
-
-Error strings are bounded and do not echo attacker-controlled content,
-absolute local paths, policy internals, key material, or cross-tenant
-existence. Retriable/non-retriable classification is explicit.
-
-## 19. OCaml module boundaries
-
-Do not extend the already-large `c2c_broker.ml` or encode Threads as optional
-fields in `C2c_schema_v1`. Add focused modules:
-
-```text
-ocaml/c2c_threads_id.{ml,mli}
-ocaml/c2c_threads_jcs.{ml,mli}
-ocaml/c2c_threads_schema_v1.{ml,mli}
-ocaml/c2c_threads_state.{ml,mli}
-ocaml/c2c_threads_identity.{ml,mli}
-ocaml/c2c_threads_crypto.{ml,mli}
-ocaml/c2c_threads_store.{ml,mli}
-ocaml/c2c_threads_transport.{ml,mli}
-ocaml/c2c_threads_blob.{ml,mli}
-ocaml/c2c_threads_policy.{ml,mli}
-ocaml/c2c_threads_grant.{ml,mli}
-ocaml/c2c_threads_work_order.{ml,mli}
-ocaml/c2c_threads_path.{ml,mli}
-ocaml/c2c_threads_executor.{ml,mli}
-ocaml/c2c_threads_audit.{ml,mli}
-ocaml/c2c_threads_directory.{ml,mli}
-ocaml/c2c_threads_handlers.{ml,mli}
-ocaml/cli/c2c_threads.ml
-ocaml/server/c2c_threadsd.ml
-```
-
-`C2c_threads_crypto.S` owns MLS create/join/add/remove/update,
-protect/unprotect, credential validation callbacks, KeyPackage handling,
-encrypted state import/export, and official test-vector execution. A small
-pinned OpenMLS bridge is an implementation dependency, not a new user-facing
-CLI; the canonical c2c command surface remains OCaml.
-
-`C2c_threads_store.S` keeps the local SQLite and hosted SQL backends
-behaviorally interchangeable through contract tests.
-
-`C2c_threads_executor` is a separate process boundary from message delivery.
-It cannot read the thread database/admin socket and receives one work order
-through an inherited one-use descriptor.
-
-The first daemon slice also updates `ocaml/dune`, `ocaml/cli/dune`, and
-`ocaml/server/dune`. The executable entry module is
-`ocaml/server/c2c_threadsd.ml`, matching the Dune executable name as required
-by Dune's `let () =` entry-point rule. Integration includes:
-
-- a singleton lock plus authenticated daemon/API version handshake;
-- supervised install, start, stop, restart, and atomic binary upgrade;
-- schema backup, forward migration, crash recovery, compatibility checks, and
-  tested rollback before the old binary is removed;
-- install-manifest entries and `c2c uninstall` removal for every socket,
-  service unit, binary, and generated configuration;
-- `c2c doctor threads` checks for duplicate daemons, stale sockets, wrong
-  ownership/mode, schema/provider mismatch, and degraded auth/sandbox state.
-
-Every implementation slice updates the affected public and operator surfaces
-in the same change: `docs/commands.md`, `docs/architecture.md`,
-`docs/security/trust-model.md`, `.collab/runbooks/c2c-env-vars.md`,
-`docs/clients/feature-matrix.md`, install/uninstall help and generated
-`--help`, and `docs/changelog.md`/`data/changelog/PENDING.md`. Proposed commands
-remain clearly labeled until their release gate passes; they must not be
-documented as shipped features early.
-
-## 20. Implementation plan
-
-Each slice gets its own worktree/branch, tests, documentation, and peer review.
-No phase is considered secure because only its happy path works.
-
-### Phase 0: security and dependency gates
-
-1. Record ADRs for MLS-for-all-threads, separate authority plane, state root,
-   mandatory/no-downgrade crypto, and Linux high-assurance sandbox.
-2. Spike the OpenMLS bridge, build/reproducibility/license review, RFC vectors,
-   cross-implementation interop, encrypted state serialization, and crash-safe
-   clone/commit semantics.
-3. Implement pure IDs, strict JSON/JCS, state machines, limits, and golden
-   schemas.
-4. Model lifecycle, message/effect separation, and work-order monotonicity in
-   TLA+ or an equivalent state-machine checker.
-5. Create `threadsd` socket/auth skeleton and SQLite migration harness.
-
-Gate: no production thread can send plaintext if the crypto provider is
-missing; the feature remains unavailable.
-
-### Phase 1: two-member `NONE`, text, local home
-
-1. Thread/participant/event/idempotency/cursor/outbox schema and transactions.
-2. Enterprise/local-dev credentials, KeyPackages, offer/accept/close, MLS
-   direct threads.
-3. Local home sequencing, signed receipts, non-destructive sync, retry/DLQ.
-4. CLI/MCP send/reply/history/watch and safe adapters.
-5. `NONE` enforcement with a no-tool clean worker/presentation path.
-6. Remote delivery queues and presents events but cannot invoke any existing
-   auto-turn or wake path.
-
-Gate: kill/restart/fault tests prove no message loss or duplicate durable
-append; every payload on disk is encrypted; B098 regression remains green.
-
-### Phase 2: cross-host Threads home and enterprise identity
-
-1. TLS 1.3/mTLS thread routes and tenant-isolated home storage.
-2. OIDC enrollment, certificate issuer/SPIFFE integration, SCIM sync.
-3. HA home term/sequence receipts, checkpoint witnessing, rate limits.
-4. Cross-host offline/retry/DLQ and malicious-home fault matrix.
-
-Gate: the Threads home cannot decrypt; first-contact alias capture is irrelevant;
-replay/downgrade/fork tests pass.
-
-### Phase 3: multimodal and blob CAS
-
-1. Multipart schema and adapter capability negotiation.
-2. Encrypted chunk container with vectors and streaming bounds.
-3. Transactional prepare/upload/commit/fetch/retention/GC.
-4. Image/SVG/graph sandbox rendering and fuzz corpus.
-
-Gate: corrupt, spoofed, bomb, active SVG, wrong-tenant, uncommitted, and
-hash-only fetch cases fail safely; remote blobs never enter the workspace.
-
-### Phase 4: local grants and work orders
-
-1. Policy intersection, signed grants, revocation, admin socket/UI, audit.
-2. Action proposal storage and local work-order authorization.
-3. Descriptor-based READ API and path-race fuzzing.
-4. Snapshot/overlay WRITE and trusted compare-and-swap applier.
-5. Named EXECUTE profiles, Linux sandbox/microVM provider, resource limits.
-6. Ambiguous execution recovery and sanitized `action_result` messages.
-
-Gate: an inbound event across every delivery surface creates no effect; the
-same stored proposal executes only after a local work order and only within
-the pinned root/budgets.
-
-### Phase 5: group threads and directory
-
-1. Multi-member MLS, governance/quorum, membership suspend/commit, durable
-   group delivery.
-2. Tenant/user/group/agent/device directory and exact filtered search.
-3. Group removal/rekey, explicit history export, compliance participant.
-4. Retention/legal hold and enterprise audit export.
-
-Gate: removed members cannot decrypt new epochs, new members cannot decrypt
-history, directory groups do not imply thread/workspace access, and compliance
-access is visible.
-
-### Phase 6: discovery v2 and federation
-
-1. Opt-in public-profile topic taxonomy and explainable interest matching.
-2. Bilateral cross-tenant trust bundles/allowlists.
-3. Privacy budgets, abuse controls, withdraw/reindex, and federation audit.
-
-Gate: no private content/path metadata is indexed or inferable through search
-responses, and bilateral policy is required for every federated result.
-
-### Legacy migration
-
-- Keep `c2c send` and rooms unchanged initially.
-- Never auto-convert a legacy message into a thread event.
-- A peer without Threads gets an explicit `unsupported_version`, not a
-  plaintext fallback.
-- `Version.relay_protocol_version = 1`, the existing relay version endpoint,
-  and legacy capability negotiation remain unchanged. Threads advertises only
-  through the signed Threads home capability endpoint and the directory's
-  `threads_protocol_versions`; no code bumps, aliases, or reinterprets the
-  legacy relay version.
-- Absence of a signed Threads capability or usable KeyPackage is resolved
-  locally as unsupported. It never sends a probe through the legacy relay.
-- Later UX may add `c2c send --thread`; it must either use an existing direct
-  thread or create a new offer, never dual-write.
-- Existing rooms can be manually exported into a newly created thread as a
-  visible history attachment. They cannot be cryptographically backfilled with
-  forward secrecy.
-- This document supersedes the security/ACL portions of the attachment and
-  static-message-encryption drafts for Threads; those drafts remain historical
-  context for legacy c2c.
-
-## 21. Verification and acceptance matrix
-
-### 21.1 Schema and state machine
-
-- Golden valid/invalid vectors across OCaml and the crypto bridge.
-- Duplicate keys, invalid UTF-8, oversized/deep JSON, integer bounds, unknown
-  critical extensions, and canonicalization round trips.
-- Offer/accept/reject/expire, suspend/rekey, close/revoke terminal behavior.
-- Closed ID, consumed invite, KeyPackage, nonce, and request ID cannot reopen.
-- Property/model tests prove no message event transitions directly to effect.
-
-### 21.2 Crypto and identity
-
-- Official MLS/provider vectors and independent implementation interop.
-- Tamper each outer hash/receipt field and each encrypted semantic binding.
-- Wrong tenant/user/agent/device/session/leaf, expired/revoked credential, and
-  invalid credential successor.
-- Duplicate/reordered/delayed old epoch, huge generation gap, invitation and
-  KeyPackage replay, wrong audience.
-- Relay inject/drop/replay/reorder/fork; restored DB rollback.
-- Membership removal, credential update, suite downgrade, plaintext injection,
-  and corrupt state.
-- Assert Threads home/client files contain no known plaintext canaries.
-
-### 21.3 Reliability
-
-- Concurrent identical retries append one event; same key/different body is a
-  conflict.
-- Kill sender, `threadsd`, Threads home, and recipient before/after each
-  transaction and ACK boundary.
-- Retry exact ciphertext across restarts; no ratchet reuse.
-- Gap buffering/NACK, commit-before-application ordering, signed tombstone.
-- Outbox/DLQ/cursors survive crash and disk-full behavior.
-- Presentation ledger tests for every supported client, including ambiguous
-  host acknowledgements.
-
-### 21.4 Permission/B098
-
-- Grant-looking or command-looking local DM, relay DM, room, broadcast,
-  attachment, thread message, push, hook, and auto-turn creates no grant,
-  work order, verdict, file, or process.
-- Positive control for the narrow arrival allowlist: encrypted frame, replay,
-  cursor/receipt, passive-presentation records, and a fixed authenticated-home
-  transport ACK advance, while a transition audit proves no other state
-  table, process, turn, application reply, destination, or network body did.
-- A remote Threads event cannot start a model turn at `NONE` or any higher
-  permission level; independently local-started turns remain the positive
-  control.
-- Positive control: local authorization of the stored proposal executes once.
-- Exhaustive level and intersection matrix; unknown/malformed means `NONE`.
-- Expiry, revoke, max use, close, key/session/epoch/root change, unsupported
-  backend, and audit failure.
-- Peer cannot grant, delegate, renew, broaden, or exfiltrate a local grant.
-
-### 21.5 Path and write races
-
-- Absolute/parent/NUL/Unicode/confusable/deep/long/double-encoded and
-  Windows-special paths.
-- Symlink at every component, magic link, mount crossing, outside hardlink,
-  FIFO/socket/device.
-- Concurrent symlink/rename/root-swap/executable-replace loops while thousands
-  of operations run; outside sentinels remain untouched.
-- Crash at temp create/write/fsync/rename/parent fsync.
-- Concurrent user edit, base conflict, disk full, quota, protected path,
-  revoke-before-commit, and no partial mutation.
-
-### 21.6 Sandbox
-
-- Shell metacharacters remain data; unknown/config/hook/response-file flags
-  reject.
-- Attempts to reach host home, keys, broker, audit, `/proc`, devices, sockets,
-  SSH agent, Docker, cloud metadata, DNS, TCP/UDP, or host Unix IPC fail.
-- `ptrace`, mount, namespace, BPF, fork bomb, CPU/memory/PID/output/disk
-  exhaustion are contained.
-- Timeout/revoke kills every descendant.
-- Elevated level refuses to start on an unsupported backend.
-
-### 21.7 Multimodal
-
-- Chunk retry/corruption/reordering/truncation, wrong manifest, plaintext and
-  ciphertext hash mismatch.
-- MIME spoof, huge dimensions, frame/recursion/decompression bomb.
-- SVG scripts/external refs/`foreignObject`; graph/renderer injection.
-- Wrong tenant/member, expired authorization, hash-only fetch, retention/hold,
-  concurrent upload, quota, and GC races.
-- Adapter unsupported-media preservation and no automatic URL fetch/import.
-
-### 21.8 Enterprise and scale
-
-- Cross-tenant event/blob/directory probes return uniform denial without data
-  leakage.
-- SCIM group add/remove, credential expiry, directory lease expiry, federation
-  allowlist, compliance visibility.
-- Audit pre/post coverage, tamper/reorder/truncate/checkpoint mismatch,
-  disk-full fail-closed effects, secret/body absence, bounded cardinality.
-- At least 10,000 events per thread, 1,000 threads per endpoint, concurrent
-  writers, bounded blob memory, and SQLite integrity after forced death.
-- Metrics for queue lag, ACK lag, retry/DLQ, MLS epoch/commit lag, quarantine,
-  quota, grant/work-order decisions, sandbox resources, and audit export.
-
-### 21.9 Live dogfood
-
-Use the repository's tmux helpers, not ad-hoc process launches:
-
-- Codex <-> Claude <-> OpenCode direct Threads, local and cross-host home.
-- Restart/resume, offline recipient, key rotation, removal, close/reopen.
-- Text, image, SVG, and graph attachment.
-- `NONE` response-only and locally authorized READ/WRITE/EXECUTE work orders.
-- Dedicated Threads-home smoke test plus malicious-home fault injection; do
-  not route this through the legacy relay smoke path.
-
-No phase is done until it is tested through real client adapters and installed
-binaries (`just build`, `just check`, `just install-all` as appropriate).
-
-## 22. Security review gates and deployment choices
-
-These are explicit release decisions, not opportunities for silent defaults:
-
-1. OpenMLS/provider version, audit history, reproducible build, FFI memory
-   safety, and supported platforms.
-2. Required MLS suite and whether a validated FIPS profile is mandatory.
-3. OS-keystore availability; file-backed degraded mode is local development
-   only.
-4. Linux namespace sandbox versus required microVM for the tenant risk class.
-5. Compliance/recovery participant and retention visibility.
-6. Whether long-lived/multi-job/EXECUTE grants require fresh user presence or
-   two-person control.
-7. Metadata padding and home/witness deployment.
-
-Security review must include protocol, cryptography, sandbox, identity, audit,
-and client-adapter owners. A review of only the JSON schema is insufficient.
-
-## 23. References
-
-Repository anchors:
-
-- `docs/security/trust-model.md` — B098 and trust tiers.
-- `docs/security/pending-permissions.md` — advisory messages versus host-local
-  authority.
-- `ocaml/c2c_schema_v1.ml` — current lean text schema.
-- `ocaml/c2c_send_handlers.ml` — current local/plain and opportunistic E2E
-  decision path.
-- `ocaml/relay_e2e.ml` — current static X25519/Ed25519 envelope.
-- `ocaml/c2c_broker.ml` — current inbox, archive, dead-letter, and room fan-out.
-- `.collab/design/2026-04-29-attachments-cairn.md` — historical CAS proposal.
-- `.collab/design/2026-04-29-message-e2e-encryption-cairn.md` — historical
-  static-key E2E proposal.
-
-External primary specifications:
-
-- [RFC 9420: The Messaging Layer Security Protocol](https://www.rfc-editor.org/rfc/rfc9420.html)
-- [RFC 9180: Hybrid Public Key Encryption](https://www.rfc-editor.org/rfc/rfc9180.html)
-- [RFC 8446: TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html)
-- [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785.html)
-- [RFC 9449: OAuth DPoP](https://www.rfc-editor.org/rfc/rfc9449.html) —
-  proof-of-possession design precedent, not a grant format mandate.
-- [RFC 9700: OAuth 2.0 Security Best Current Practice](https://www.rfc-editor.org/rfc/rfc9700.html)
-- [RFC 7644: SCIM Protocol](https://www.rfc-editor.org/rfc/rfc7644.html)
-- [SPIFFE X.509-SVID specification](https://spiffe.io/docs/latest/spiffe-specs/x509-svid/)
-- [Linux kernel pathname lookup restrictions](https://www.kernel.org/doc/html/latest/filesystems/path-lookup.html)
-- [Linux Landlock userspace API](https://docs.kernel.org/userspace-api/landlock.html)
+- the Agent Card advertises exact required and optional Axon extension
+  versions;
+- required-version negotiation is authenticated and downgrade-resistant;
+- unsupported required semantics fail before a contract can be accepted;
+- readers reject unknown safety-critical enum values and preserve
+  non-critical unknown standard fields;
+- writers do not emit a new version until the peer advertises it;
+- database migrations are forward tested and restore tested;
+- deprecation includes at least one stable release overlap unless an active
+  vulnerability requires immediate disablement.
+
+There is no opportunistic compatibility mode that removes mutual
+authentication, signatures, extension validation, evidence requirements, or
+local authorization.
+
+## 19. Implementation plan
+
+### Phase 0 — Standards and security feasibility
+
+Deliver:
+
+- pin A2A 1.0 and its HTTP+JSON binding;
+- publish the exact mapping for Agent Card, Message, Task, Part, Artifact,
+  extension negotiation, nonblocking operations, status/history decisions,
+  polling, cancellation, errors, and lifecycle;
+- obtain a project-controlled extension namespace;
+- define JSON Schemas and RFC 8785/DSSE golden vectors for contract, decision,
+  ordered input manifest, identity/key binding, passive delivery,
+  result-manifest, evidence reference, verifier summary, and outcome;
+- define the in-toto/DSSE signer and identity profile, evidence payload types,
+  SARIF 2.1.0 Errata 01 profile, and public-hash rules;
+- select reviewed TLS, X.509, DSSE, storage-encryption, and keystore libraries;
+- prototype retry-safe personal pairing and mutual TLS on two machines;
+- define full-request Content-Digest/deduplication vectors and tombstone
+  lifetime;
+- select and publish the concrete Linux namespace/seccomp/cgroup sandbox
+  launcher and profile;
+- prototype the passive receive path, clean worker, and durable processor
+  sub-attempt;
+- validate the named OpenCode/local-model and Codex adapters;
+- define trusted-time and external database-generation behavior;
+- prototype the risk card with non-expert users;
+- publish the threat model, standards disposition ADRs, and open-source
+  foundations.
+
+Gate:
+
+- an A2A Message, server-created Task, status Message, and output Artifact
+  survive a round trip through both adapters without semantic loss;
+- contract signatures and digests match independent implementations;
+- same-request retry returns the identical server-generated Task identifier,
+  while any covered-value change is rejected;
+- unsupported or downgraded security profiles fail closed;
+- receiving every supported A2A object provably invokes no model, tool, file,
+  URL, credential, or arbitrary reply;
+- maintainers explicitly approve the small Axon extension surface.
+
+### Phase 1 — Direct evidence-backed code review
+
+Deliver:
+
+- <code>axond</code>, CLI, local inbox/risk card, encrypted SQLite-backed state,
+  OS keystore integration, outbox, inbox, dedupe, and audit;
+- personal and isolated profiles;
+- invitation, pair, re-pair, key-change suspension, and removal;
+- direct A2A over TLS 1.3 with mutual authentication;
+- <code>code_review.v1</code> using bounded text inputs;
+- proposal, decision, work order, clean attempt, result, evidence-validation,
+  and outcome states;
+- local and explicitly configured remote processor support with durable
+  ambiguous-call handling;
+- text summary, SARIF findings, canonical result manifest, and DSSE/in-toto
+  evidence;
+- signed native Linux packages, user/system services, and the normative worker
+  sandbox;
+- export, retention, externally checkpointed official-restore behavior, and
+  <code>axon doctor</code>;
+- maintained OpenCode/local-model and Codex adapters and conformance fixtures;
+- the same-host <code>axon demo review</code> evaluation path.
+
+Gate:
+
+- two independent, directly reachable fresh machines with documented
+  processors already configured complete fresh Axon setup and the full loop in
+  under ten minutes without an Axon account or organization IdP;
+- the reviewer uses the isolated service profile for the security gate;
+- the same-host evaluation path completes in under five minutes and is visibly
+  labeled as lower assurance;
+- network, daemon, database, adapter, and worker crash tests show no lost
+  durable receipt, duplicate attempt, plaintext persistence, or false success;
+- the worker has no host workspace, generic network, arbitrary tool, ambient
+  secret, or host mutation;
+- SVG, Markdown, Mermaid, and Graphviz inputs remain escaped source and cause no
+  renderer, DOM, external fetch, or OS preview;
+- a requester independently validates every signed subject and records an
+  outcome;
+- usability testing shows users can distinguish receipt, approval, completion,
+  evidence validation, semantic verification, and acceptance.
+
+**The first public product release ends here.**
+
+### Phase 2 — Repeatable bounded local work
+
+Candidate deliverables:
+
+- deterministic standing policy ceilings outside the receive path;
+- immutable read-only repository snapshots;
+- only after immutable snapshots pass their gate, named verifier profiles with
+  strong sandbox probing;
+- JUnit compatibility importer and additional standard reports;
+- private stage-write overlays and patch output, still without host apply;
+- independent verifier adapters and richer evidence trust policy.
+
+Gate:
+
+- every automatic attempt is reproducibly explained by one exact local rule;
+- run does not imply apply, network, secrets, or arbitrary command selection;
+- path, hardlink, symlink, race, resource, crash, and parser tests pass on every
+  advertised backend.
+
+### Phase 3 — Optional transport and change expansion
+
+Candidate deliverables require separate ADRs and demand evidence:
+
+- a self-hostable opaque store-and-forward provider using mandatory MLS;
+- a hardened SLIM provider if its maturity and conformance are sufficient;
+- bounded standard binary artifact profiles;
+- separately authorized host apply with true compare-and-swap semantics;
+- additional task profiles proven by real cross-organization use.
+
+Gate for any relay:
+
+- the relay cannot decrypt content or forge authenticated membership;
+- removal, rekey, replay, rollback, metadata leakage, durability, malicious
+  member, and crash behavior pass the provider conformance suite;
+- direct transport remains supported;
+- there is no nested cryptography or competing membership state.
+
+Gate for apply:
+
+- workers still cannot mutate the host;
+- the trusted applier checks exact bases and operations atomically;
+- crash after effect start cannot be reported as clean failure or retried
+  blindly.
+
+### Phase 4 — Managed organizations and groups
+
+Only after demonstrated demand:
+
+- SPIFFE trust-domain federation;
+- OIDC/WebAuthn local authority and SCIM lifecycle input;
+- central policy, audit export, visible recovery, and compliance controls;
+- private directory/federation;
+- multi-party connections and MLS membership governance.
+
+Managed work does not fork the base protocol or close essential features.
+Groups require formal modeling and independent protocol review before release.
+
+## 20. Verification plan
+
+### 20.1 Standards and interoperability
+
+- A2A conformance for Agent Card, operations, objects, lifecycle, and errors.
+- Agent Card advertises mTLS, required extensions, HTTP+JSON, authenticated
+  extended-card support, and disabled streaming/push exactly as the v1 profile
+  requires.
+- Request and response extension headers and Message/Artifact extension URI
+  lists agree on SendMessage, GetTask, ListTasks, CancelTask, and
+  GetExtendedAgentCard; missing required semantics fail before lookup or Task
+  creation.
+- Cross-peer GetTask/ListTasks/CancelTask/outcome references reveal no Task
+  existence or content.
+- Round trips through at least two independent SDKs/adapters.
+- Golden vectors for every Axon schema, canonical digest, DSSE signature, and
+  in-toto statement.
+- Reject duplicate JSON keys, invalid UTF-8, non-I-JSON numbers, unknown
+  critical fields, and version downgrade.
+- Preserve exact bytes covered by signatures or attestations through parse and
+  export.
+
+### 20.2 Pairing and transport
+
+- Entropy, expiry, attempt-limit, transactional consumption, exact-transcript
+  retry, changed-transcript rejection, redaction, and QR/file invitation tests.
+- Active MITM, wrong certificate, changed certificate, wrong trust domain,
+  expired certificate, revoked peer, and unexpected Agent Card tests.
+- Reject TLS below 1.3, 0-RTT, redirects, plaintext, anonymous clients, invalid
+  chains/pins, and insecure proxy configuration.
+- Fragmentation, slow body, oversized headers/body, queue saturation, rate
+  limit, and decompression tests.
+- Outbox/inbox crash at every transaction boundary.
+- Same peer/Message ID/full-body-and-profile digest replays the saved response
+  with the identical Task ID; any body, version, extension, interface, tenant,
+  media type, or covered-header change conflicts.
+- Replay tombstones outlive the maximum retry plus contract-expiry horizon.
+- No claim of store-and-forward while a direct endpoint is offline.
+
+### 20.3 Passive arrival and authority
+
+- Every inbound A2A operation proves no model, approval decision, tool, file,
+  process, URL, callback, credential, arbitrary recipient, or host mutation.
+- Fixed submission response is schema-bound, body-independent, and effect-free.
+- Agent Card skills, aliases, objectives, metadata, filenames, URLs, and
+  unknown extensions cannot affect policy.
+- Contract identity equals authenticated origin/local performer, and every
+  worker byte maps to exactly one signed Message-Part manifest entry.
+- Unmanifested, duplicate, kind-changed, or digest-changed Parts fail before
+  work.
+- Remote origin, local issuer, executor, and capability remain distinct.
+- Work order binds exact task, revision, input, vector, budgets, processor,
+  executor, and nonce.
+- Claim and budget reservation are atomic.
+- Crash-after-start becomes ambiguous and never auto-retries.
+- Remote cancellation acts only when explicitly caveated.
+- CancelTask without a caveat returns TaskNotCancelableError, and
+  TASK_STATE_AUTH_REQUIRED is unreachable in v1.
+
+### 20.4 Content and parser safety
+
+- Boundary tests for bytes, nesting, item count, recursion, Unicode, duplicate
+  keys, filenames, media types, and report complexity.
+- URLs never trigger DNS, HTTP, file, data, or custom-scheme access.
+- SVG is never placed in a DOM, decoded, rendered, rasterized, previewed, or
+  externally resolved; the UI shows escaped source.
+- Markdown, Mermaid, and Graphviz have the same inert-source guarantee.
+- SARIF/JUnit/import parsers run with strict limits, never fetch schema or
+  artifact URIs, and preserve original bytes.
+- Unsupported and binary content cannot reach a model or OS preview service.
+
+### 20.5 Worker and sandbox
+
+- Empty environment, descriptor inheritance, process identity, scratch cleanup,
+  output gate, deadline, cost, and resource tests.
+- Processor broker permits only the selected service and exact input manifest.
+- Processor calls are durably prepared; uncertain transmission becomes
+  ambiguous and never auto-retries without proven provider idempotency.
+- Worker cannot reach host workspace, generic network, raw credentials, or
+  unrelated tasks.
+- Later snapshot tests cover symlink, hardlink, mount, rename, inode reuse,
+  path alias, TOCTOU, and non-atomic reads.
+- Later overlay/apply tests cover base mismatch, concurrent modification,
+  partial failure, crash, and rollback.
+- Sandbox feature probing fails closed on every advertised platform.
+
+### 20.6 Evidence and outcomes
+
+- Validate DSSE payload type, exact bytes, signer purpose, chain, time,
+  revocation, and subject digests.
+- Result-manifest ordering, digest, slot mapping, and atomic completion match
+  independent golden vectors.
+- Evidence result and disclosure are orthogonal; redaction cannot hide failure
+  or satisfy a visible-pass requirement.
+- Self, independent, and hardware trust labels derive only from local policy.
+- SLSA is emitted only for matching build semantics and makes no unsupported
+  level claim.
+- Outcome binds the exact accepted contract and canonical result manifest.
+- Personal portable validation proves continuity only to the exported pairing
+  root; managed identity and trusted-time claims require their configured
+  chains/checkpoints.
+- Public Sigstore interaction is impossible without explicit approval.
+- Private low-entropy content hashes do not leak through telemetry or audit.
+
+### 20.7 Privacy, storage, and recovery
+
+- Database, WAL, temporary file, backup, log, panic, and crash-dump scans find
+  no task plaintext or credential material.
+- Keystore denial and rollback/restore cases fail safely.
+- External state generation and backward-clock cases enter recovery before any
+  session or work-order issuance.
+- Retention and deletion behavior matches the UI and exported policy.
+- Telemetry is off by default and its enabled schema contains no content.
+- Every plaintext proxy and processor appears in <code>axon doctor</code>.
+- Restored state cannot silently resume automatic work.
+
+### 20.8 Product verification
+
+- Fresh-install time-to-first-complete-task under ten minutes.
+- Independent users understand pairing without certificate terminology.
+- Risk-card tests show comprehension of exact data disclosure and capability.
+- Users distinguish durable receipt, local approval, producer completion,
+  evidence validation, optional semantic verification, and requester
+  acceptance.
+- Two real adapters complete the same code-review fixture.
+- Maintainers dogfood Axon for review of Axon changes before Phase 1 release.
+
+## 21. Decision gates for deferred features
+
+A deferred feature enters implementation only when an ADR answers:
+
+1. Which observed user problem requires it?
+2. Which existing standard or implementation was evaluated?
+3. Why can the current A2A/direct/local-authority design not satisfy the need?
+4. What new trusted code, metadata, parser, authority, and recovery surface is
+   introduced?
+5. What secure failure behavior and downgrade rule apply?
+6. How is the feature self-hosted and interoperable?
+7. What conformance, fuzz, fault, and adversarial tests gate release?
+8. How can an operator disable or remove it without losing base Axon use?
+
+This gate applies especially to relays, MLS groups, directories, rich media,
+large artifacts, secret brokerage, network egress, host apply, delegation,
+managed recovery, and public transparency.
+
+## 22. References
+
+- A2A 1.0 Protocol specification:
+  <https://a2a-protocol.org/latest/specification/>
+- BCP 14 requirements language, RFC 2119 and RFC 8174:
+  <https://www.rfc-editor.org/rfc/rfc2119>
+  <https://www.rfc-editor.org/rfc/rfc8174>
+- TLS 1.3, RFC 8446:
+  <https://www.rfc-editor.org/rfc/rfc8446>
+- Internet X.509 PKI profile, RFC 5280:
+  <https://www.rfc-editor.org/rfc/rfc5280>
+- JWS, RFC 7515:
+  <https://www.rfc-editor.org/rfc/rfc7515>
+- JWK thumbprints, RFC 7638:
+  <https://www.rfc-editor.org/rfc/rfc7638>
+- Ed25519, RFC 8032:
+  <https://www.rfc-editor.org/rfc/rfc8032>
+- EdDSA for JOSE, RFC 8037:
+  <https://www.rfc-editor.org/rfc/rfc8037>
+- Internet X.509 timestamp protocol, RFC 3161:
+  <https://www.rfc-editor.org/rfc/rfc3161>
+- HTTP Content-Digest, RFC 9530:
+  <https://www.rfc-editor.org/rfc/rfc9530>
+- Bearer authorization syntax and handling, RFC 6750:
+  <https://www.rfc-editor.org/rfc/rfc6750>
+- UUIDs, RFC 9562:
+  <https://www.rfc-editor.org/rfc/rfc9562>
+- RFC 3339 date and time:
+  <https://www.rfc-editor.org/rfc/rfc3339>
+- I-JSON, RFC 7493:
+  <https://www.rfc-editor.org/rfc/rfc7493>
+- JSON Canonicalization Scheme, RFC 8785:
+  <https://www.rfc-editor.org/rfc/rfc8785>
+- Problem Details for HTTP APIs, RFC 9457:
+  <https://www.rfc-editor.org/rfc/rfc9457>
+- JSON Schema Draft 2020-12:
+  <https://json-schema.org/draft/2020-12>
+- DSSE:
+  <https://github.com/secure-systems-lab/dsse>
+- in-toto Attestation Framework:
+  <https://github.com/in-toto/attestation>
+- SLSA Provenance:
+  <https://slsa.dev/spec/>
+- SARIF 2.1.0 Plus Errata 01:
+  <https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/sarif-v2.1.0-errata01-os.html>
+- Sigstore bundle format:
+  <https://docs.sigstore.dev/about/bundle/>
+- Git bundle format:
+  <https://git-scm.com/docs/bundle-format>
+- Git format-patch:
+  <https://git-scm.com/docs/git-format-patch>
+- Messaging Layer Security, RFC 9420:
+  <https://www.rfc-editor.org/rfc/rfc9420>
+- MLS architecture, RFC 9750:
+  <https://www.rfc-editor.org/rfc/rfc9750>
+- SPIFFE X.509-SVID:
+  <https://spiffe.io/docs/latest/spiffe-about/spiffe-concepts/>
+- OpenID Connect:
+  <https://openid.net/developers/how-connect-works/>
+- SCIM, RFC 7644:
+  <https://www.rfc-editor.org/rfc/rfc7644>
+- Linux <code>openat2</code>:
+  <https://man7.org/linux/man-pages/man2/openat2.2.html>
+- Linux Landlock:
+  <https://docs.kernel.org/userspace-api/landlock.html>
+- OpenTelemetry semantic conventions:
+  <https://opentelemetry.io/docs/specs/semconv/>
+- AGNTCY SLIM specification:
+  <https://spec.slim.agntcy.org/>
+- IETF MIMI working group:
+  <https://datatracker.ietf.org/wg/mimi/>
+
+## 23. Final product boundary
+
+Axon is the open secure A2A gateway, local authority boundary, and portable
+evidence loop.
+
+It succeeds by making one difficult path exceptionally clear:
+
+~~~text
+authenticated request
+-> inert durable task
+-> explicit local decision
+-> bounded clean execution
+-> standard evidence
+-> independently checkable outcome
+~~~
+
+It does not become outstanding by owning every surrounding layer. Agent
+semantics stay A2A. Direct transport stays TLS. Later group security stays MLS.
+Software findings stay SARIF. Evidence stays DSSE/in-toto. Source formats stay
+Git. SVG stays text. Local authority and honest product UX are where Axon earns
+its name.
