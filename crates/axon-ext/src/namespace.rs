@@ -20,6 +20,17 @@ pub fn ext_uri(name: &str, version: u32) -> String {
     format!("{EXTENSION_NAMESPACE}/{name}/v{version}")
 }
 
+/// Builds the versioned payload media type for an extension object, e.g.
+/// `payload_media_type("contract", 1)` →
+/// `application/vnd.axon-dev.contract.v1+json`.
+///
+/// The `vnd.axon-dev` tree is an unregistered development placeholder; design
+/// §14.2 assigns the real media types through the normal registration process
+/// in Phase 0, gated together with [`NAMESPACE_IS_PLACEHOLDER`].
+pub fn payload_media_type(name: &str, version: u32) -> String {
+    format!("application/vnd.axon-dev.{name}.v{version}+json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

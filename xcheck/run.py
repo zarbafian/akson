@@ -17,7 +17,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+from jsonschema import Draft202012Validator
 from jwcrypto import jwk
+
+# Set by main() from the vectors root; schema vectors validate instances
+# against the real registry files in spec/ext/.
+SCHEMA_DIR = pathlib.Path("spec/ext")
 
 FAILURES = []
 
@@ -87,11 +92,35 @@ def check_dsse(name: str, case: dict) -> None:
     expect_eq(name, "keyid", key.thumbprint(), exp["keyid"])
 
 
-CHECKERS = {"jcs": check_jcs, "thumbprint": check_thumbprint, "dsse": check_dsse}
+def check_schema(name: str, case: dict) -> None:
+    inp, exp = case["input"], case["expected"]
+    schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
+    schema = json.loads(schema_path.read_text())
+    Draft202012Validator.check_schema(schema)
+    errors = list(Draft202012Validator(schema).iter_errors(inp["value"]))
+    expect_eq(name, "validity", not errors, exp["valid"])
+    if exp["valid"]:
+        canonical = rfc8785.dumps(inp["value"])
+        expect_eq(
+            name,
+            "canonical sha256",
+            hashlib.sha256(canonical).hexdigest(),
+            exp["canonical_sha256"],
+        )
+
+
+CHECKERS = {
+    "jcs": check_jcs,
+    "thumbprint": check_thumbprint,
+    "dsse": check_dsse,
+    "schema": check_schema,
+}
 
 
 def main() -> int:
+    global SCHEMA_DIR
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "spec/vectors")
+    SCHEMA_DIR = root.parent / "ext"
     count = 0
     for path in sorted(root.rglob("*.json")):
         family = path.relative_to(root).parts[0]

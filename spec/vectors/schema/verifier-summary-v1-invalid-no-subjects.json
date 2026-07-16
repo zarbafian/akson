@@ -1,0 +1,22 @@
+{
+  "name": "schema/verifier-summary-v1-invalid-no-subjects",
+  "description": "a verification claim without exact subjects is meaningless",
+  "input": {
+    "schema": "verifier-summary",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "verifier": {
+        "issuer": "axon:pairing:demo",
+        "agent": "validator.example"
+      },
+      "subjects": [],
+      "check_profile": "axon-evidence-validate/v1",
+      "result": "passed",
+      "produced_at": "2026-07-16T12:00:00Z"
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}

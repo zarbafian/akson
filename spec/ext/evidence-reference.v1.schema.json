@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/evidence-reference/v1/schema.json",
+  "title": "Axon evidence reference v1 (design §3.2): a pointer to one DSSE evidence envelope by exact bytes and signer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "role", "payload_type", "byte_length", "sha256", "signer_keyid"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "role": { "$ref": "#/$defs/slug" },
+    "payload_type": { "$ref": "#/$defs/mediaType" },
+    "byte_length": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+    "sha256": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "SHA-256 of the exact serialized DSSE envelope bytes."
+    },
+    "signer_keyid": { "$ref": "#/$defs/b64url32" }
+  },
+  "$defs": {
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "b64url32": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "mediaType": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9!#$&.+^_-]{0,126}/[a-zA-Z0-9][a-zA-Z0-9!#$&.+^_-]{0,126}$"
+    }
+  }
+}

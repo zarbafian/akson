@@ -1,0 +1,58 @@
+{
+  "name": "schema/result-manifest-v1-valid",
+  "description": "two sorted outputs, one evidence entry, one satisfied slot",
+  "input": {
+    "schema": "result-manifest",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "task_id": "task-0001",
+      "context_id": "ctx-0001",
+      "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
+      "contract_revision": 0,
+      "contract_digest": "50b69ff3e5daf6d375e76009d6ba305e714c9f3e77ccd39852e36d1ea50e6273",
+      "attempt_digest": "3dafcfaa6218343276ff42263fe100bab5e2b0475a8d98b96abc88c57bfd9992",
+      "work_order_receipt_digest": "69736425991fd4cdfa78ff79faffc8985490260274fa310d6dd84fb4a4f3307e",
+      "outputs": [
+        {
+          "role": "findings",
+          "artifact_id": "artifact-0002",
+          "part_index": 0,
+          "media_type": "application/sarif+json",
+          "byte_length": 5120,
+          "sha256": "56232ed4fe73b46014d23e42ec8e4b0c03f6fc6000870b8022024d8e9bce2ef6"
+        },
+        {
+          "role": "summary",
+          "artifact_id": "artifact-0001",
+          "part_index": 0,
+          "media_type": "text/plain",
+          "byte_length": 640,
+          "sha256": "9cb5b8a6d4257c0dbacd5739ee64d28cddf5b56840697c6029491aea6c5c7b0a"
+        }
+      ],
+      "evidence": [
+        {
+          "role": "execution",
+          "payload_type": "application/vnd.in-toto+json",
+          "byte_length": 2048,
+          "sha256": "9222850f9b815c995344f064bc3baeb2a65554f6294116ec5d46f83323e4c699",
+          "signer_keyid": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+        }
+      ],
+      "slots": [
+        {
+          "slot_id": "execution",
+          "evidence_role": "execution",
+          "result": "passed",
+          "disclosure": "full"
+        }
+      ],
+      "omissions": []
+    }
+  },
+  "expected": {
+    "valid": true,
+    "canonical_sha256": "d102bc7a596e794982dec2eb1927ce9d28255cae49e42dae3b80ef7b8f2148be"
+  }
+}

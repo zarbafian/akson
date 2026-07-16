@@ -1,0 +1,18 @@
+{
+  "name": "schema/delivery-v1-valid",
+  "description": "durable receipt for a stored request body",
+  "input": {
+    "schema": "delivery",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "message_id": "msg-0001",
+      "content_digest_sha256": "3bdb5a5184dacfb4b6f55949a13a800168b87a30b92ca33f71289af60abfa35b",
+      "task_id": "task-0001"
+    }
+  },
+  "expected": {
+    "valid": true,
+    "canonical_sha256": "2ac7c306cf4951508f8843250a2faf74b413477f219640ee0ae794e627467990"
+  }
+}

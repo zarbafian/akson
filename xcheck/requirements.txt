@@ -1,3 +1,4 @@
 rfc8785==0.1.4
 jwcrypto==1.5.8
 cryptography==49.0.0
+jsonschema==4.26.0

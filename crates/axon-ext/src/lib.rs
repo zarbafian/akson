@@ -13,3 +13,4 @@ pub mod dsse;
 pub mod ijson;
 pub mod jcs;
 pub mod namespace;
+pub mod schema;

@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/contract/v1/schema.json",
+  "title": "Axon task contract revision v1 (design §10.2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "revision",
+    "task_type",
+    "message_id",
+    "requester",
+    "performer",
+    "objective",
+    "inputs",
+    "deliverables",
+    "evidence_slots",
+    "requested_capabilities",
+    "processor_constraints",
+    "limits",
+    "result_recipient",
+    "created_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "contract_id": { "$ref": "#/$defs/uuidv4" },
+    "revision": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "predecessor_digest": { "$ref": "#/$defs/sha256hex" },
+    "task_type": {
+      "type": "string",
+      "pattern": "^https://",
+      "maxLength": 256
+    },
+    "message_id": { "$ref": "#/$defs/a2aId" },
+    "context_id": { "$ref": "#/$defs/a2aId" },
+    "task_id": { "$ref": "#/$defs/a2aId" },
+    "requester": { "$ref": "#/$defs/identity" },
+    "performer": { "$ref": "#/$defs/identity" },
+    "objective": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "Human context only; explicitly non-authoritative and unable to widen any typed field."
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/inputEntry" }
+    },
+    "deliverables": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "media_type"],
+        "properties": {
+          "role": { "$ref": "#/$defs/slug" },
+          "media_type": { "$ref": "#/$defs/mediaType" }
+        }
+      }
+    },
+    "evidence_slots": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot_id", "statement_type", "trust_classes"],
+        "properties": {
+          "slot_id": { "$ref": "#/$defs/slug" },
+          "statement_type": { "type": "string", "maxLength": 256 },
+          "trust_classes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "enum": ["self-attested", "independently-verified", "hardware-attested"]
+            }
+          }
+        }
+      }
+    },
+    "requested_capabilities": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Informational request, never authority (design §10.3). V1 knows only these components.",
+      "items": {
+        "enum": ["respond", "read_supplied_inputs", "processor_use", "artifact_export"]
+      }
+    },
+    "processor_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disclosure"],
+      "properties": {
+        "disclosure": {
+          "enum": ["none", "local-only", "named-remote"],
+          "description": "Bilateral ceiling on processor plaintext disclosure; the work order still names the exact processor."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deadline", "max_response_bytes"],
+      "properties": {
+        "deadline": { "$ref": "#/$defs/rfc3339utc" },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "max_cost_microusd": { "type": "integer", "minimum": 0, "maximum": 1000000000000 }
+      }
+    },
+    "result_recipient": {
+      "const": "request-origin",
+      "description": "V1: the result recipient MUST be the authenticated request origin (design §10.3)."
+    },
+    "retention_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["days"],
+      "properties": {
+        "days": { "type": "integer", "minimum": 0, "maximum": 3650 }
+      }
+    },
+    "created_at": { "$ref": "#/$defs/rfc3339utc" },
+    "expires_at": { "$ref": "#/$defs/rfc3339utc" }
+  },
+  "allOf": [
+    {
+      "description": "Revision zero has no predecessor; every later revision names one and its existing Task.",
+      "if": { "properties": { "revision": { "const": 0 } } },
+      "then": { "not": { "required": ["predecessor_digest"] } },
+      "else": { "required": ["predecessor_digest", "task_id"] }
+    }
+  ],
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rfc3339utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "a2aId": { "type": "string", "pattern": "^[\\x21-\\x7e]{1,128}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "mediaType": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9!#$&.+^_-]{0,126}/[a-zA-Z0-9][a-zA-Z0-9!#$&.+^_-]{0,126}$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "agent"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "agent": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "inputEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "message_id",
+        "part_index",
+        "kind",
+        "media_type",
+        "canonical_rule",
+        "byte_length",
+        "sha256",
+        "worker_visible",
+        "processor_visible"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "message_id": { "$ref": "#/$defs/a2aId" },
+        "part_index": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "kind": { "enum": ["text", "data"] },
+        "media_type": { "$ref": "#/$defs/mediaType" },
+        "charset": { "const": "utf-8" },
+        "canonical_rule": {
+          "enum": ["utf8-exact", "jcs"],
+          "description": "text Parts digest the exact UTF-8 string bytes; data Parts digest RFC 8785 canonical JSON (design §10.2)."
+        },
+        "byte_length": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "sha256": { "$ref": "#/$defs/sha256hex" },
+        "worker_visible": { "type": "boolean" },
+        "processor_visible": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "text" } } },
+          "then": { "properties": { "canonical_rule": { "const": "utf8-exact" } } },
+          "else": { "properties": { "canonical_rule": { "const": "jcs" } } }
+        }
+      ]
+    }
+  }
+}

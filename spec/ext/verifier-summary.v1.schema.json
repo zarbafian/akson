@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/verifier-summary/v1/schema.json",
+  "title": "Axon verifier summary v1 (design §3.2, §14.2): what one named verifier checked and found",
+  "description": "Trust class is derived by the recipient's local policy from validated identities (design §14.4); this object never self-asserts it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "verifier", "subjects", "check_profile", "result", "produced_at"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "verifier": { "$ref": "#/$defs/identity" },
+    "subjects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/sha256hex" },
+      "description": "Exact artifact digests the verifier evaluated."
+    },
+    "check_profile": { "type": "string", "maxLength": 256 },
+    "result": { "enum": ["passed", "failed", "error", "not_run"] },
+    "note": { "type": "string", "maxLength": 2048 },
+    "produced_at": { "$ref": "#/$defs/rfc3339utc" }
+  },
+  "$defs": {
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rfc3339utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "agent"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "agent": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/result-manifest/v1/schema.json",
+  "title": "Axon canonical result manifest v1 (design §14.1)",
+  "description": "Array ordering is normative (bytewise by role, object identifier, part index, digest) but enforced by code, not schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "context_id",
+    "contract_id",
+    "contract_revision",
+    "contract_digest",
+    "attempt_digest",
+    "work_order_receipt_digest",
+    "outputs",
+    "evidence",
+    "slots",
+    "omissions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "$ref": "#/$defs/a2aId" },
+    "context_id": { "$ref": "#/$defs/a2aId" },
+    "contract_id": { "$ref": "#/$defs/uuidv4" },
+    "contract_revision": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "contract_digest": { "$ref": "#/$defs/sha256hex" },
+    "attempt_digest": { "$ref": "#/$defs/sha256hex" },
+    "work_order_receipt_digest": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "Digest of the local work-order receipt; the order itself is endpoint-private (design §3.2)."
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "artifact_id", "part_index", "media_type", "byte_length", "sha256"],
+        "properties": {
+          "role": { "$ref": "#/$defs/slug" },
+          "artifact_id": { "$ref": "#/$defs/a2aId" },
+          "part_index": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "media_type": { "$ref": "#/$defs/mediaType" },
+          "byte_length": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+          "sha256": { "$ref": "#/$defs/sha256hex" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "payload_type", "byte_length", "sha256", "signer_keyid"],
+        "properties": {
+          "role": { "$ref": "#/$defs/slug" },
+          "payload_type": { "$ref": "#/$defs/mediaType" },
+          "byte_length": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+          "sha256": { "$ref": "#/$defs/sha256hex" },
+          "signer_keyid": { "$ref": "#/$defs/b64url32" }
+        }
+      }
+    },
+    "slots": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot_id", "result", "disclosure"],
+        "properties": {
+          "slot_id": { "$ref": "#/$defs/slug" },
+          "evidence_role": {
+            "$ref": "#/$defs/slug",
+            "description": "References an entry in evidence[] by role; absent only when result is not_run or unavailable."
+          },
+          "result": { "enum": ["passed", "failed", "error", "not_run", "unavailable"] },
+          "disclosure": { "enum": ["full", "summary", "redacted"] }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "result": { "enum": ["passed", "failed", "error"] } } },
+            "then": { "required": ["evidence_role"] }
+          }
+        ]
+      }
+    },
+    "omissions": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "reason_code"],
+        "properties": {
+          "subject": { "type": "string", "maxLength": 256 },
+          "reason_code": { "$ref": "#/$defs/slug" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "a2aId": { "type": "string", "pattern": "^[\\x21-\\x7e]{1,128}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "b64url32": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "mediaType": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9!#$&.+^_-]{0,126}/[a-zA-Z0-9][a-zA-Z0-9!#$&.+^_-]{0,126}$"
+    }
+  }
+}

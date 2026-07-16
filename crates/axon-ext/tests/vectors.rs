@@ -51,6 +51,37 @@ fn jcs_vectors() {
 }
 
 #[test]
+fn schema_vectors() {
+    for case in load_family("schema") {
+        let name = case["name"].as_str().unwrap();
+        let input = &case["input"];
+        let schema_name = input["schema"].as_str().unwrap();
+        let version = u32::try_from(input["version"].as_u64().unwrap()).unwrap();
+        let id = axon_ext::schema::SchemaId::by_name(schema_name, version)
+            .unwrap_or_else(|| panic!("{name}: unknown schema {schema_name} v{version}"));
+        let value = &input["value"];
+        let expected_valid = case["expected"]["valid"].as_bool().unwrap();
+
+        // The instance must also survive strict I-JSON re-parsing.
+        let reparsed = axon_ext::ijson::parse(&serde_json::to_vec(value).unwrap()).unwrap();
+        let result = axon_ext::schema::validate(id, &reparsed);
+        assert_eq!(
+            result.is_ok(),
+            expected_valid,
+            "{name}: validity differs ({result:?})"
+        );
+        if expected_valid {
+            let digest = axon_ext::jcs::canonical_sha256(value).unwrap();
+            assert_eq!(
+                hex::encode(digest),
+                case["expected"]["canonical_sha256"].as_str().unwrap(),
+                "{name}: canonical digest differs"
+            );
+        }
+    }
+}
+
+#[test]
 fn dsse_vectors() {
     for case in load_family("dsse") {
         let name = case["name"].as_str().unwrap();

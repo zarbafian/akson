@@ -1,0 +1,18 @@
+{
+  "name": "schema/evidence-reference-v1-invalid-no-signer",
+  "description": "evidence must identify who asserted it",
+  "input": {
+    "schema": "evidence-reference",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "role": "execution",
+      "payload_type": "application/vnd.in-toto+json",
+      "byte_length": 2048,
+      "sha256": "9222850f9b815c995344f064bc3baeb2a65554f6294116ec5d46f83323e4c699"
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}

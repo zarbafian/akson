@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/outcome/v1/schema.json",
+  "title": "Axon requester outcome v1 (design §14.5)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "context_id",
+    "contract_id",
+    "contract_revision",
+    "contract_digest",
+    "result_manifest_digest",
+    "state",
+    "requester",
+    "signed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "task_id": { "$ref": "#/$defs/a2aId" },
+    "context_id": { "$ref": "#/$defs/a2aId" },
+    "contract_id": { "$ref": "#/$defs/uuidv4" },
+    "contract_revision": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "contract_digest": { "$ref": "#/$defs/sha256hex" },
+    "result_manifest_digest": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "The canonical result-manifest digest — the precisely defined \"bundle digest\" (design §14.1)."
+    },
+    "state": { "enum": ["accepted", "rejected", "disputed"] },
+    "reason_code": { "$ref": "#/$defs/slug" },
+    "note": { "type": "string", "maxLength": 2048 },
+    "requester": { "$ref": "#/$defs/identity" },
+    "signed_at": { "$ref": "#/$defs/rfc3339utc" }
+  },
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rfc3339utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "a2aId": { "type": "string", "pattern": "^[\\x21-\\x7e]{1,128}$" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "agent"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "agent": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}

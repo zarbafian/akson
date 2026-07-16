@@ -45,7 +45,9 @@ axon-adapter-sdk = { path = "crates/axon-adapter-sdk" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 json-canon = "0.1"
-jsonschema = "0.30"
+# default-features off: keeps the remote-$ref HTTP resolver (reqwest) out of
+# the tree — schema compilation must never be able to fetch anything.
+jsonschema = { version = "0.30", default-features = false }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 rand = "0.8"
 sha2 = "0.10"

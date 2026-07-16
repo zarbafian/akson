@@ -1,0 +1,17 @@
+{
+  "name": "schema/delivery-v1-invalid-digest",
+  "description": "digest must be 64 lowercase hex characters",
+  "input": {
+    "schema": "delivery",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "message_id": "msg-0001",
+      "content_digest_sha256": "abc123",
+      "task_id": "task-0001"
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}

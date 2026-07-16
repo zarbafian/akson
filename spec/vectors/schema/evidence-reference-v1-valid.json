@@ -1,0 +1,20 @@
+{
+  "name": "schema/evidence-reference-v1-valid",
+  "description": "pointer to one DSSE envelope",
+  "input": {
+    "schema": "evidence-reference",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "role": "execution",
+      "payload_type": "application/vnd.in-toto+json",
+      "byte_length": 2048,
+      "sha256": "9222850f9b815c995344f064bc3baeb2a65554f6294116ec5d46f83323e4c699",
+      "signer_keyid": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+    }
+  },
+  "expected": {
+    "valid": true,
+    "canonical_sha256": "2879e3131d53f52772cc05fd62a1279d6f2b785d4600c8a1cc4e44a5285832d7"
+  }
+}

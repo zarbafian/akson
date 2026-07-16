@@ -1,0 +1,26 @@
+{
+  "name": "schema/verifier-summary-v1-valid",
+  "description": "named verifier checked two subjects",
+  "input": {
+    "schema": "verifier-summary",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "verifier": {
+        "issuer": "axon:pairing:demo",
+        "agent": "validator.example"
+      },
+      "subjects": [
+        "56232ed4fe73b46014d23e42ec8e4b0c03f6fc6000870b8022024d8e9bce2ef6",
+        "9cb5b8a6d4257c0dbacd5739ee64d28cddf5b56840697c6029491aea6c5c7b0a"
+      ],
+      "check_profile": "axon-evidence-validate/v1",
+      "result": "passed",
+      "produced_at": "2026-07-16T12:00:00Z"
+    }
+  },
+  "expected": {
+    "valid": true,
+    "canonical_sha256": "dcfdeafef538a486d08a7ff1f5e43b1560ebc7552fd1cccc35f9afe316567ad4"
+  }
+}

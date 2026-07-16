@@ -1,0 +1,46 @@
+{
+  "name": "schema/key-binding-v1-valid",
+  "description": "two purpose-bound Ed25519 verification keys",
+  "input": {
+    "schema": "key-binding",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "subject": {
+        "issuer": "axon:pairing:demo",
+        "agent": "reviewer.example"
+      },
+      "tls_certificate_sha256": "0a1bb31085a4ae34473de9206876723889ab2f24b7b5280b79f290b631d3d835",
+      "keys": [
+        {
+          "purpose": "agent-card",
+          "jwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+          },
+          "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+          "generation": 0,
+          "not_before": "2026-07-16T12:00:00Z",
+          "not_after": "2027-07-16T12:00:00Z"
+        },
+        {
+          "purpose": "contract-decision",
+          "jwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+          },
+          "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+          "generation": 0,
+          "not_before": "2026-07-16T12:00:00Z",
+          "not_after": "2027-07-16T12:00:00Z"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "canonical_sha256": "263574f38d33dc15e8b52bdf7ff0074cd7c3a93a239adf45c4da417a0d1a2bc2"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.invalid/ext/key-binding/v1/schema.json",
+  "title": "Axon identity/key binding v1 (design §8.1, §8.2 step 5): purpose-bound verification keys exchanged at pairing",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject", "tls_certificate_sha256", "keys"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "subject": { "$ref": "#/$defs/identity" },
+    "tls_certificate_sha256": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "SHA-256 over the complete DER endpoint certificate (design §8.1)."
+    },
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purpose", "jwk", "thumbprint", "generation", "not_before", "not_after"],
+        "properties": {
+          "purpose": {
+            "enum": [
+              "agent-card",
+              "contract-proposal",
+              "contract-decision",
+              "task-result",
+              "evidence"
+            ],
+            "description": "Statement purposes only; TLS identity is pinned by certificate digest, local-authority keys never leave the endpoint (ADR-0004)."
+          },
+          "jwk": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kty", "crv", "x"],
+            "properties": {
+              "kty": { "const": "OKP" },
+              "crv": { "const": "Ed25519" },
+              "x": { "$ref": "#/$defs/b64url32" }
+            }
+          },
+          "thumbprint": { "$ref": "#/$defs/b64url32" },
+          "generation": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+          "not_before": { "$ref": "#/$defs/rfc3339utc" },
+          "not_after": { "$ref": "#/$defs/rfc3339utc" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rfc3339utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "b64url32": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "base64url, unpadded, of 32 bytes"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "agent"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "agent": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}
