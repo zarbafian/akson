@@ -50,11 +50,15 @@ json-canon = "0.1"
 jsonschema = { version = "0.30", default-features = false }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 rand = "0.8"
+# Storage (ADR-0003) and envelope encryption (ADR-0005).
+rusqlite = { version = "0.32", features = ["bundled"] }
+chacha20poly1305 = "0.10"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
 thiserror = "2.0"
 uuid = { version = "1.17", features = ["v4"] }
+tempfile = "3"
 # A2A codegen (ADR-0002): protox compiles the vendored protos without a
 # system protoc or network; pbjson supplies the standard proto3 JSON mapping.
 prost = "0.14"

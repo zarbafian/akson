@@ -9,6 +9,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axon-crypto = { workspace = true }
+rusqlite = { workspace = true }
+chacha20poly1305 = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

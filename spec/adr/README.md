@@ -37,7 +37,7 @@ Index:
 | [0002](0002-a2a-source-of-truth.md) | Vendored A2A definitions as source of truth | accepted |
 | [0003](0003-storage.md) | SQLite storage with application-layer encryption | accepted |
 | [0004](0004-signing.md) | Ed25519 purpose-separated signing keys | accepted |
-| 0005 | Envelope-encryption library | open |
+| [0005](0005-envelope-encryption.md) | Envelope encryption for sensitive columns | accepted |
 | 0006 | Sandbox launcher | open |
 | [0007](0007-jws-agent-card.md) | Minimal EdDSA JWS for Agent Card signatures | accepted |
 | 0008 | DSSE/in-toto implementation | open |
