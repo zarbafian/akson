@@ -13,6 +13,7 @@
 //! layer on top of these and the TLS transport (M5).
 
 pub mod bootstrap;
+pub mod handler;
 pub mod invitation;
 pub mod key_binding;
 pub mod session;

@@ -67,6 +67,9 @@ pub enum Accepted {
 pub trait PairingLedger {
     /// The consumed record for a verifier, if the invitation was already used.
     fn consumed(&self, verifier: &[u8; 32]) -> Option<Consumed>;
+    /// Whether a live invitation exists for this verifier — a cheap pre-check
+    /// so an unknown secret is rejected before any signature verification.
+    fn active_exists(&self, verifier: &[u8; 32]) -> bool;
     /// Removes and returns the live invitation for a verifier, if present.
     fn take_active(&mut self, verifier: &[u8; 32]) -> Option<PendingInvitation>;
     /// Re-inserts a live invitation (e.g. after a failed-but-not-final attempt).
@@ -75,6 +78,13 @@ pub trait PairingLedger {
     /// taken). On a real ledger this is one transaction — the secret is
     /// consumed in the same commit that creates the pending peer (§8.2).
     fn commit_consumed(&mut self, verifier: [u8; 32], consumed: Consumed);
+}
+
+/// The verifier (ledger key) for a presented base64url secret, or `None` if the
+/// secret is malformed.
+pub fn verifier_of(presented_secret: &str) -> Option<[u8; 32]> {
+    let bytes = URL_SAFE_NO_PAD.decode(presented_secret).ok()?;
+    Some(Sha256::digest(bytes).into())
 }
 
 /// Runs a bootstrap attempt against the ledger.
@@ -129,11 +139,6 @@ pub fn accept(
     }
 }
 
-fn verifier_of(presented_secret: &str) -> Option<[u8; 32]> {
-    let bytes = URL_SAFE_NO_PAD.decode(presented_secret).ok()?;
-    Some(Sha256::digest(bytes).into())
-}
-
 /// The default in-memory ledger (tests, ephemeral runs).
 #[derive(Default)]
 pub struct MemoryLedger {
@@ -155,6 +160,10 @@ impl MemoryLedger {
 impl PairingLedger for MemoryLedger {
     fn consumed(&self, verifier: &[u8; 32]) -> Option<Consumed> {
         self.consumed.get(verifier).cloned()
+    }
+
+    fn active_exists(&self, verifier: &[u8; 32]) -> bool {
+        self.active.contains_key(verifier)
     }
 
     fn take_active(&mut self, verifier: &[u8; 32]) -> Option<PendingInvitation> {
