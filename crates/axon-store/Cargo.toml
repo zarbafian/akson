@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 axon-crypto = { workspace = true }
+axon-pairing = { workspace = true }
 rusqlite = { workspace = true }
 chacha20poly1305 = { workspace = true }
 rand = { workspace = true }

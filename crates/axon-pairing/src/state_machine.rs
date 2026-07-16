@@ -43,6 +43,9 @@ use crate::invitation::{InvitationError, PendingInvitation};
 pub struct Consumed {
     pub transcript_digest: [u8; 32],
     pub response: Vec<u8>,
+    /// When this record may be purged — the consumed invitation's expiry
+    /// (design §8.2: retained only until invitation expiry).
+    pub expires_at: i64,
 }
 
 /// The verdict of a bootstrap attempt.
@@ -148,6 +151,7 @@ pub fn accept(
                 Consumed {
                     transcript_digest,
                     response: response.clone(),
+                    expires_at: invitation.not_after,
                 },
             )?;
             Ok(Accepted::Paired { response })

@@ -32,6 +32,8 @@ pub mod schema;
 use std::path::Path;
 
 use axon_crypto::identity::PeerIdentity;
+use axon_pairing::invitation::PendingInvitation;
+use axon_pairing::state_machine::{Consumed, LedgerError, PairingLedger};
 use delivery::CoveredValues;
 use envelope::{DataKey, Kek, SealError};
 use rand::RngCore;
@@ -46,6 +48,8 @@ const PEER_RECORD_CONTEXT: &str = "peers.record";
 const COMMITMENT_KEY_CONTEXT: &str = "meta.commitment_key";
 const INBOX_BODY_CONTEXT: &str = "inbox.body";
 const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
+const INVITATION_CONTEXT: &str = "pairing.invitation";
+const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -460,6 +464,149 @@ struct PriorSighting {
     commitment: Vec<u8>,
     task_id: Option<String>,
     response: Vec<u8>,
+}
+
+impl Store {
+    /// Purges expired invitations and consumed pending-pair records — the
+    /// pairing-ledger GC (design §8.2: retained only until invitation expiry).
+    pub fn purge_expired_pairing(&self, now: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM invitations WHERE not_after <= ?1", [now])?;
+        self.conn
+            .execute("DELETE FROM pending_pairs WHERE expires_at <= ?1", [now])?;
+        Ok(())
+    }
+}
+
+fn ledger_err<E: std::fmt::Display>(e: E) -> LedgerError {
+    LedgerError(e.to_string())
+}
+
+/// The persistent, encrypted pairing ledger (design §8.2). Invitations and
+/// consumed-secret records survive restart; sealed values are encrypted with
+/// the database DEK.
+impl PairingLedger for Store {
+    fn consumed(&self, verifier: &[u8; 32]) -> Result<Option<Consumed>, LedgerError> {
+        let row: Option<(Vec<u8>, Vec<u8>, i64)> = self
+            .conn
+            .query_row(
+                "SELECT transcript_digest, response, expires_at FROM pending_pairs WHERE verifier = ?1",
+                [verifier.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(ledger_err)?;
+        match row {
+            Some((digest, sealed, expires_at)) => {
+                let response = self
+                    .dek
+                    .open(PAIR_RESPONSE_CONTEXT, &sealed)
+                    .map_err(ledger_err)?;
+                let transcript_digest: [u8; 32] = digest.try_into().map_err(|_| {
+                    LedgerError("stored transcript digest is not 32 bytes".to_owned())
+                })?;
+                Ok(Some(Consumed {
+                    transcript_digest,
+                    response,
+                    expires_at,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM invitations WHERE verifier = ?1",
+                [verifier.as_slice()],
+                |r| r.get(0),
+            )
+            .map_err(ledger_err)?;
+        Ok(count > 0)
+    }
+
+    fn take_active(
+        &mut self,
+        verifier: &[u8; 32],
+    ) -> Result<Option<PendingInvitation>, LedgerError> {
+        let tx = self.conn.unchecked_transaction().map_err(ledger_err)?;
+        let sealed: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT pending FROM invitations WHERE verifier = ?1",
+                [verifier.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(ledger_err)?;
+        let result = match sealed {
+            Some(bytes) => {
+                let json = self
+                    .dek
+                    .open(INVITATION_CONTEXT, &bytes)
+                    .map_err(ledger_err)?;
+                let pending: PendingInvitation =
+                    serde_json::from_slice(&json).map_err(ledger_err)?;
+                tx.execute(
+                    "DELETE FROM invitations WHERE verifier = ?1",
+                    [verifier.as_slice()],
+                )
+                .map_err(ledger_err)?;
+                Some(pending)
+            }
+            None => None,
+        };
+        tx.commit().map_err(ledger_err)?;
+        Ok(result)
+    }
+
+    fn put_active(
+        &mut self,
+        verifier: [u8; 32],
+        invitation: PendingInvitation,
+    ) -> Result<(), LedgerError> {
+        let json = serde_json::to_vec(&invitation).map_err(ledger_err)?;
+        let sealed = self.dek.seal(INVITATION_CONTEXT, &json);
+        self.conn
+            .execute(
+                "INSERT INTO invitations (verifier, pending, not_after) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(verifier) DO UPDATE SET pending = excluded.pending, not_after = excluded.not_after",
+                params![verifier.as_slice(), sealed, invitation.not_after],
+            )
+            .map_err(ledger_err)?;
+        Ok(())
+    }
+
+    fn commit_consumed(
+        &mut self,
+        verifier: [u8; 32],
+        consumed: Consumed,
+    ) -> Result<(), LedgerError> {
+        let tx = self.conn.unchecked_transaction().map_err(ledger_err)?;
+        // The secret is consumed (invitation removed) in the same transaction
+        // that records the pending-pair response (§8.2). DO NOTHING on conflict
+        // preserves the first record, so a race cannot create a second peer.
+        tx.execute(
+            "DELETE FROM invitations WHERE verifier = ?1",
+            [verifier.as_slice()],
+        )
+        .map_err(ledger_err)?;
+        let sealed = self.dek.seal(PAIR_RESPONSE_CONTEXT, &consumed.response);
+        tx.execute(
+            "INSERT INTO pending_pairs (verifier, transcript_digest, response, expires_at)
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(verifier) DO NOTHING",
+            params![
+                verifier.as_slice(),
+                consumed.transcript_digest.as_slice(),
+                sealed,
+                consumed.expires_at
+            ],
+        )
+        .map_err(ledger_err)?;
+        tx.commit().map_err(ledger_err)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

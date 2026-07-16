@@ -68,9 +68,28 @@ CREATE TABLE replay_tombstones (
 ) STRICT;
 "#;
 
+/// Version 3 (M6): the persistent pairing ledger (design §8.2). `invitations`
+/// holds live bearer-secret verifiers with their sealed pending record;
+/// `pending_pairs` holds the consumed-secret idempotency record (transcript
+/// digest + sealed response) retained until the invitation's expiry.
+const V3: &str = r#"
+CREATE TABLE invitations (
+    verifier   BLOB PRIMARY KEY,
+    pending    BLOB NOT NULL,
+    not_after  INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pending_pairs (
+    verifier           BLOB PRIMARY KEY,
+    transcript_digest  BLOB NOT NULL,
+    response           BLOB NOT NULL,
+    expires_at         INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
-const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3)];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent.
 pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
