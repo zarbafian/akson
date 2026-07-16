@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use axon_crypto::identity::Fingerprint;
 use axon_pairing::handler::InviterConfig;
 use axon_pairing::http::handle_http;
-use axon_pairing::state_machine::MemoryLedger;
+use axon_pairing::state_machine::PairingLedger;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -28,9 +28,10 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 /// Shared bootstrap server state: the invitation ledger, and the inviter's own
-/// TLS fingerprint and pending-pair response.
-pub struct BootstrapState {
-    pub ledger: Mutex<MemoryLedger>,
+/// TLS fingerprint and pending-pair response. Generic over the ledger so the
+/// same server runs against the in-memory or the persistent (SQLite) ledger.
+pub struct BootstrapState<L: PairingLedger> {
+    pub ledger: Mutex<L>,
     pub inviter_tls_sha256: String,
     pub inviter_response: Vec<u8>,
 }
@@ -38,10 +39,10 @@ pub struct BootstrapState {
 /// Serves bootstrap connections until `listener` errors. Each connection runs
 /// on its own task; a per-connection handshake or protocol failure is dropped,
 /// never fatal to the accept loop.
-pub async fn serve(
+pub async fn serve<L: PairingLedger + Send + 'static>(
     listener: TcpListener,
     acceptor: TlsAcceptor,
-    state: Arc<BootstrapState>,
+    state: Arc<BootstrapState<L>>,
 ) -> std::io::Result<()> {
     loop {
         let (tcp, _) = listener.accept().await?;
@@ -69,8 +70,8 @@ pub async fn serve(
     }
 }
 
-async fn handle(
-    state: Arc<BootstrapState>,
+async fn handle<L: PairingLedger + Send>(
+    state: Arc<BootstrapState<L>>,
     peer_fp: Option<String>,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
