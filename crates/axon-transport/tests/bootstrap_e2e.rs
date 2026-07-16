@@ -17,7 +17,7 @@ use axon_crypto::purpose::KeyPurpose;
 use axon_pairing::bootstrap::Transcript;
 use axon_pairing::invitation::Invitation;
 use axon_pairing::session::key_binding_digest_hex;
-use axon_pairing::state_machine::MemoryLedger;
+use axon_pairing::state_machine::{MemoryLedger, PairingLedger};
 use axon_proto::card_sig;
 use axon_proto::v1::AgentCard;
 use axon_transport::bootstrap::{serve, BootstrapState};
@@ -81,15 +81,67 @@ fn accepter_body(invitation_verifier: [u8; 32], inviter_tls: &str, accepter_tls:
     .unwrap()
 }
 
+/// Runs the accepter side against a listening inviter and returns the raw
+/// HTTP response text.
+#[allow(clippy::too_many_arguments)]
+async fn accepter_bootstrap(
+    addr: std::net::SocketAddr,
+    inviter_cert: &EndpointCert,
+    accepter_key: &PurposeKey,
+    accepter_cert: &EndpointCert,
+    secret: &str,
+    verifier: [u8; 32],
+    inviter_tls: &str,
+    accepter_tls: &str,
+) -> String {
+    let client_cfg = client_config(accepter_key, accepter_cert, &inviter_cert.fingerprint).unwrap();
+    let connector = TlsConnector::from(Arc::new(client_cfg));
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let name = ServerName::try_from("localhost").unwrap();
+    let mut tls = connector
+        .connect(name, tcp)
+        .await
+        .expect("bootstrap handshake");
+
+    let body = accepter_body(verifier, inviter_tls, accepter_tls);
+    let request = format!(
+        "POST /bootstrap HTTP/1.1\r\nHost: inviter\r\nAuthorization: Bearer {secret}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    tls.write_all(request.as_bytes()).await.unwrap();
+    tls.write_all(&body).await.unwrap();
+    tls.flush().await.unwrap();
+
+    let mut response = Vec::new();
+    tls.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+/// Starts the inviter's bootstrap server on an ephemeral port and returns its
+/// address. The ledger is any `PairingLedger` (generic server).
+async fn serve_inviter<L: PairingLedger + Send + 'static>(
+    inviter_key: &PurposeKey,
+    inviter_cert: &EndpointCert,
+    state: Arc<BootstrapState<L>>,
+) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_cfg = bootstrap_server_config(inviter_key, inviter_cert).unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+    tokio::spawn(async move {
+        let _ = serve(listener, acceptor, state).await;
+    });
+    addr
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bootstrap_pairs_over_mtls() {
+async fn bootstrap_pairs_over_mtls_memory_ledger() {
     let (inviter_key, inviter_cert) = endpoint(1);
     let (accepter_key, accepter_cert) = endpoint(2);
     let inviter_tls = inviter_cert.fingerprint.value.clone();
     let accepter_tls = accepter_cert.fingerprint.value.clone();
 
-    // Inviter: create an invitation and seed the ledger. The server checks
-    // expiry against real wall-clock time, so create it at "now".
+    // The server checks expiry against real wall-clock time; create at "now".
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let (invitation, pending) = Invitation::create(
         "https://inviter/bootstrap".to_owned(),
@@ -108,48 +160,77 @@ async fn bootstrap_pairs_over_mtls() {
         inviter_tls_sha256: inviter_tls.clone(),
         inviter_response: b"INVITER-PENDING-PAIR".to_vec(),
     });
+    let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
 
-    // Inviter serves the bootstrap endpoint.
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server_cfg = bootstrap_server_config(&inviter_key, &inviter_cert).unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
-    tokio::spawn(async move {
-        let _ = serve(listener, acceptor, state).await;
-    });
+    let text = accepter_bootstrap(
+        addr,
+        &inviter_cert,
+        &accepter_key,
+        &accepter_cert,
+        &invitation.secret,
+        verifier,
+        &inviter_tls,
+        &accepter_tls,
+    )
+    .await;
+    assert!(text.starts_with("HTTP/1.1 200"), "got:\n{text}");
+    assert!(text.contains("INVITER-PENDING-PAIR"), "got:\n{text}");
+}
 
-    // Accepter: connect, pinning the inviter's server cert; present own cert.
-    let client_cfg =
-        client_config(&accepter_key, &accepter_cert, &inviter_cert.fingerprint).unwrap();
-    let connector = TlsConnector::from(Arc::new(client_cfg));
-    let tcp = TcpStream::connect(addr).await.unwrap();
-    let name = ServerName::try_from("localhost").unwrap();
-    let mut tls = connector
-        .connect(name, tcp)
-        .await
-        .expect("bootstrap handshake");
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bootstrap_pairs_over_mtls_persistent_ledger() {
+    use axon_store::envelope::Kek;
+    use axon_store::{ExternalCheckpoint, Store};
 
-    // Send a raw HTTP/1.1 bootstrap POST.
-    let body = accepter_body(verifier, &inviter_tls, &accepter_tls);
-    let request = format!(
-        "POST /bootstrap HTTP/1.1\r\nHost: inviter\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        invitation.secret,
-        body.len()
+    let (inviter_key, inviter_cert) = endpoint(3);
+    let (accepter_key, accepter_cert) = endpoint(4);
+    let inviter_tls = inviter_cert.fingerprint.value.clone();
+    let accepter_tls = accepter_cert.fingerprint.value.clone();
+
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let (invitation, pending) = Invitation::create(
+        "https://inviter/bootstrap".to_owned(),
+        inviter_tls.clone(),
+        "kid".to_owned(),
+        now,
+        900,
+        5,
     );
-    tls.write_all(request.as_bytes()).await.unwrap();
-    tls.write_all(&body).await.unwrap();
-    tls.flush().await.unwrap();
+    let verifier = pending.verifier();
 
-    let mut response = Vec::new();
-    tls.read_to_end(&mut response).await.unwrap();
-    let text = String::from_utf8_lossy(&response);
+    // Seed the invitation into the persistent SQLite ledger.
+    let mut store = Store::open_in_memory(
+        &Kek::from_bytes([9u8; 32]),
+        ExternalCheckpoint {
+            state_generation: 0,
+            trusted_time: 0,
+            rollback_detectable: true,
+        },
+    )
+    .unwrap();
+    store.put_active(verifier, pending).unwrap();
 
+    let state = Arc::new(BootstrapState {
+        ledger: Mutex::new(store),
+        inviter_tls_sha256: inviter_tls.clone(),
+        inviter_response: b"INVITER-PENDING-PAIR".to_vec(),
+    });
+    let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
+
+    let text = accepter_bootstrap(
+        addr,
+        &inviter_cert,
+        &accepter_key,
+        &accepter_cert,
+        &invitation.secret,
+        verifier,
+        &inviter_tls,
+        &accepter_tls,
+    )
+    .await;
     assert!(
         text.starts_with("HTTP/1.1 200"),
-        "expected 200, got response:\n{text}"
+        "persistent-ledger bootstrap, got:\n{text}"
     );
-    assert!(
-        text.contains("INVITER-PENDING-PAIR"),
-        "expected inviter response body, got:\n{text}"
-    );
+    assert!(text.contains("INVITER-PENDING-PAIR"), "got:\n{text}");
 }
