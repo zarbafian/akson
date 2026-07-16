@@ -182,6 +182,87 @@ impl ClientCertVerifier for PinnedClientVerifier {
     }
 }
 
+/// Bootstrap-only client verifier: accepts *any* self-signed client
+/// certificate but still verifies the handshake signature, so possession of the
+/// presented key is proven and its fingerprint can be captured for the pairing
+/// transcript (design §8.2). Pinning happens only after pairing.
+#[derive(Debug)]
+struct AcceptAnyClientVerifier {
+    provider: Arc<CryptoProvider>,
+}
+
+impl ClientCertVerifier for AcceptAnyClientVerifier {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, RustlsError> {
+        // Identity is not pinned yet; the fingerprint is captured post-handshake
+        // and bound into the pairing transcript. Key possession is enforced by
+        // verify_tls13_signature below.
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        tls12_disabled()
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// The bootstrap server config (design §8.2): presents the inviter's `cert`
+/// (which the accepter pinned from the invitation) and requests a client
+/// certificate it accepts unpinned, capturing the accepter's fingerprint for
+/// the transcript. TLS 1.3 only; no resumption/tickets/0-RTT.
+pub fn bootstrap_server_config(
+    endpoint_key: &PurposeKey,
+    cert: &EndpointCert,
+) -> Result<ServerConfig, TlsError> {
+    let provider = provider();
+    let verifier = Arc::new(AcceptAnyClientVerifier {
+        provider: provider.clone(),
+    });
+    let mut config = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der.clone())],
+            private_key(endpoint_key)?,
+        )?;
+    config.send_tls13_tickets = 0;
+    config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+    config.max_early_data_size = 0;
+    Ok(config)
+}
+
 /// A server config that presents `cert`, requires client auth, and accepts only
 /// the client pinned to `peer` (design §9.1).
 pub fn server_config(

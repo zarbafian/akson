@@ -9,5 +9,6 @@
 //! The axum HTTP endpoint and client layer on top: they serve over the [`tls`]
 //! configs and act on the [`ingress`] verdict.
 
+pub mod bootstrap;
 pub mod ingress;
 pub mod tls;
