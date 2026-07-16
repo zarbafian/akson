@@ -1,0 +1,24 @@
+{
+  "name": "delivery/covered-values-commitment",
+  "description": "The covered-value idempotency tuple (design §9.2): extensions normalized (sorted, deduped), RFC 8785 canonicalized, then an HMAC-SHA256 keyed commitment (not a public content hash).",
+  "input": {
+    "commitment_key_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "covered": {
+      "peer": "agent-b",
+      "message_id": "m1",
+      "body_digest": "d62DP99DNpf0i4a00AmLplii+5CeP8mI6DKN7u0c1PU=",
+      "interface_url": "https://agent.example/a2a",
+      "a2a_version": "1.0",
+      "extensions": [
+        "https://axon.invalid/ext/outcome/v1",
+        "https://axon.invalid/ext/contract/v1"
+      ],
+      "content_type": "application/a2a+json",
+      "http_method": "POST"
+    }
+  },
+  "expected": {
+    "canonical": "{\"a2a_version\":\"1.0\",\"body_digest\":\"d62DP99DNpf0i4a00AmLplii+5CeP8mI6DKN7u0c1PU=\",\"content_type\":\"application/a2a+json\",\"extensions\":[\"https://axon.invalid/ext/contract/v1\",\"https://axon.invalid/ext/outcome/v1\"],\"http_method\":\"POST\",\"interface_url\":\"https://agent.example/a2a\",\"message_id\":\"m1\",\"peer\":\"agent-b\"}",
+    "commitment_hex": "f50598f412c802b62e7d8577ebb423c883614b7d7d6308b4f6c093f0c8c8ca03"
+  }
+}

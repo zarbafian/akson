@@ -1,0 +1,10 @@
+{
+  "name": "delivery/content-digest",
+  "description": "RFC 9530 Content-Digest: exactly one sha-256 value as a Structured-Fields byte sequence over an A2A request body (design §9.2).",
+  "input": {
+    "body_utf8": "{\"messageId\":\"m1\"}"
+  },
+  "expected": {
+    "content_digest": "sha-256=:d62DP99DNpf0i4a00AmLplii+5CeP8mI6DKN7u0c1PU=:"
+  }
+}

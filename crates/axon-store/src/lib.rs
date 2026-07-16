@@ -25,20 +25,27 @@
 //! ```
 
 pub mod audit;
+pub mod delivery;
 pub mod envelope;
 pub mod schema;
 
 use std::path::Path;
 
 use axon_crypto::identity::PeerIdentity;
+use delivery::CoveredValues;
 use envelope::{DataKey, Kek, SealError};
+use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 const WRAPPED_DEK: &str = "wrapped_dek";
+const COMMITMENT_KEY: &str = "commitment_key";
 const STATE_GENERATION: &str = "state_generation";
 const TRUSTED_TIME: &str = "trusted_time";
 const PEER_RECORD_CONTEXT: &str = "peers.record";
+const COMMITMENT_KEY_CONTEXT: &str = "meta.commitment_key";
+const INBOX_BODY_CONTEXT: &str = "inbox.body";
+const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -117,10 +124,27 @@ pub struct StoredPeer {
     pub local_note: String,
 }
 
+/// The verdict of an idempotent receive (design §9.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Receipt {
+    /// First time this (peer, Message id) was seen; the record was stored.
+    Fresh,
+    /// An exact replay: every covered value matched. Return the saved response
+    /// and the same server-assigned Task id — no second effect.
+    Duplicate {
+        task_id: Option<String>,
+        response: Vec<u8>,
+    },
+    /// Same (peer, Message id) but a covered value changed — a conflict and a
+    /// security event. Nothing is stored or overwritten.
+    Conflict,
+}
+
 /// One endpoint's encrypted state database.
 pub struct Store {
     conn: Connection,
     dek: DataKey,
+    commitment_key: [u8; 32],
     recovery: Recovery,
 }
 
@@ -159,6 +183,25 @@ impl Store {
             }
         };
 
+        // The local commitment key (design §9.2/§15.3) is sealed under the DEK.
+        // Bootstrap it independently so a V1 database gains one on upgrade.
+        let commitment_key = match schema::meta_get(&conn, COMMITMENT_KEY)? {
+            Some(sealed) => dek
+                .open(COMMITMENT_KEY_CONTEXT, &sealed)?
+                .try_into()
+                .map_err(|_| SealError::Malformed)?,
+            None => {
+                let mut key = [0u8; 32];
+                rand::rngs::OsRng.fill_bytes(&mut key);
+                schema::meta_set(
+                    &conn,
+                    COMMITMENT_KEY,
+                    &dek.seal(COMMITMENT_KEY_CONTEXT, &key),
+                )?;
+                key
+            }
+        };
+
         let db_gen = schema::meta_get_u64(&conn, STATE_GENERATION)?.unwrap_or(0);
         let recovery = if !checkpoint.rollback_detectable {
             Recovery::RollbackDetectionUnavailable
@@ -174,6 +217,7 @@ impl Store {
         Ok(Self {
             conn,
             dek,
+            commitment_key,
             recovery,
         })
     }
@@ -274,10 +318,139 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    /// Idempotent receive (design §9.2). Stores the request's covered-value
+    /// commitment, sealed body, and sealed response on first sight; on a repeat
+    /// of the same (peer, Message id) it returns the saved response and Task id
+    /// if every covered value matches, or [`Receipt::Conflict`] if any differs.
+    /// A duplicate never creates a second effect. The caller writes the record
+    /// before returning its response to the peer (durable-before-response).
+    pub fn receive_request(
+        &self,
+        covered: &CoveredValues,
+        body: &[u8],
+        response: &[u8],
+        task_id: Option<&str>,
+        response_class: &str,
+        now: i64,
+    ) -> Result<Receipt, StoreError> {
+        let commitment = covered.commitment(&self.commitment_key);
+
+        // A prior sighting may be a live inbox record or an aged-out tombstone.
+        if let Some(prior) = self.prior_response(&covered.peer, &covered.message_id)? {
+            return Ok(self.decide(&commitment, prior));
+        }
+
+        let sealed_body = self.dek.seal(INBOX_BODY_CONTEXT, body);
+        let sealed_response = self.dek.seal(INBOX_RESPONSE_CONTEXT, response);
+        self.conn.execute(
+            "INSERT INTO inbox_objects
+                 (peer, message_id, commitment, body_digest, task_id, response_class, body, response, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                covered.peer,
+                covered.message_id,
+                commitment.as_slice(),
+                covered.body_digest,
+                task_id,
+                response_class,
+                sealed_body,
+                sealed_response,
+                now,
+            ],
+        )?;
+        Ok(Receipt::Fresh)
+    }
+
+    /// Moves a retained inbox record to a replay tombstone: the payload body is
+    /// dropped, but the keyed commitment, Task id, and sealed response are kept
+    /// for exact replay until `expires_at` (design §9.2). Returns whether a
+    /// record was demoted.
+    pub fn demote_to_tombstone(
+        &self,
+        peer: &str,
+        message_id: &str,
+        expires_at: i64,
+    ) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let moved = tx.execute(
+            "INSERT INTO replay_tombstones
+                     (peer, message_id, commitment, task_id, response_class, response, expires_at)
+                 SELECT peer, message_id, commitment, task_id, response_class, response, ?3
+                 FROM inbox_objects WHERE peer = ?1 AND message_id = ?2",
+            params![peer, message_id, expires_at],
+        )?;
+        tx.execute(
+            "DELETE FROM inbox_objects WHERE peer = ?1 AND message_id = ?2",
+            params![peer, message_id],
+        )?;
+        tx.commit()?;
+        Ok(moved > 0)
+    }
+
+    /// A prior sighting of a (peer, Message id): its stored commitment, Task
+    /// id, and sealed response, read from the inbox record or a tombstone.
+    fn prior_response(
+        &self,
+        peer: &str,
+        message_id: &str,
+    ) -> Result<Option<PriorSighting>, StoreError> {
+        let read = |r: &rusqlite::Row| {
+            Ok(PriorSighting {
+                commitment: r.get(0)?,
+                task_id: r.get(1)?,
+                response: r.get(2)?,
+            })
+        };
+        let row = self
+            .conn
+            .query_row(
+                "SELECT commitment, task_id, response FROM inbox_objects
+                 WHERE peer = ?1 AND message_id = ?2",
+                params![peer, message_id],
+                read,
+            )
+            .optional()?;
+        if row.is_some() {
+            return Ok(row);
+        }
+        self.conn
+            .query_row(
+                "SELECT commitment, task_id, response FROM replay_tombstones
+                 WHERE peer = ?1 AND message_id = ?2",
+                params![peer, message_id],
+                read,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Compares a fresh commitment against a stored sighting.
+    fn decide(&self, commitment: &[u8; 32], prior: PriorSighting) -> Receipt {
+        if prior.commitment != commitment {
+            return Receipt::Conflict;
+        }
+        match self.dek.open(INBOX_RESPONSE_CONTEXT, &prior.response) {
+            Ok(response) => Receipt::Duplicate {
+                task_id: prior.task_id,
+                response,
+            },
+            // A stored response that will not unseal is corruption, not a
+            // match; fail closed to a conflict rather than replay garbage.
+            Err(_) => Receipt::Conflict,
+        }
+    }
+}
+
+/// A prior sighting's stored commitment, Task id, and sealed response.
+struct PriorSighting {
+    commitment: Vec<u8>,
+    task_id: Option<String>,
+    response: Vec<u8>,
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use axon_crypto::identity::{Fingerprint, PeerIdentity};
@@ -380,5 +553,93 @@ mod tests {
             store.observe_time(600, 300).unwrap(),
             TimeStatus::Uncertain { .. }
         ));
+    }
+
+    fn covered(message_id: &str, body: &[u8]) -> CoveredValues {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        CoveredValues {
+            peer: "agent-b".to_owned(),
+            message_id: message_id.to_owned(),
+            body_digest: STANDARD.encode(Sha256::digest(body)),
+            interface_url: "https://agent.example/a2a".to_owned(),
+            tenant: None,
+            a2a_version: "1.0".to_owned(),
+            extensions: vec![],
+            content_type: "application/a2a+json".to_owned(),
+            http_method: "POST".to_owned(),
+        }
+        .normalized()
+    }
+
+    #[test]
+    fn idempotent_replay_returns_saved_response() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let cv = covered("m1", b"body");
+        assert_eq!(
+            store
+                .receive_request(&cv, b"body", b"RESP", Some("task-9"), "task", 100)
+                .unwrap(),
+            Receipt::Fresh
+        );
+        // A retry with the same covered values returns the *original* response
+        // and Task id, ignoring whatever the retry re-proposed.
+        match store
+            .receive_request(&cv, b"body", b"RESP-2", Some("task-other"), "task", 101)
+            .unwrap()
+        {
+            Receipt::Duplicate { task_id, response } => {
+                assert_eq!(task_id.as_deref(), Some("task-9"));
+                assert_eq!(response, b"RESP");
+            }
+            other => panic!("expected duplicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn changed_covered_value_is_conflict() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store
+            .receive_request(&covered("m1", b"body"), b"body", b"RESP", None, "task", 100)
+            .unwrap();
+        // Same peer + Message id, different body → different digest → conflict.
+        let changed = covered("m1", b"different");
+        assert_eq!(
+            store
+                .receive_request(&changed, b"different", b"RESP", None, "task", 101)
+                .unwrap(),
+            Receipt::Conflict
+        );
+    }
+
+    #[test]
+    fn tombstone_preserves_replay_after_payload_drop() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let cv = covered("m1", b"body");
+        store
+            .receive_request(&cv, b"body", b"RESP", Some("task-9"), "task", 100)
+            .unwrap();
+        assert!(store.demote_to_tombstone("agent-b", "m1", 9999).unwrap());
+
+        // Replay after the payload is dropped still returns the saved response.
+        match store
+            .receive_request(&cv, b"body", b"RESP-2", Some("task-x"), "task", 200)
+            .unwrap()
+        {
+            Receipt::Duplicate { task_id, response } => {
+                assert_eq!(task_id.as_deref(), Some("task-9"));
+                assert_eq!(response, b"RESP");
+            }
+            other => panic!("expected duplicate, got {other:?}"),
+        }
+        // A changed covered value against the tombstone is still a conflict.
+        let changed = covered("m1", b"different");
+        assert_eq!(
+            store
+                .receive_request(&changed, b"different", b"R", None, "task", 201)
+                .unwrap(),
+            Receipt::Conflict
+        );
     }
 }

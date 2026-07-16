@@ -38,6 +38,40 @@ CREATE TABLE peers (
 ) STRICT;
 "#;
 
+/// Version 2 (M5-core): the receiver-side reliable-delivery tables (design
+/// §9.2). `inbox_objects` holds the idempotency record (sealed body and
+/// response) while the payload is retained; `replay_tombstones` holds the
+/// keyed commitment and sealed response after payload retention ends.
+const V2: &str = r#"
+CREATE TABLE inbox_objects (
+    peer           TEXT NOT NULL,
+    message_id     TEXT NOT NULL,
+    commitment     BLOB NOT NULL,
+    body_digest    TEXT NOT NULL,
+    task_id        TEXT,
+    response_class TEXT NOT NULL,
+    body           BLOB NOT NULL,
+    response       BLOB NOT NULL,
+    received_at    INTEGER NOT NULL,
+    PRIMARY KEY (peer, message_id)
+) STRICT;
+
+CREATE TABLE replay_tombstones (
+    peer           TEXT NOT NULL,
+    message_id     TEXT NOT NULL,
+    commitment     BLOB NOT NULL,
+    task_id        TEXT,
+    response_class TEXT NOT NULL,
+    response       BLOB NOT NULL,
+    expires_at     INTEGER NOT NULL,
+    PRIMARY KEY (peer, message_id)
+) STRICT;
+"#;
+
+/// Each numbered migration and the `user_version` it establishes. Steps run in
+/// order; opening an up-to-date database runs none. New milestones append here.
+const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2)];
+
 /// Applies pragmas and runs outstanding migrations. Idempotent.
 pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Setting journal_mode returns the resulting mode as a row (and yields
@@ -47,9 +81,11 @@ pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
 
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version < 1 {
-        conn.execute_batch(V1)?;
-        conn.pragma_update(None, "user_version", 1)?;
+    for (target, ddl) in MIGRATIONS {
+        if version < *target {
+            conn.execute_batch(ddl)?;
+            conn.pragma_update(None, "user_version", *target)?;
+        }
     }
     Ok(())
 }

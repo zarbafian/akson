@@ -180,6 +180,30 @@ def check_jws(name: str, case: dict) -> None:
     )
 
 
+def check_delivery(name: str, case: dict) -> None:
+    """Independent reliable-delivery primitives (design §9.2): RFC 9530
+    Content-Digest and the HMAC-SHA256 keyed covered-value commitment."""
+    import hmac
+
+    inp, exp = case["input"], case["expected"]
+    if "content_digest" in exp:
+        body = inp["body_utf8"].encode("utf-8")
+        digest = "sha-256=:%s:" % base64.b64encode(hashlib.sha256(body).digest()).decode()
+        expect_eq(name, "content_digest", digest, exp["content_digest"])
+        return
+
+    # Covered-value commitment: normalize the extension set, canonicalize, HMAC.
+    c = dict(inp["covered"])
+    c["extensions"] = sorted(set(c["extensions"]))
+    if c.get("tenant") is None:
+        c.pop("tenant", None)
+    canonical = rfc8785.dumps(c)
+    expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
+    key = bytes.fromhex(inp["commitment_key_hex"])
+    commitment = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    expect_eq(name, "commitment", commitment, exp["commitment_hex"])
+
+
 def check_schema(name: str, case: dict) -> None:
     inp, exp = case["input"], case["expected"]
     schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
@@ -202,6 +226,7 @@ CHECKERS = {
     "thumbprint": check_thumbprint,
     "dsse": check_dsse,
     "jws": check_jws,
+    "delivery": check_delivery,
     "schema": check_schema,
     "ijson": check_ijson,
 }
