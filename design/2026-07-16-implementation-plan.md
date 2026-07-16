@@ -279,14 +279,19 @@ covered-value change; keyed replay tombstones outliving the retry horizon
 covered change rejected"; crash tests at every transaction boundary lose no
 acknowledged receipt and duplicate no task (§20.2).
 
-**M6. Pairing (L)** — `axon-pairing`
-Invitation create (256-bit single-use secret, verifier-only storage, expiry,
-attempt cap), mode-0600 file / stdin / QR transfer, separate rate-limited
-bootstrap endpoint active only while an invitation is live, extended-card
-exchange with key bindings and proof of possession, atomic secret
-consumption, retry-safe transcript replay, pending → active confirmation,
-re-pair, removal, key-change suspension (§8.2, §8.4). `axon endpoint check`,
-`axon pair diagnose`.
+**M6. Pairing (L)** — `axon-pairing` — **logic core done**
+Landed (pure, tested): invitation create + verifier-only bearer secret
+(constant-time, expiry, attempt cap); mode-0600 file / stdin transfer;
+extended-card + key-binding verification (thumbprint==JWK, closes Codex M6);
+transcript + proof of possession; the consume-once **state machine** (retry-safe
+replay / transcript-conflict, over a `PairingLedger` trait + in-memory impl);
+the composed inviter-side **verification** (`session::verify_accepter`,
+incl. the TLS-cert-binding check) and the **handler** (`handle_bootstrap`:
+pre-check → verify → consume → respond). **Remaining:** the rate-limited HTTP
+bootstrap endpoint over the M5 TLS layer (first live HTTP-over-mTLS consumer;
+Store→ledger wiring); pending→active confirmation UX; QR transfer; re-pair,
+removal, key-change suspension (§8.4); `axon endpoint check` / `axon pair
+diagnose`.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
