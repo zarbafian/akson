@@ -40,6 +40,10 @@ def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
+def b64url_decode(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
 def check_jcs(name: str, case: dict) -> None:
     canonical = rfc8785.dumps(case["input"]["value"])
     expect_eq(name, "canonical", canonical.decode("utf-8"), case["expected"]["canonical"])
@@ -204,6 +208,28 @@ def check_delivery(name: str, case: dict) -> None:
     expect_eq(name, "commitment", commitment, exp["commitment_hex"])
 
 
+def check_pairing(name: str, case: dict) -> None:
+    """Independent pairing byte formats (design §8.2): the invitation verifier,
+    the RFC 8785 canonical transcript + digest, and the Ed25519 proof of
+    possession over that transcript."""
+    inp, exp = case["input"], case["expected"]
+    if "secret_b64url" in inp:
+        verifier = hashlib.sha256(b64url_decode(inp["secret_b64url"])).hexdigest()
+        expect_eq(name, "verifier", verifier, exp["verifier_hex"])
+        return
+
+    canonical = rfc8785.dumps(inp["transcript"])
+    if "canonical" in exp:
+        expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
+        expect_eq(name, "digest", hashlib.sha256(canonical).hexdigest(), exp["digest_hex"])
+    if "signature_b64url" in exp:
+        sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(inp["private_key_hex"]))
+        expect_eq(name, "pop signature", b64url(sk.sign(canonical)), exp["signature_b64url"])
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(inp["public_key_hex"])).verify(
+            b64url_decode(exp["signature_b64url"]), canonical
+        )
+
+
 def check_schema(name: str, case: dict) -> None:
     inp, exp = case["input"], case["expected"]
     schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
@@ -227,6 +253,7 @@ CHECKERS = {
     "dsse": check_dsse,
     "jws": check_jws,
     "delivery": check_delivery,
+    "pairing": check_pairing,
     "schema": check_schema,
     "ijson": check_ijson,
 }

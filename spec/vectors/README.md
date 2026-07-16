@@ -3,8 +3,10 @@
 Implementation-independent test vectors for every canonical byte sequence,
 digest, and signature Axon produces: JCS canonicalization, JWK thumbprints,
 DSSE pre-authentication encoding and signatures, Agent Card JWS signatures
-(`jws/`), I-JSON acceptance, schema validation, input-manifest digests,
-delivery deduplication tuples, result manifests, and outcomes.
+(`jws/`), reliable-delivery Content-Digest and covered-value commitments
+(`delivery/`), pairing verifier/transcript/proof-of-possession (`pairing/`),
+I-JSON acceptance, schema validation, input-manifest digests, result manifests,
+and outcomes.
 
 Layout: one directory per family, one JSON file per case:
 

@@ -1,0 +1,6 @@
+{
+  "name": "pairing/invitation-verifier",
+  "description": "The pairing ledger key: SHA-256 of the decoded 256-bit bearer secret (design §8.2).",
+  "input": { "secret_b64url": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc" },
+  "expected": { "verifier_hex": "4bb06f8e4e3a7715d201d573d0aa423762e55dabd61a2c02278fa56cc6d294e0" }
+}
