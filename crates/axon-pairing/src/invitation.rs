@@ -135,6 +135,12 @@ impl PendingInvitation {
     pub fn attempts_remaining(&self) -> u32 {
         self.max_attempts.saturating_sub(self.attempts_used)
     }
+
+    /// The secret's verifier — the pairing ledger's lookup key. Not the secret,
+    /// so exposing it is safe (it is the SHA-256 of a high-entropy value).
+    pub fn verifier(&self) -> [u8; 32] {
+        self.verifier
+    }
 }
 
 #[cfg(test)]
