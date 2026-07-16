@@ -146,6 +146,40 @@ def check_ijson(name: str, case: dict) -> None:
     expect_eq(name, "validity", _ijson_valid(data), case["expected"]["valid"])
 
 
+def check_jws(name: str, case: dict) -> None:
+    """Independent Agent Card JWS (A2A §8.4, design §10.1 EdDSA profile).
+
+    Rebuilds the whole signature from the card and the seed: RFC 8785 over the
+    card minus `signatures` for the payload, an {alg,typ,kid} protected header
+    (kid = RFC 7638 thumbprint), and a deterministic Ed25519 signature over
+    `BASE64URL(protected) "." BASE64URL(payload)`.
+    """
+    inp, exp = case["input"], case["expected"]
+    sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(inp["private_key_hex"]))
+    pk_raw = bytes.fromhex(inp["public_key_hex"])
+    expect_eq(name, "key pair", sk.public_key().public_bytes_raw().hex(), pk_raw.hex())
+
+    kid = jwk.JWK(kty="OKP", crv="Ed25519", x=b64url(pk_raw)).thumbprint()
+    expect_eq(name, "kid", kid, exp["kid"])
+
+    card = {k: v for k, v in inp["card"].items() if k != "signatures"}
+    payload = rfc8785.dumps(card)
+    expect_eq(name, "payload_jcs", payload.decode("utf-8"), exp["payload_jcs"])
+
+    header = {"alg": "EdDSA", "typ": "JOSE", "kid": kid}
+    protected = b64url(rfc8785.dumps(header))
+    expect_eq(name, "protected", protected, exp["protected"])
+
+    signing_input = protected.encode() + b"." + b64url(payload).encode()
+    signature = b64url(sk.sign(signing_input))
+    expect_eq(name, "signature", signature, exp["signature"])
+
+    # The frozen signature must verify under the public key.
+    Ed25519PublicKey.from_public_bytes(pk_raw).verify(
+        base64.urlsafe_b64decode(exp["signature"] + "=="), signing_input
+    )
+
+
 def check_schema(name: str, case: dict) -> None:
     inp, exp = case["input"], case["expected"]
     schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
@@ -167,6 +201,7 @@ CHECKERS = {
     "jcs": check_jcs,
     "thumbprint": check_thumbprint,
     "dsse": check_dsse,
+    "jws": check_jws,
     "schema": check_schema,
     "ijson": check_ijson,
 }

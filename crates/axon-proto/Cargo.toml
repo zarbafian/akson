@@ -13,10 +13,12 @@ prost = { workspace = true }
 pbjson = { workspace = true }
 pbjson-types = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+json-canon = { workspace = true }
+axon-crypto = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 

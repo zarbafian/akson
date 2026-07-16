@@ -377,8 +377,10 @@ The Codex review of M0–M2 (`spec/reviews/2026-07-16-codex-m2.md`) surfaced
 genuine gaps whose implementation belongs to later milestones. They are
 anchored here so they are not lost:
 
-- **M3** — JWS Agent Card signature verification (ADR-0007); together with M6,
-  closes the "unsigned card accepted" gap.
+- **M3** — JWS Agent Card signature verification (ADR-0007): **done** —
+  `axon_proto::card_sig::verify_card` over `axon_crypto::jws` (EdDSA/JOSE,
+  RFC 7638 `kid`, header allowlist), golden vector `jws/agent-card-eddsa`
+  cross-checked. Pinning the verification key at pairing remains M6.
 - **M5** — outbound `validate_task`/`validate_artifact`/response-echo profile
   checks; couple Message validation to the negotiated extension set.
 - **M6** — at pairing, verify each transported key-binding thumbprint equals

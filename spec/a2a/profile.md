@@ -59,6 +59,22 @@ approval and execution out of the receive request (design §10.1).
   `required: true`, and a security requirement referencing a
   `mtlsSecurityScheme`. Skills are advertisements, never grants.
 
+## Agent Card signature (A2A §8.4, design §10.1)
+
+The card is signed with the standard `AgentCardSignature`/JWS mechanism; Axon
+invents no second signature field. The signed payload is the card with
+default-valued properties and the `signatures` field removed, canonicalized
+with RFC 8785, base64url-encoded. The mandatory v1 profile is EdDSA only:
+`alg: EdDSA`, `typ: JOSE`, and a `kid` equal to the signer's RFC 7638
+thumbprint; `none`, symmetric keys, and any key-URL member (`jku`, `x5u`, …)
+are rejected before signature math, and no key URL is ever fetched. The
+verification key comes from pairing (M6), never from the card.
+
+`axon_proto::card_sig` implements sign/verify over `axon_crypto::jws`;
+`axon_crypto::jws` owns the fail-closed header profile. Structural profile
+checks (interfaces, extensions, mTLS) and signature verification are separate
+gates that both apply to a fetched card.
+
 ## Task-state matrix (design §10.1)
 
 | Axon event | A2A state |

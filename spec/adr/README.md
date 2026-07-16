@@ -39,6 +39,6 @@ Index:
 | [0004](0004-signing.md) | Ed25519 purpose-separated signing keys | accepted |
 | 0005 | Envelope-encryption library | open |
 | 0006 | Sandbox launcher | open |
-| 0007 | JWS library for Agent Card signatures | open |
+| [0007](0007-jws-agent-card.md) | Minimal EdDSA JWS for Agent Card signatures | accepted |
 | 0008 | DSSE/in-toto implementation | open |
-| 0009 | OS keystore and rollback checkpoint | open |
+| [0009](0009-keystore-rollback.md) | Keystore abstraction and rollback checkpoint | accepted |

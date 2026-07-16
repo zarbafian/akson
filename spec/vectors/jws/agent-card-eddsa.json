@@ -1,0 +1,27 @@
+{
+  "name": "jws/agent-card-eddsa",
+  "description": "A2A AgentCardSignature over the RFC 8785 canonical card (signatures removed) using the design §10.1 EdDSA/JOSE profile with an RFC 7638 thumbprint kid; signed with the RFC 8032 TEST 1 key.",
+  "input": {
+    "private_key_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "card": {
+      "name": "Recipe Agent",
+      "description": "Agent that helps users with recipes.",
+      "version": "1.0.0",
+      "supportedInterfaces": [
+        {
+          "url": "https://agent.example/a2a",
+          "protocolBinding": "HTTP+JSON",
+          "protocolVersion": "1.0"
+        }
+      ],
+      "capabilities": { "streaming": false, "pushNotifications": false }
+    }
+  },
+  "expected": {
+    "kid": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+    "payload_jcs": "{\"capabilities\":{\"pushNotifications\":false,\"streaming\":false},\"description\":\"Agent that helps users with recipes.\",\"name\":\"Recipe Agent\",\"supportedInterfaces\":[{\"protocolBinding\":\"HTTP+JSON\",\"protocolVersion\":\"1.0\",\"url\":\"https://agent.example/a2a\"}],\"version\":\"1.0.0\"}",
+    "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJ0eXAiOiJKT1NFIn0",
+    "signature": "3jzmEt55slgzQne2Dh8XbNlT8c6IBTKYv1Av4ZWiYl7hFFpGYY2ItQePm6K2wCSZDywN7FqiQbSTzAQ66_M8CA"
+  }
+}
