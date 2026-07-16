@@ -180,6 +180,8 @@ name = "axon-transport"
 version = "0.0.1"
 dependencies = [
  "axon-crypto",
+ "axon-proto",
+ "axon-store",
  "rustls",
  "rustls-pki-types",
  "rustls-rustcrypto",

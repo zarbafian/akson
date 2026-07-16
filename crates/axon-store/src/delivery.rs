@@ -39,11 +39,16 @@ pub enum DeliveryError {
     Mismatch,
 }
 
+/// The base64 (standard) SHA-256 digest of `body` — the value carried in the
+/// [`CoveredValues::body_digest`] field.
+pub fn body_digest(body: &[u8]) -> String {
+    STANDARD.encode(Sha256::digest(body))
+}
+
 /// The RFC 9530 `Content-Digest` field value for `body`: exactly one
 /// `sha-256` entry as a Structured-Fields byte sequence (`:base64:`).
 pub fn content_digest(body: &[u8]) -> String {
-    let sum = Sha256::digest(body);
-    format!("sha-256=:{}:", STANDARD.encode(sum))
+    format!("sha-256=:{}:", body_digest(body))
 }
 
 /// Parses and verifies a received `Content-Digest` header against `body`.

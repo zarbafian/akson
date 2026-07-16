@@ -362,6 +362,19 @@ impl Store {
         Ok(Receipt::Fresh)
     }
 
+    /// Checks whether this request was already seen, without storing anything
+    /// (design §9.2). Used to decide idempotency *before* processing: a
+    /// [`Receipt::Duplicate`] is replayed, a [`Receipt::Conflict`] is refused,
+    /// and [`Receipt::Fresh`] means the caller should process and then commit
+    /// with [`receive_request`](Self::receive_request).
+    pub fn peek(&self, covered: &CoveredValues) -> Result<Receipt, StoreError> {
+        let commitment = covered.commitment(&self.commitment_key);
+        match self.prior_response(&covered.peer, &covered.message_id)? {
+            Some(prior) => Ok(self.decide(&commitment, prior)),
+            None => Ok(Receipt::Fresh),
+        }
+    }
+
     /// Moves a retained inbox record to a replay tombstone: the payload body is
     /// dropped, but the keyed commitment, Task id, and sealed response are kept
     /// for exact replay until `expires_at` (design §9.2). Returns whether a

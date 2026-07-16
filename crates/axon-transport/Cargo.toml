@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 axon-crypto = { workspace = true }
+axon-proto = { workspace = true }
+axon-store = { workspace = true }
 rustls = { workspace = true }
 rustls-rustcrypto = { workspace = true }
 rustls-pki-types = { workspace = true }
