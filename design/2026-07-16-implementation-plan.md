@@ -291,11 +291,14 @@ binding) and the **handler**; the sender-side **`build_material`** (symmetric
 exchange). **Live:** the HTTP bootstrap endpoint over the M5 TLS layer
 (`axon-transport::bootstrap::serve` on `tls::bootstrap_server_config`), proven
 end-to-end over mTLS — the **Layer-1 interop checkpoint**. Server is generic
-over the ledger. **Remaining:** persistent SQLite `PairingLedger` (requires
-making the trait fallible — `Result` — so `commit_consumed` cannot silently
-fail; + consumed-record GC); pending→active confirmation + peer persistence
-(`Store::put_peer`); QR transfer; re-pair; rate-limit + enable-only-when-active
-gating; `axon endpoint check` / `axon pair diagnose` CLI.
+over the ledger. **Persistent ledger done:** `PairingLedger` is now fallible
+(`Result`, so `commit_consumed` cannot silently fail), and `impl PairingLedger
+for Store` (schema V3: `invitations`, `pending_pairs`, sealed) survives restart
+with `purge_expired_pairing` GC — proven end-to-end over mTLS.
+**Remaining:** pending→active confirmation + peer persistence (`Store::put_peer`;
+needs a `VerifiedAccepter`→`PeerIdentity` mapping — `endpoint_id` source TBD);
+QR transfer; re-pair; rate-limit + enable-only-when-active gating on `serve`;
+`axon endpoint check` / `axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
