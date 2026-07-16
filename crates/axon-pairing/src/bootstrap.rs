@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Verifier};
+use ed25519_dalek::Signature;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -102,7 +102,11 @@ pub fn verify_proof_of_possession(
         let key = entry.jwk.to_key().map_err(|_| PopError::BadJwk {
             purpose: purpose.clone(),
         })?;
-        key.verify(&message, &signature)
+        // verify_strict (not verify): the accepter's advertised key is
+        // attacker-controlled at pairing, so reject small-order keys and
+        // non-canonical R — the same discipline as DSSE/JWS. Otherwise a
+        // small-order "key" could yield a passing proof without possession.
+        key.verify_strict(&message, &signature)
             .map_err(|_| PopError::BadProof {
                 purpose: purpose.clone(),
             })?;
