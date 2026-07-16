@@ -15,4 +15,5 @@
 pub mod bootstrap;
 pub mod invitation;
 pub mod key_binding;
+pub mod session;
 pub mod state_machine;
