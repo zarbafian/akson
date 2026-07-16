@@ -410,7 +410,8 @@ anchored here so they are not lost:
   self-signature verified, fingerprint via `identity::Fingerprint::cert_sha256`.
   Remaining: wire it into the rustls mTLS listener (M5 transport).
 - **M6** — at pairing, verify each transported key-binding thumbprint equals
-  its JWK.
+  its JWK: **done** — `axon_pairing::key_binding::verify` (schema gate +
+  thumbprint==RFC 7638(JWK) + validity).
 - **M7** — input-manifest ↔ exact Message-Part binding and per-field
   uniqueness; contract timestamp ordering and TTL maxima (with M8 trusted
   time); full processor/resource ceilings; minimum-disclosure policy.

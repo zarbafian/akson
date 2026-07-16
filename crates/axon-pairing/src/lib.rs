@@ -12,5 +12,6 @@
 //! consumption, pending→active) and the rate-limited HTTP bootstrap endpoint
 //! layer on top of these and the TLS transport (M5).
 
+pub mod bootstrap;
 pub mod invitation;
 pub mod key_binding;
