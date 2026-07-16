@@ -16,6 +16,7 @@ pub mod bootstrap;
 pub mod handler;
 pub mod invitation;
 pub mod key_binding;
+pub mod lifecycle;
 pub mod session;
 pub mod state_machine;
 pub mod transfer;

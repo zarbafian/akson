@@ -50,7 +50,10 @@ fn pairing_vectors() {
                     expected["canonical"].as_str().unwrap(),
                     "canonical"
                 );
-                assert_eq!(hex::encode(t.digest()), expected["digest_hex"].as_str().unwrap());
+                assert_eq!(
+                    hex::encode(t.digest()),
+                    expected["digest_hex"].as_str().unwrap()
+                );
             }
             "pairing/proof-of-possession" => {
                 let t = transcript_from(&input["transcript"]);
