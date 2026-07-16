@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 
+use axon_crypto::identity::{Fingerprint, FingerprintKind, KeyBinding, PeerIdentity};
 use axon_crypto::keypair::{KeyError, PurposeKey, PurposeVerifyingKey};
 use axon_crypto::purpose::KeyPurpose;
 use axon_proto::card_sig;
@@ -194,6 +195,114 @@ pub fn build_material(
     }))
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PeerError {
+    #[error("serialization: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("key binding advertises an unknown purpose: {0}")]
+    UnknownPurpose(String),
+}
+
+/// Assembles the durable peer identity tuple (design §8.1) from a verified
+/// bootstrap. The endpoint id defaults to the peer's preferred Agent Card
+/// interface URL. The security-projection digest covers only stable
+/// identity/interface/security/extension fields plus the key binding, so a
+/// cosmetic card change (description, skills) does not move it (§8.4); the
+/// full-card digest covers the whole card for change history.
+pub fn to_peer_identity(
+    verified: &VerifiedAccepter,
+    extended_card: &AgentCard,
+) -> Result<PeerIdentity, PeerError> {
+    let bindings = &verified.bindings;
+    let card_value = serde_json::to_value(extended_card)?;
+    let key_binding_value = serde_json::to_value(bindings)?;
+
+    let endpoint_id = card_value
+        .get("supportedInterfaces")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|i| i.get("url"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let jwk_fp = |thumbprint: &str| Fingerprint {
+        kind: FingerprintKind::Jwk7638,
+        value: thumbprint.to_owned(),
+    };
+
+    let mut key_bindings = Vec::with_capacity(bindings.keys.len());
+    for (purpose_str, entry) in &bindings.keys {
+        let purpose: KeyPurpose = serde_json::from_value(Value::String(purpose_str.clone()))
+            .map_err(|_| PeerError::UnknownPurpose(purpose_str.clone()))?;
+        key_bindings.push(KeyBinding {
+            purpose,
+            thumbprint: jwk_fp(&entry.thumbprint),
+        });
+    }
+
+    let agent_card_key = bindings
+        .keys
+        .get("agent-card")
+        .map(|e| jwk_fp(&e.thumbprint))
+        .unwrap_or_else(|| jwk_fp(""));
+
+    let projection = security_projection(&card_value, &key_binding_value);
+    let security_projection_digest =
+        Fingerprint::json_sha256(&json_canon::to_vec(&projection).unwrap_or_default());
+
+    let mut full_card = card_value;
+    if let Some(obj) = full_card.as_object_mut() {
+        obj.remove("signatures");
+    }
+    let full_card_digest =
+        Fingerprint::json_sha256(&json_canon::to_vec(&full_card).unwrap_or_default());
+
+    Ok(PeerIdentity {
+        issuer: Some(bindings.subject.issuer.clone()),
+        agent_id: bindings.subject.agent.clone(),
+        workload_id: None,
+        endpoint_id,
+        tls_cert: Fingerprint {
+            kind: FingerprintKind::CertSha256,
+            value: bindings.tls_certificate_sha256.clone(),
+        },
+        agent_card_key,
+        key_bindings,
+        security_projection_digest,
+        full_card_digest,
+    })
+}
+
+/// The security projection (design §8.1/§8.4): the stable fields policy pins,
+/// excluding cosmetic ones. `required_extensions` lists only the required
+/// extension URIs, sorted.
+fn security_projection(card_value: &Value, key_binding: &Value) -> Value {
+    let required_extensions: Vec<Value> = card_value
+        .get("capabilities")
+        .and_then(|c| c.get("extensions"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            let mut uris: Vec<String> = arr
+                .iter()
+                .filter(|e| e.get("required").and_then(Value::as_bool).unwrap_or(false))
+                .filter_map(|e| e.get("uri").and_then(Value::as_str).map(str::to_owned))
+                .collect();
+            uris.sort();
+            uris.into_iter().map(Value::String).collect()
+        })
+        .unwrap_or_default();
+
+    let field = |name: &str| card_value.get(name).cloned().unwrap_or(Value::Null);
+    json!({
+        "supportedInterfaces": field("supportedInterfaces"),
+        "securityRequirements": field("securityRequirements"),
+        "securitySchemes": field("securitySchemes"),
+        "requiredExtensions": Value::Array(required_extensions),
+        "keyBinding": key_binding,
+    })
+}
+
 /// The kebab-case schema key for a purpose (e.g. `agent-card`).
 fn purpose_key(purpose: KeyPurpose) -> String {
     // KeyPurpose serializes to the kebab-case string the schema uses; a fixed
@@ -295,6 +404,42 @@ mod tests {
     fn valid_request_verifies() {
         let (v, kb, card, proofs) = valid_request();
         assert!(run(&v, ACCEPTER_TLS, &kb, &card, &proofs).is_ok());
+    }
+
+    #[test]
+    fn peer_identity_captures_endpoint_and_keys() {
+        let (v, kb, card, proofs) = valid_request();
+        let verified = run(&v, ACCEPTER_TLS, &kb, &card, &proofs).unwrap();
+        let peer = to_peer_identity(&verified, &card).unwrap();
+        assert_eq!(peer.agent_id, "accepter");
+        assert_eq!(peer.issuer.as_deref(), Some("local"));
+        assert_eq!(peer.endpoint_id, "https://accepter.example/a2a");
+        assert_eq!(peer.tls_cert.value, ACCEPTER_TLS);
+        assert!(peer.binding(KeyPurpose::AgentCard).is_some());
+        assert!(peer.binding(KeyPurpose::TaskResult).is_some());
+    }
+
+    #[test]
+    fn cosmetic_card_change_does_not_move_the_projection() {
+        let (v, kb, card, proofs) = valid_request();
+        let verified = run(&v, ACCEPTER_TLS, &kb, &card, &proofs).unwrap();
+        let peer1 = to_peer_identity(&verified, &card).unwrap();
+
+        // Only the description changes (cosmetic) — projection stable, full digest moves.
+        let mut card2 = card.clone();
+        card2.description = "an entirely rewritten description".to_owned();
+        let peer2 = to_peer_identity(&verified, &card2).unwrap();
+
+        assert!(
+            peer1
+                .security_projection_digest
+                .matches(&peer2.security_projection_digest),
+            "a cosmetic change must not move the security projection (§8.4)"
+        );
+        assert!(
+            !peer1.full_card_digest.matches(&peer2.full_card_digest),
+            "the full-card digest tracks every change"
+        );
     }
 
     #[test]
