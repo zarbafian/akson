@@ -1,0 +1,90 @@
+{
+  "name": "schema/contract-v1-invalid-text-oversize",
+  "description": "a text input Part may not exceed the 1 MiB ceiling (design \u00a711.1)",
+  "input": {
+    "schema": "contract",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
+      "revision": 0,
+      "task_type": "https://axon.invalid/task/code-review/v1",
+      "message_id": "msg-0001",
+      "context_id": "ctx-0001",
+      "requester": {
+        "issuer": "axon:pairing:demo",
+        "agent": "requester.example"
+      },
+      "performer": {
+        "issuer": "axon:pairing:demo",
+        "agent": "reviewer.example"
+      },
+      "objective": "Review the supplied patch for correctness and safety.",
+      "inputs": [
+        {
+          "id": "patch",
+          "message_id": "msg-0001",
+          "part_index": 1,
+          "kind": "text",
+          "media_type": "text/plain",
+          "charset": "utf-8",
+          "canonical_rule": "utf8-exact",
+          "byte_length": 1048577,
+          "sha256": "a4895eb44afc336fecbba6e520cd67e178dace0276655d102fceffa8e5f70570",
+          "worker_visible": true,
+          "processor_visible": true
+        },
+        {
+          "id": "review-config",
+          "message_id": "msg-0001",
+          "part_index": 2,
+          "kind": "data",
+          "media_type": "application/json",
+          "canonical_rule": "jcs",
+          "byte_length": 214,
+          "sha256": "59c75e984984849611b238e5863e66aecaa717209f5bf16228ce2209b75e1dda",
+          "worker_visible": true,
+          "processor_visible": false
+        }
+      ],
+      "deliverables": [
+        {
+          "role": "summary",
+          "media_type": "text/plain"
+        },
+        {
+          "role": "findings",
+          "media_type": "application/sarif+json"
+        }
+      ],
+      "evidence_slots": [
+        {
+          "slot_id": "execution",
+          "statement_type": "https://axon.invalid/statement/execution/v1",
+          "trust_classes": [
+            "self-attested"
+          ]
+        }
+      ],
+      "requested_capabilities": [
+        "respond",
+        "read_supplied_inputs",
+        "processor_use",
+        "artifact_export"
+      ],
+      "processor_constraints": {
+        "disclosure": "local-only"
+      },
+      "limits": {
+        "deadline": "2026-07-17T12:00:00Z",
+        "max_response_bytes": 4194304
+      },
+      "result_recipient": "request-origin",
+      "created_at": "2026-07-16T12:00:00Z",
+      "expires_at": "2026-07-17T12:00:00Z"
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}

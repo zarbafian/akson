@@ -92,6 +92,60 @@ def check_dsse(name: str, case: dict) -> None:
     expect_eq(name, "keyid", key.thumbprint(), exp["keyid"])
 
 
+def _ijson_int(token: str):
+    value = int(token)
+    if abs(value) > (2**53 - 1):
+        raise ValueError("safe range")
+    return value
+
+
+def _ijson_float(token: str):
+    value = float(token)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError("safe range")
+    if value.is_integer() and abs(value) > (2**53 - 1):
+        raise ValueError("safe range")
+    return value
+
+
+def _ijson_valid(data: bytes):
+    """Independent I-JSON judgment for the cross-checkable cases (duplicate
+    keys, safe-integer range, invalid UTF-8, syntax). Depth/node limits and
+    lone-surrogate handling are Rust-only unit tests, not in this family."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+
+    def object_pairs(pairs):
+        seen = set()
+        for key, _ in pairs:
+            if key in seen:
+                raise ValueError("duplicate")
+            seen.add(key)
+        return dict(pairs)
+
+    try:
+        json.loads(
+            text,
+            object_pairs_hook=object_pairs,
+            parse_int=_ijson_int,
+            parse_float=_ijson_float,
+        )
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def check_ijson(name: str, case: dict) -> None:
+    inp = case["input"]
+    if "json_utf8" in inp:
+        data = inp["json_utf8"].encode("utf-8")
+    else:
+        data = base64.b64decode(inp["json_base64"])
+    expect_eq(name, "validity", _ijson_valid(data), case["expected"]["valid"])
+
+
 def check_schema(name: str, case: dict) -> None:
     inp, exp = case["input"], case["expected"]
     schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
@@ -114,6 +168,7 @@ CHECKERS = {
     "thumbprint": check_thumbprint,
     "dsse": check_dsse,
     "schema": check_schema,
+    "ijson": check_ijson,
 }
 
 

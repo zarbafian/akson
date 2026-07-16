@@ -1,0 +1,6 @@
+{
+  "name": "ijson/duplicate-keys",
+  "description": "I-JSON forbids duplicate object member names (RFC 7493)",
+  "input": { "json_utf8": "{\"a\":1,\"a\":2}" },
+  "expected": { "valid": false, "error": "duplicate" }
+}

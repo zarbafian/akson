@@ -1,5 +1,6 @@
 [package]
 name = "axon-contract"
+publish = false
 description = "Contract validation, revision chain, decisions, risk-card projection"
 version.workspace = true
 edition.workspace = true

@@ -22,6 +22,8 @@ pub enum KeyPurpose {
     TaskResult,
     /// Evidence statement signing (design §14.2).
     Evidence,
+    /// Requester-signed accepted/rejected/disputed outcome (design §14.5).
+    RequesterOutcome,
     /// Local work-order authority; never leaves the endpoint.
     LocalAuthority,
 }
@@ -29,13 +31,14 @@ pub enum KeyPurpose {
 impl KeyPurpose {
     /// Purposes whose public keys are exchanged and pinned at pairing
     /// (design §8.2 step 5). `LocalAuthority` is deliberately absent.
-    pub const PAIRED: [KeyPurpose; 6] = [
+    pub const PAIRED: [KeyPurpose; 7] = [
         KeyPurpose::TlsEndpoint,
         KeyPurpose::AgentCard,
         KeyPurpose::ContractProposal,
         KeyPurpose::ContractDecision,
         KeyPurpose::TaskResult,
         KeyPurpose::Evidence,
+        KeyPurpose::RequesterOutcome,
     ];
 }
 

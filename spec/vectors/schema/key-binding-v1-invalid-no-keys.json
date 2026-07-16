@@ -1,0 +1,20 @@
+{
+  "name": "schema/key-binding-v1-invalid-no-keys",
+  "description": "at least one purpose-bound key is required",
+  "input": {
+    "schema": "key-binding",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "subject": {
+        "issuer": "axon:pairing:demo",
+        "agent": "reviewer.example"
+      },
+      "tls_certificate_sha256": "0a1bb31085a4ae34473de9206876723889ab2f24b7b5280b79f290b631d3d835",
+      "keys": {}
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}

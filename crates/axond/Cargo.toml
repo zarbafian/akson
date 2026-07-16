@@ -1,5 +1,6 @@
 [package]
 name = "axond"
+publish = false
 description = "The Axon daemon"
 version.workspace = true
 edition.workspace = true

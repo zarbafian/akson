@@ -1,0 +1,6 @@
+{
+  "name": "ijson/huge-integer",
+  "description": "an integer past u64 arrives as a rounded float and must still be rejected",
+  "input": { "json_utf8": "18446744073709551616" },
+  "expected": { "valid": false, "error": "safe range" }
+}

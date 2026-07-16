@@ -1,5 +1,6 @@
 [package]
 name = "axon-adapter-sdk"
+publish = false
 description = "Adapter contract, fixtures, and conformance tests"
 version.workspace = true
 edition.workspace = true

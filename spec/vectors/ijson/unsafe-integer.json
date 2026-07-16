@@ -1,0 +1,6 @@
+{
+  "name": "ijson/unsafe-integer",
+  "description": "2^53 exceeds the I-JSON safe integer range",
+  "input": { "json_utf8": "9007199254740992" },
+  "expected": { "valid": false, "error": "safe range" }
+}

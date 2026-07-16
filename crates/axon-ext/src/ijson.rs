@@ -9,7 +9,7 @@
 //! literal for non-finite values and out-of-range floats fail at the syntax
 //! layer.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -22,6 +22,13 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Hard cap on container nesting depth (design §11.1).
 pub const MAX_DEPTH: usize = 64;
 
+/// Hard cap on the total number of JSON nodes (scalars plus containers) in one
+/// document. A small body can otherwise expand to hundreds of megabytes of
+/// `Value` nodes — e.g. `[0,0,0,…]` — before any schema `maxItems` check runs.
+/// This is enforced during parse, before allocation completes (design §20.4
+/// item-count boundary).
+pub const MAX_NODES: usize = 1_000_000;
+
 /// Largest integer magnitude exactly representable as an IEEE 754 double.
 pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
@@ -31,9 +38,11 @@ pub enum IJsonError {
     TooLarge { actual: usize, limit: usize },
     #[error("nesting exceeds the maximum depth of {limit}")]
     TooDeep { limit: usize },
+    #[error("document exceeds the maximum of {limit} nodes")]
+    TooManyNodes { limit: usize },
     #[error("duplicate object key {0:?}")]
     DuplicateKey(String),
-    #[error("integer {0} is outside the I-JSON safe range")]
+    #[error("number {0} is outside the I-JSON safe range")]
     UnsafeInteger(String),
     #[error("invalid JSON: {0}")]
     Syntax(String),
@@ -59,12 +68,15 @@ pub fn parse_with_limits(
             limit: max_bytes,
         });
     }
-    let violation = RefCell::new(None);
+    let state = ParseState {
+        violation: RefCell::new(None),
+        nodes: Cell::new(0),
+        max_depth,
+    };
     let mut de = serde_json::Deserializer::from_slice(bytes);
     let seed = ValueSeed {
-        violation: &violation,
+        state: &state,
         depth: 0,
-        max_depth,
     };
     let parsed = seed.deserialize(&mut de).and_then(|v| {
         de.end()?;
@@ -74,23 +86,46 @@ pub fn parse_with_limits(
         Ok(value) => Ok(value),
         // A violation detected by the visitor surfaces as a serde error; the
         // side channel preserves the precise cause. Anything else is syntax.
-        Err(e) => Err(violation
+        Err(e) => Err(state
+            .violation
             .into_inner()
             .unwrap_or_else(|| IJsonError::Syntax(e.to_string()))),
     }
 }
 
-struct ValueSeed<'a> {
-    violation: &'a RefCell<Option<IJsonError>>,
-    depth: usize,
+struct ParseState {
+    violation: RefCell<Option<IJsonError>>,
+    nodes: Cell<usize>,
     max_depth: usize,
 }
 
-impl<'a> ValueSeed<'a> {
+struct ValueSeed<'a> {
+    state: &'a ParseState,
+    depth: usize,
+}
+
+impl ValueSeed<'_> {
     fn fail<E: serde::de::Error>(&self, err: IJsonError) -> E {
         let msg = err.to_string();
-        *self.violation.borrow_mut() = Some(err);
+        *self.state.violation.borrow_mut() = Some(err);
         E::custom(msg)
+    }
+
+    /// Counts one node and fails closed once the document exceeds [`MAX_NODES`].
+    fn count_node<E: serde::de::Error>(&self) -> Result<(), E> {
+        let next = self.state.nodes.get() + 1;
+        if next > MAX_NODES {
+            return Err(self.fail(IJsonError::TooManyNodes { limit: MAX_NODES }));
+        }
+        self.state.nodes.set(next);
+        Ok(())
+    }
+
+    fn child(&self) -> ValueSeed<'_> {
+        ValueSeed {
+            state: self.state,
+            depth: self.depth + 1,
+        }
     }
 }
 
@@ -101,6 +136,7 @@ impl<'de> DeserializeSeed<'de> for ValueSeed<'_> {
     where
         D: serde::Deserializer<'de>,
     {
+        self.count_node()?;
         deserializer.deserialize_any(self)
     }
 }
@@ -135,7 +171,17 @@ impl<'de> Visitor<'de> for ValueSeed<'_> {
     }
 
     fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Value, E> {
-        // JSON syntax cannot produce NaN/inf, but fail closed regardless.
+        // An integer literal too large for i64/u64 arrives here as a rounded
+        // f64. Two distinct integers above 2^53 then collapse to the same
+        // value and the same canonical bytes, breaking the lossless-signing
+        // invariant, so reject any integer-valued magnitude past the safe
+        // range. NaN/inf cannot come from JSON syntax but fail closed anyway.
+        if !v.is_finite() {
+            return Err(self.fail(IJsonError::UnsafeInteger(v.to_string())));
+        }
+        if v.fract() == 0.0 && v.abs() > MAX_SAFE_INTEGER as f64 {
+            return Err(self.fail(IJsonError::UnsafeInteger(v.to_string())));
+        }
         serde_json::Number::from_f64(v)
             .map(Value::Number)
             .ok_or_else(|| self.fail(IJsonError::UnsafeInteger(v.to_string())))
@@ -153,17 +199,13 @@ impl<'de> Visitor<'de> for ValueSeed<'_> {
     where
         A: SeqAccess<'de>,
     {
-        if self.depth >= self.max_depth {
+        if self.depth >= self.state.max_depth {
             return Err(self.fail(IJsonError::TooDeep {
-                limit: self.max_depth,
+                limit: self.state.max_depth,
             }));
         }
         let mut items = Vec::new();
-        while let Some(item) = seq.next_element_seed(ValueSeed {
-            violation: self.violation,
-            depth: self.depth + 1,
-            max_depth: self.max_depth,
-        })? {
+        while let Some(item) = seq.next_element_seed(self.child())? {
             items.push(item);
         }
         Ok(Value::Array(items))
@@ -173,18 +215,14 @@ impl<'de> Visitor<'de> for ValueSeed<'_> {
     where
         A: MapAccess<'de>,
     {
-        if self.depth >= self.max_depth {
+        if self.depth >= self.state.max_depth {
             return Err(self.fail(IJsonError::TooDeep {
-                limit: self.max_depth,
+                limit: self.state.max_depth,
             }));
         }
         let mut map = Map::new();
         while let Some(key) = access.next_key::<String>()? {
-            let value = access.next_value_seed(ValueSeed {
-                violation: self.violation,
-                depth: self.depth + 1,
-                max_depth: self.max_depth,
-            })?;
+            let value = access.next_value_seed(self.child())?;
             if map.insert(key.clone(), value).is_some() {
                 return Err(self.fail(IJsonError::DuplicateKey(key)));
             }
@@ -232,6 +270,40 @@ mod tests {
         );
         assert!(parse(b"9007199254740991").is_ok());
         assert!(parse(b"-9007199254740991").is_ok());
+    }
+
+    #[test]
+    fn rejects_huge_integers_that_arrive_as_float() {
+        // Above u64 range serde_json delivers a rounded f64; two distinct
+        // integers must not both be accepted (they would alias).
+        assert!(matches!(
+            parse(b"18446744073709551616"),
+            Err(IJsonError::UnsafeInteger(_))
+        ));
+        assert!(matches!(
+            parse(b"18446744073709551617"),
+            Err(IJsonError::UnsafeInteger(_))
+        ));
+        assert!(matches!(parse(b"1e308"), Err(IJsonError::UnsafeInteger(_))));
+        // Genuine fractional values within range remain acceptable.
+        assert!(parse(b"1.5").is_ok());
+        assert!(parse(b"100.0").is_ok());
+    }
+
+    #[test]
+    fn rejects_too_many_nodes() {
+        let mut s = String::from("[");
+        for i in 0..=MAX_NODES {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push('0');
+        }
+        s.push(']');
+        assert_eq!(
+            parse_with_limits(s.as_bytes(), usize::MAX, MAX_DEPTH),
+            Err(IJsonError::TooManyNodes { limit: MAX_NODES })
+        );
     }
 
     #[test]

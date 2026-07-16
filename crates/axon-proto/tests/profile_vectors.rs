@@ -70,9 +70,7 @@ fn profile_vectors() {
             "agent-card" => {
                 let card: axon_proto::v1::AgentCard =
                     serde_json::from_value(input["card"].clone()).unwrap();
-                let config = ProfileConfig {
-                    required_extensions: to_set(&input["required_extensions"]),
-                };
+                let config = ProfileConfig::new(to_set(&input["required_extensions"])).unwrap();
                 check(
                     &name,
                     profile::validate_agent_card(&card, &config),

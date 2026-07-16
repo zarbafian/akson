@@ -1,5 +1,6 @@
 [package]
 name = "axon-authority"
+publish = false
 description = "Local policy, capability vector, one-shot work orders"
 version.workspace = true
 edition.workspace = true

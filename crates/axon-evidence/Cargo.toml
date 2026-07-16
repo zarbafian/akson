@@ -1,5 +1,6 @@
 [package]
 name = "axon-evidence"
+publish = false
 description = "Result manifest, in-toto statements, SARIF profile, evidence validation"
 version.workspace = true
 edition.workspace = true

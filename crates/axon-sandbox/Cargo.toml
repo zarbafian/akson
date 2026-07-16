@@ -1,5 +1,6 @@
 [package]
 name = "axon-sandbox"
+publish = false
 description = "Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock; fail-closed capability probing"
 version.workspace = true
 edition.workspace = true

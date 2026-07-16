@@ -1,0 +1,6 @@
+{
+  "name": "ijson/nested-duplicate-keys",
+  "description": "duplicate keys are rejected at any depth",
+  "input": { "json_utf8": "{\"outer\":[{\"k\":1,\"k\":1}]}" },
+  "expected": { "valid": false, "error": "duplicate" }
+}

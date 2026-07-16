@@ -1,5 +1,6 @@
 [package]
 name = "axon-crypto"
+publish = false
 description = "Key lifecycle, purpose binding, thumbprints, JWS, keystore adapters (thin wrappers over reviewed libraries)"
 version.workspace = true
 edition.workspace = true

@@ -371,6 +371,28 @@ usability pass on risk card and state vocabulary (§20.8); threat model
 published; maintainer sign-off on the extension surface (G0 final gate).
 *Exit:* every §19 Phase 1 gate item checked; tag v0.1.0.
 
+### Review-tracked follow-ups
+
+The Codex review of M0–M2 (`spec/reviews/2026-07-16-codex-m2.md`) surfaced
+genuine gaps whose implementation belongs to later milestones. They are
+anchored here so they are not lost:
+
+- **M3** — JWS Agent Card signature verification (ADR-0007); together with M6,
+  closes the "unsigned card accepted" gap.
+- **M5** — outbound `validate_task`/`validate_artifact`/response-echo profile
+  checks; couple Message validation to the negotiated extension set.
+- **M6** — at pairing, verify each transported key-binding thumbprint equals
+  its JWK.
+- **M7** — input-manifest ↔ exact Message-Part binding and per-field
+  uniqueness; contract timestamp ordering and TTL maxima (with M8 trusted
+  time); full processor/resource ceilings; minimum-disclosure policy.
+- **M11** — result-manifest semantic validation (evidence resolution,
+  bytewise ordering, dup-role/slot rejection) and per-attempt/task evidence
+  binding.
+- **ADR (before M5)** — decide strict-reject vs. preserve-for-compat for
+  unknown fields on *standard* A2A objects (design §18); Axon extension
+  objects keep reject-unknown regardless.
+
 ### Tracer bullet checkpoint (after M7 + a minimal M8)
 
 As soon as contract + authority exist, wire `axon demo review` end-to-end on

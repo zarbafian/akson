@@ -124,23 +124,48 @@ impl SchemaId {
     }
 }
 
-/// Validates `instance` against the schema. Fails closed with the first
-/// error and the total count; error strings are bounded and never echo
-/// instance content beyond the failing path.
+/// Cap on how many validation errors are counted, so a hostile instance
+/// cannot make error enumeration itself expensive.
+const MAX_COUNTED_ERRORS: usize = 64;
+
+/// Validates `instance` against the schema. Fails closed reporting the first
+/// error's location and failing keyword only — never the instance value — so
+/// error text cannot leak task content, and bounded so it cannot be inflated.
 pub fn validate(id: SchemaId, instance: &Value) -> Result<(), SchemaError> {
     let validator = id.validator()?;
     let mut errors = validator.iter_errors(instance);
     if let Some(first) = errors.next() {
-        let mut message = format!("at {}: {}", first.instance_path, first);
-        message.truncate(512);
+        // `masked()` is the library's content-free Display: the failing
+        // location and keyword without the instance value. schema_path names
+        // which constraint failed. Neither leaks task content.
+        let first_error = format!(
+            "at {} ({})",
+            truncate_on_char_boundary(&first.schema_path.to_string(), 256),
+            truncate_on_char_boundary(&first.masked().to_string(), 256),
+        );
+        // Count remaining errors up to a bound (0 extra means "just this one").
+        let error_count = 1 + errors.take(MAX_COUNTED_ERRORS).count();
         Err(SchemaError::Invalid {
             schema: id.name(),
-            first_error: message,
-            error_count: 1 + errors.count(),
+            first_error,
+            error_count,
         })
     } else {
         Ok(())
     }
+}
+
+/// Truncates to at most `max` bytes without splitting a UTF-8 character
+/// (`String::truncate` panics on a non-boundary index).
+fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]

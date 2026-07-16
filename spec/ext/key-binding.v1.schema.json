@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://axon.invalid/ext/key-binding/v1/schema.json",
   "title": "Axon identity/key binding v1 (design §8.1, §8.2 step 5): purpose-bound verification keys exchanged at pairing",
+  "description": "Keys are an object keyed by purpose so each purpose binds at most one key and only known statement purposes are allowed. TLS identity is pinned by certificate digest; local-authority keys never leave the endpoint. Code additionally verifies each thumbprint equals its JWK (enforced at pairing, milestone M6).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "subject", "tls_certificate_sha256", "keys"],
@@ -13,39 +14,16 @@
       "description": "SHA-256 over the complete DER endpoint certificate (design §8.1)."
     },
     "keys": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 16,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["purpose", "jwk", "thumbprint", "generation", "not_before", "not_after"],
-        "properties": {
-          "purpose": {
-            "enum": [
-              "agent-card",
-              "contract-proposal",
-              "contract-decision",
-              "task-result",
-              "evidence"
-            ],
-            "description": "Statement purposes only; TLS identity is pinned by certificate digest, local-authority keys never leave the endpoint (ADR-0004)."
-          },
-          "jwk": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kty", "crv", "x"],
-            "properties": {
-              "kty": { "const": "OKP" },
-              "crv": { "const": "Ed25519" },
-              "x": { "$ref": "#/$defs/b64url32" }
-            }
-          },
-          "thumbprint": { "$ref": "#/$defs/b64url32" },
-          "generation": { "type": "integer", "minimum": 0, "maximum": 1000000 },
-          "not_before": { "$ref": "#/$defs/rfc3339utc" },
-          "not_after": { "$ref": "#/$defs/rfc3339utc" }
-        }
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "agent-card": { "$ref": "#/$defs/keyEntry" },
+        "contract-proposal": { "$ref": "#/$defs/keyEntry" },
+        "contract-decision": { "$ref": "#/$defs/keyEntry" },
+        "task-result": { "$ref": "#/$defs/keyEntry" },
+        "evidence": { "$ref": "#/$defs/keyEntry" },
+        "requester-outcome": { "$ref": "#/$defs/keyEntry" }
       }
     }
   },
@@ -59,6 +37,27 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{43}$",
       "description": "base64url, unpadded, of 32 bytes"
+    },
+    "keyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jwk", "thumbprint", "generation", "not_before", "not_after"],
+      "properties": {
+        "jwk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kty", "crv", "x"],
+          "properties": {
+            "kty": { "const": "OKP" },
+            "crv": { "const": "Ed25519" },
+            "x": { "$ref": "#/$defs/b64url32" }
+          }
+        },
+        "thumbprint": { "$ref": "#/$defs/b64url32" },
+        "generation": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "not_before": { "$ref": "#/$defs/rfc3339utc" },
+        "not_after": { "$ref": "#/$defs/rfc3339utc" }
+      }
     },
     "identity": {
       "type": "object",

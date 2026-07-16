@@ -1,6 +1,6 @@
 {
   "name": "schema/key-binding-v1-valid",
-  "description": "two purpose-bound Ed25519 verification keys",
+  "description": "distinct purpose-bound Ed25519 verification keys (ADR-0004: no reuse)",
   "input": {
     "schema": "key-binding",
     "version": 1,
@@ -11,36 +11,67 @@
         "agent": "reviewer.example"
       },
       "tls_certificate_sha256": "0a1bb31085a4ae34473de9206876723889ab2f24b7b5280b79f290b631d3d835",
-      "keys": [
-        {
-          "purpose": "agent-card",
+      "keys": {
+        "agent-card": {
           "jwk": {
             "kty": "OKP",
             "crv": "Ed25519",
-            "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+            "x": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
           },
-          "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+          "thumbprint": "aVBtapLd11SUVKIMGJfPzOEDuN0sXcmzJQNVT-_sKEU",
           "generation": 0,
           "not_before": "2026-07-16T12:00:00Z",
           "not_after": "2027-07-16T12:00:00Z"
         },
-        {
-          "purpose": "contract-decision",
+        "contract-decision": {
           "jwk": {
             "kty": "OKP",
             "crv": "Ed25519",
-            "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+            "x": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E"
           },
-          "thumbprint": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
+          "thumbprint": "nRIE2VmKdMjL1JD7tbV7fXVgXxmv0GKnMFWRUJMTf9Q",
+          "generation": 0,
+          "not_before": "2026-07-16T12:00:00Z",
+          "not_after": "2027-07-16T12:00:00Z"
+        },
+        "task-result": {
+          "jwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "ypOsFwUYcHHWe4PH_w7-gQjo7EUwV113JoeTM9vavnw"
+          },
+          "thumbprint": "d8Me3uJ82jhdsCstWyVMr3_I2ueeTYG5agM1-2r1_bY",
+          "generation": 0,
+          "not_before": "2026-07-16T12:00:00Z",
+          "not_after": "2027-07-16T12:00:00Z"
+        },
+        "evidence": {
+          "jwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "bnoc3Smwt4_ROvTFWY_v9O8qlxZuPKby5Pv8zYBQW_E"
+          },
+          "thumbprint": "0YuCW4N9LKPsO0jPKKgDYo3H7HH2LkiT8YLuFGslZXI",
+          "generation": 0,
+          "not_before": "2026-07-16T12:00:00Z",
+          "not_after": "2027-07-16T12:00:00Z"
+        },
+        "requester-outcome": {
+          "jwk": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "iodf_x6zhFFXes1a_uQFRWVo3XyJ4JCGOgVXvHr0nxc"
+          },
+          "thumbprint": "FxVhuO_Ir82yjJ8FMIoWpXpN_BZn-l_LcBqPspZfzfk",
           "generation": 0,
           "not_before": "2026-07-16T12:00:00Z",
           "not_after": "2027-07-16T12:00:00Z"
         }
-      ]
+      }
     }
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "263574f38d33dc15e8b52bdf7ff0074cd7c3a93a239adf45c4da417a0d1a2bc2"
+    "canonical_sha256": "777704978bd6d3d6dfb4301d07b588453d63b32678a6779eb6229eec4d147852"
   }
 }

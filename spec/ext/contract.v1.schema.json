@@ -133,9 +133,16 @@
   },
   "allOf": [
     {
-      "description": "Revision zero has no predecessor; every later revision names one and its existing Task.",
-      "if": { "properties": { "revision": { "const": 0 } } },
-      "then": { "not": { "required": ["predecessor_digest"] } },
+      "description": "Revision zero has neither a predecessor nor an existing Task; every later revision names both.",
+      "if": { "properties": { "revision": { "const": 0 } }, "required": ["revision"] },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["predecessor_digest"] },
+            { "required": ["task_id"] }
+          ]
+        }
+      },
       "else": { "required": ["predecessor_digest", "task_id"] }
     }
   ],
@@ -197,9 +204,22 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "text" } } },
-          "then": { "properties": { "canonical_rule": { "const": "utf8-exact" } } },
-          "else": { "properties": { "canonical_rule": { "const": "jcs" } } }
+          "description": "text Parts digest exact UTF-8 (≤1 MiB, charset declared); data Parts digest RFC 8785 JSON (≤4 MiB) — design §10.2, §11.1.",
+          "if": { "properties": { "kind": { "const": "text" } }, "required": ["kind"] },
+          "then": {
+            "required": ["charset"],
+            "properties": {
+              "canonical_rule": { "const": "utf8-exact" },
+              "charset": { "const": "utf-8" },
+              "byte_length": { "maximum": 1048576 }
+            }
+          },
+          "else": {
+            "properties": {
+              "canonical_rule": { "const": "jcs" },
+              "byte_length": { "maximum": 4194304 }
+            }
+          }
         }
       ]
     }

@@ -1,0 +1,6 @@
+{
+  "name": "ijson/valid-object",
+  "description": "well-formed I-JSON with nested containers and in-range numbers",
+  "input": { "json_utf8": "{\"a\":1,\"b\":[true,null,\"x\"],\"c\":{\"d\":1.5}}" },
+  "expected": { "valid": true }
+}

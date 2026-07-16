@@ -1,0 +1,6 @@
+{
+  "name": "ijson/trailing-data",
+  "description": "trailing tokens after one value are a syntax error",
+  "input": { "json_utf8": "1 2" },
+  "expected": { "valid": false, "error": "invalid JSON" }
+}

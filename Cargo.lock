@@ -98,6 +98,7 @@ version = "0.0.1"
 name = "axon-proto"
 version = "0.0.1"
 dependencies = [
+ "hex",
  "pbjson",
  "pbjson-build",
  "pbjson-types",
@@ -106,6 +107,7 @@ dependencies = [
  "protox",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

@@ -1,5 +1,6 @@
 [package]
 name = "axon-ext"
+publish = false
 description = "Axon extension schemas, I-JSON, JCS canonicalization, DSSE envelopes, golden vectors"
 version.workspace = true
 edition.workspace = true
@@ -8,6 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axon-crypto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 json-canon = { workspace = true }
@@ -18,7 +20,6 @@ base64 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-axon-crypto = { workspace = true }
 hex = { workspace = true }
 
 [lints]

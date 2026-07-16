@@ -1,5 +1,6 @@
 [package]
 name = "axon-store"
+publish = false
 description = "Encrypted SQLite state, outbox/inbox, replay tombstones, audit chain, state-generation checkpoint"
 version.workspace = true
 edition.workspace = true

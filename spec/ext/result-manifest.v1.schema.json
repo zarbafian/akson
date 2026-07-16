@@ -58,7 +58,7 @@
         "required": ["role", "payload_type", "byte_length", "sha256", "signer_keyid"],
         "properties": {
           "role": { "$ref": "#/$defs/slug" },
-          "payload_type": { "$ref": "#/$defs/mediaType" },
+          "payload_type": { "$ref": "#/$defs/evidencePayloadType" },
           "byte_length": { "type": "integer", "minimum": 0, "maximum": 8388608 },
           "sha256": { "$ref": "#/$defs/sha256hex" },
           "signer_keyid": { "$ref": "#/$defs/b64url32" }
@@ -115,6 +115,11 @@
     "mediaType": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9!#$&.+^_-]{0,126}/[a-zA-Z0-9][a-zA-Z0-9!#$&.+^_-]{0,126}$"
+    },
+    "evidencePayloadType": {
+      "type": "string",
+      "description": "Evidence is an in-toto attestation or an Axon DSSE statement (design §14.2).",
+      "pattern": "^(application/vnd\\.in-toto\\+json|application/vnd\\.axon-dev\\.[a-z0-9-]+\\.v[0-9]+\\+json)$"
     }
   }
 }

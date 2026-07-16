@@ -1,5 +1,6 @@
 [package]
 name = "axon-worker"
+publish = false
 description = "Clean worker protocol and output gate"
 version.workspace = true
 edition.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "axon-broker"
+publish = false
 description = "Processor broker with durable sub-attempts; the only egress path for approved plaintext"
 version.workspace = true
 edition.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "axon-transport"
+publish = false
 description = "A2A HTTP+JSON server/client on the pinned TLS 1.3 mTLS profile with the Axon delivery extension"
 version.workspace = true
 edition.workspace = true

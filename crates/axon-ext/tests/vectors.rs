@@ -7,6 +7,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde_json::Value;
 
@@ -47,6 +49,37 @@ fn jcs_vectors() {
         );
         let digest = axon_ext::jcs::canonical_sha256(value).unwrap();
         assert_eq!(hex::encode(digest), expected_sha, "{name}: digest differs");
+    }
+}
+
+#[test]
+fn ijson_vectors() {
+    // Raw-byte cases: these must exercise the parser on bytes, not a
+    // pre-parsed Value (which would already have dropped duplicate keys and
+    // collapsed large integers). Cross-checked independently in xcheck/.
+    for case in load_family("ijson") {
+        let name = case["name"].as_str().unwrap();
+        let input = &case["input"];
+        let bytes = if let Some(text) = input["json_utf8"].as_str() {
+            text.as_bytes().to_vec()
+        } else {
+            STANDARD
+                .decode(input["json_base64"].as_str().unwrap())
+                .unwrap()
+        };
+        let expected_valid = case["expected"]["valid"].as_bool().unwrap();
+        match axon_ext::ijson::parse(&bytes) {
+            Ok(_) => assert!(expected_valid, "{name}: expected rejection, parsed ok"),
+            Err(err) => {
+                assert!(!expected_valid, "{name}: expected valid, got {err}");
+                if let Some(substr) = case["expected"]["error"].as_str() {
+                    assert!(
+                        err.to_string().contains(substr),
+                        "{name}: error {err:?} does not mention {substr:?}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -122,8 +155,10 @@ fn dsse_vectors() {
             "{name}: keyid differs"
         );
 
-        // Deterministic Ed25519: signing reproduces the frozen envelope.
-        let envelope = axon_ext::dsse::sign(payload_type, payload, &keyid, &signing_key);
+        // Deterministic Ed25519: signing reproduces the frozen envelope, and
+        // the keyid it derives equals the frozen thumbprint.
+        let envelope = axon_ext::dsse::sign(payload_type, payload, &signing_key);
+        assert_eq!(envelope.signatures[0].keyid, keyid, "{name}: keyid differs");
         assert_eq!(
             envelope.payload,
             expected["payload_base64"].as_str().unwrap(),
@@ -136,8 +171,7 @@ fn dsse_vectors() {
         );
 
         // And the frozen envelope verifies.
-        let recovered =
-            axon_ext::dsse::verify(&envelope, payload_type, &keyid, &verifying_key).unwrap();
+        let recovered = axon_ext::dsse::verify(&envelope, payload_type, &verifying_key).unwrap();
         assert_eq!(recovered, payload, "{name}: verified payload differs");
     }
 }

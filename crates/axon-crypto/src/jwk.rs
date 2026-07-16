@@ -51,16 +51,26 @@ impl Ed25519PublicJwk {
     /// RFC 7638 thumbprint: SHA-256 over the required members serialized in
     /// lexicographic order with no whitespace, base64url unpadded.
     ///
-    /// The construction string is assembled directly (`crv`, `kty`, `x` are
-    /// already lexicographically ordered) so the thumbprint cannot drift with
-    /// a JSON library's escaping choices; the members are ASCII by
-    /// construction.
+    /// The members are serialized through `serde_json` in the required order
+    /// (`crv`, `kty`, `x` are already lexicographic) so any character in `x` —
+    /// including one an untrusted JWK might inject — is correctly JSON-escaped
+    /// rather than breaking the construction string.
     pub fn thumbprint(&self) -> String {
-        let construction = format!(
-            r#"{{"crv":"{}","kty":"{}","x":"{}"}}"#,
-            self.crv, self.kty, self.x
-        );
-        URL_SAFE_NO_PAD.encode(Sha256::digest(construction.as_bytes()))
+        #[derive(serde::Serialize)]
+        struct Construction<'a> {
+            crv: &'a str,
+            kty: &'a str,
+            x: &'a str,
+        }
+        // serde_json emits object members in declaration order with no
+        // whitespace; the ordering above is the RFC 7638 lexicographic order.
+        let construction = serde_json::to_vec(&Construction {
+            crv: &self.crv,
+            kty: &self.kty,
+            x: &self.x,
+        })
+        .unwrap_or_default();
+        URL_SAFE_NO_PAD.encode(Sha256::digest(&construction))
     }
 }
 

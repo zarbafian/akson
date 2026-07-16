@@ -1,5 +1,6 @@
 [package]
 name = "axon-cli"
+publish = false
 description = "The Axon operator CLI"
 version.workspace = true
 edition.workspace = true

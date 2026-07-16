@@ -1,0 +1,6 @@
+{
+  "name": "ijson/invalid-utf8",
+  "description": "a string containing a lone 0xFF byte is not valid UTF-8",
+  "input": { "json_base64": "Iv8i" },
+  "expected": { "valid": false, "error": "invalid JSON" }
+}

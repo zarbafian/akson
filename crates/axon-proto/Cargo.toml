@@ -1,5 +1,6 @@
 [package]
 name = "axon-proto"
+publish = false
 description = "Pinned A2A types, JSON mapping, and profile validation"
 version.workspace = true
 edition.workspace = true
@@ -16,6 +17,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [build-dependencies]
 prost = { workspace = true }

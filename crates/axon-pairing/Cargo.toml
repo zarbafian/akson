@@ -1,5 +1,6 @@
 [package]
 name = "axon-pairing"
+publish = false
 description = "Invitation, bootstrap endpoint, pending-to-active pairing, re-pair and removal"
 version.workspace = true
 edition.workspace = true

@@ -18,13 +18,29 @@ pub const MAX_EXTENSION_URI_LEN: usize = 256;
 /// The v1 HTTP+JSON interface advertisement (design §10.1).
 pub const HTTP_JSON_BINDING: &str = "HTTP+JSON";
 
-/// Axon-side configuration for profile validation.
-#[derive(Debug, Clone, Default)]
+/// Axon-side configuration for profile validation. Deliberately has no
+/// `Default`: an empty required-extension set would silently disable the
+/// downgrade check, so callers must construct it explicitly from the real set
+/// (`axon_ext::namespace::required_extension_uris`).
+#[derive(Debug, Clone)]
 pub struct ProfileConfig {
     /// The complete required Axon extension URI set. Every v1 operation
     /// activates exactly this set; an Agent Card must advertise each with
-    /// `required: true`.
+    /// `required: true`. Must be non-empty.
     pub required_extensions: BTreeSet<String>,
+}
+
+impl ProfileConfig {
+    /// Constructs a config, rejecting an empty required set so a downgrade
+    /// cannot be configured by accident.
+    pub fn new(required_extensions: BTreeSet<String>) -> Result<Self, ProfileError> {
+        if required_extensions.is_empty() {
+            return Err(ProfileError(vec![Violation::EmptyRequiredExtensionSet]));
+        }
+        Ok(Self {
+            required_extensions,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -43,8 +59,12 @@ pub enum Violation {
     RawPartUnsupported(usize),
     #[error("part {0} is a URL part; URL parts are unsupported in v1")]
     UrlPartUnsupported(usize),
-    #[error("extension URI {0:?} must be a bounded https URI")]
+    #[error("extension URI {0:?} must be a bounded https URI with a host")]
     BadExtensionUri(String),
+    #[error("required extension set must not be empty")]
+    EmptyRequiredExtensionSet,
+    #[error("A2A-Version {0:?} is not the pinned version {1:?}")]
+    BadA2aVersion(String, &'static str),
     #[error("request must carry a message")]
     NoMessage,
     #[error("request must set returnImmediately (nonblocking v1 profile)")]
@@ -89,8 +109,37 @@ pub fn is_valid_id(id: &str) -> bool {
     (1..=128).contains(&id.len()) && id.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
+/// A bounded `https` URI with a non-empty authority and no control characters
+/// or whitespace. Rejects `https://` alone and hostless/control-containing
+/// values. This is structural only; it is not a full URI parser.
+pub fn is_bounded_https_uri(uri: &str) -> bool {
+    if uri.len() > MAX_EXTENSION_URI_LEN {
+        return false;
+    }
+    let Some(rest) = uri.strip_prefix("https://") else {
+        return false;
+    };
+    // Authority runs up to the first '/', '?' or '#'; it must be non-empty and
+    // free of control characters and spaces.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty() && !rest.bytes().any(|b| b <= 0x20 || b == 0x7f)
+}
+
+/// The A2A-Version an operation carries MUST be the pinned version
+/// (design §10.1, §18 downgrade resistance).
+pub fn validate_a2a_version(version: &str) -> Result<(), ProfileError> {
+    if version == crate::A2A_VERSION {
+        Ok(())
+    } else {
+        Err(ProfileError(vec![Violation::BadA2aVersion(
+            version.to_owned(),
+            crate::A2A_VERSION,
+        )]))
+    }
+}
+
 fn check_extension_uri(uri: &str, violations: &mut Vec<Violation>) {
-    if uri.len() > MAX_EXTENSION_URI_LEN || !uri.starts_with("https://") {
+    if !is_bounded_https_uri(uri) {
         violations.push(Violation::BadExtensionUri(uri.to_owned()));
     }
 }
@@ -168,7 +217,7 @@ pub fn validate_agent_card(card: &AgentCard, config: &ProfileConfig) -> Result<(
     if !card.supported_interfaces.iter().any(|i| {
         i.protocol_binding == HTTP_JSON_BINDING
             && i.protocol_version == crate::A2A_VERSION
-            && i.url.starts_with("https://")
+            && is_bounded_https_uri(&i.url)
     }) {
         violations.push(Violation::NoV1Interface);
     }
@@ -200,6 +249,11 @@ pub fn validate_agent_card(card: &AgentCard, config: &ProfileConfig) -> Result<(
         }
     }
 
+    // mTLS must be mandatory: there must be at least one security requirement,
+    // and EVERY requirement alternative must include an mTLS scheme. A card
+    // offering an mTLS alternative *and* a non-mTLS one (e.g. bearer, or an
+    // empty anonymous requirement) lets a client pick the weaker path, so it
+    // fails (design §9.1: no non-mTLS fallback).
     let mtls_scheme_names: BTreeSet<&String> = card
         .security_schemes
         .iter()
@@ -211,12 +265,13 @@ pub fn validate_agent_card(card: &AgentCard, config: &ProfileConfig) -> Result<(
         })
         .map(|(name, _)| name)
         .collect();
-    let mtls_required = card.security_requirements.iter().any(|req| {
-        req.schemes
-            .keys()
-            .any(|name| mtls_scheme_names.contains(name))
-    });
-    if !mtls_required {
+    let mtls_mandatory = !card.security_requirements.is_empty()
+        && card.security_requirements.iter().all(|req| {
+            req.schemes
+                .keys()
+                .any(|name| mtls_scheme_names.contains(name))
+        });
+    if !mtls_mandatory {
         violations.push(Violation::NoMutualTls);
     }
 
@@ -263,4 +318,38 @@ pub fn negotiate_extensions(
     }
     finish(violations)?;
     Ok(activated.clone())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a2a_version_must_be_pinned() {
+        assert!(validate_a2a_version("1.0").is_ok());
+        assert!(validate_a2a_version("0.3").is_err());
+        assert!(validate_a2a_version("2.0").is_err());
+        assert!(validate_a2a_version("").is_err());
+    }
+
+    #[test]
+    fn https_uri_rejects_hostless_and_control() {
+        assert!(is_bounded_https_uri("https://reviewer.example:7300/a2a"));
+        assert!(!is_bounded_https_uri("https://"));
+        assert!(!is_bounded_https_uri("http://reviewer.example"));
+        assert!(!is_bounded_https_uri("https:///path"));
+        assert!(!is_bounded_https_uri("https://host\u{7f}/x"));
+        assert!(!is_bounded_https_uri("https://host with space"));
+        assert!(!is_bounded_https_uri(&format!(
+            "https://{}",
+            "a".repeat(300)
+        )));
+    }
+
+    #[test]
+    fn profile_config_rejects_empty_required_set() {
+        assert!(ProfileConfig::new(BTreeSet::new()).is_err());
+        assert!(ProfileConfig::new(BTreeSet::from(["https://x.invalid/e".to_owned()])).is_ok());
+    }
 }
