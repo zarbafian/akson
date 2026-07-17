@@ -31,6 +31,7 @@ pub mod schema;
 
 use std::path::Path;
 
+use axon_authority::{next, AttemptEvent, AttemptState, TransitionError, WorkOrder};
 use axon_contract::{
     accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
 };
@@ -72,6 +73,8 @@ pub enum StoreError {
     Serde(#[from] serde_json::Error),
     #[error("corrupt store state: {0}")]
     Corrupt(String),
+    #[error("unknown work-order attempt {0:?}")]
+    UnknownAttempt(String),
 }
 
 /// State held outside the database and its backups (the OS keystore/TPM, per
@@ -153,6 +156,19 @@ pub enum Receipt {
     /// Same (peer, Message id) but a covered value changed — a conflict and a
     /// security event. Nothing is stored or overwritten.
     Conflict,
+}
+
+/// The result of an atomic work-order claim (design §12.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// A fresh claim: the nonce was consumed and the budget reserved.
+    Claimed,
+    /// The same work order was already claimed — its current attempt state is
+    /// returned. A duplicate never creates a second attempt (§9.2, §12.3).
+    AlreadyClaimed(AttemptState),
+    /// The one-use nonce belongs to a *different* work order — a replayed or
+    /// forged nonce. Refused; nothing is claimed.
+    NonceReused,
 }
 
 /// One endpoint's encrypted state database.
@@ -887,6 +903,141 @@ impl Store {
     }
 }
 
+/// Work-order attempts and the atomic claim (design §12.3). The pure state
+/// machine lives in `axon-authority`; the store makes the claim durable — one row
+/// insert consumes the one-use nonce and reserves the budget together — and drives
+/// the state transitions.
+impl Store {
+    /// Atomically claims a work order (design §12.3): consumes its one-use nonce
+    /// and reserves its budget in a single row insert. Idempotent — re-claiming
+    /// the same work order returns its existing state, never a second attempt.
+    /// A nonce presented for a *different* work order is refused as reuse. The
+    /// caller MUST have verified the work order's MAC first.
+    pub fn claim_attempt(&self, order: &WorkOrder, now: i64) -> Result<ClaimOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        // A prior claim of this exact work order is idempotent.
+        if let Some(state) = self.attempt_state(&order.work_order_id)? {
+            tx.commit()?;
+            return Ok(ClaimOutcome::AlreadyClaimed(state));
+        }
+        // The nonce is one-use: if it belongs to another work order, refuse.
+        let nonce_owner: Option<String> = tx
+            .query_row(
+                "SELECT work_order_id FROM attempts WHERE nonce = ?1",
+                [&order.nonce],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if nonce_owner.is_some() {
+            tx.commit()?;
+            return Ok(ClaimOutcome::NonceReused);
+        }
+
+        tx.execute(
+            "INSERT INTO attempts
+                 (work_order_id, nonce, task_id, work_order_digest, state,
+                  max_cost_microusd, max_bytes, max_operations, claimed_at, deadline)
+             VALUES (?1, ?2, ?3, ?4, 'claimed', ?5, ?6, ?7, ?8, ?9)",
+            params![
+                order.work_order_id,
+                order.nonce,
+                order.task_id,
+                order
+                    .digest()
+                    .map_err(|e| StoreError::Corrupt(format!("work order not canonical: {e}")))?,
+                order.budgets.max_cost_microusd as i64,
+                order.budgets.max_bytes as i64,
+                order.budgets.max_operations as i64,
+                now,
+                order.deadline,
+            ],
+        )?;
+        audit::append(&tx, now, "attempt.claimed", &order.work_order_id)?;
+        tx.commit()?;
+        Ok(ClaimOutcome::Claimed)
+    }
+
+    /// The current state of an attempt by work-order id, if it exists.
+    pub fn attempt_state(&self, work_order_id: &str) -> Result<Option<AttemptState>, StoreError> {
+        let s: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT state FROM attempts WHERE work_order_id = ?1",
+                [work_order_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match s {
+            None => Ok(None),
+            Some(text) => AttemptState::from_str(&text)
+                .map(Some)
+                .ok_or_else(|| StoreError::Corrupt(format!("unknown attempt state {text:?}"))),
+        }
+    }
+
+    /// Drives an attempt through the state machine (design §12.3). The pure
+    /// `next` decides; a valid transition is persisted and audited. Returns the
+    /// inner [`TransitionError`] (out-of-order or terminal) without failing the
+    /// call; an unknown attempt is a [`StoreError::UnknownAttempt`].
+    pub fn advance_attempt(
+        &self,
+        work_order_id: &str,
+        event: AttemptEvent,
+        now: i64,
+    ) -> Result<Result<AttemptState, TransitionError>, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let state = self
+            .attempt_state(work_order_id)?
+            .ok_or_else(|| StoreError::UnknownAttempt(work_order_id.to_owned()))?;
+        match next(state, event) {
+            Ok(new_state) => {
+                tx.execute(
+                    "UPDATE attempts SET state = ?1 WHERE work_order_id = ?2",
+                    params![new_state.as_str(), work_order_id],
+                )?;
+                audit::append(
+                    &tx,
+                    now,
+                    "attempt.transition",
+                    &format!("{work_order_id}:{}", new_state.as_str()),
+                )?;
+                tx.commit()?;
+                Ok(Ok(new_state))
+            }
+            Err(e) => {
+                tx.commit()?;
+                Ok(Err(e))
+            }
+        }
+    }
+
+    /// Resolves every attempt left claimed or running by a crash to `ambiguous`
+    /// (design §12.3) — an effect may have started, so it is never auto-retried.
+    /// Called during recovery. Returns how many were resolved.
+    pub fn resolve_crashed_attempts(&self, now: i64) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT work_order_id FROM attempts WHERE state IN ('claimed', 'running')",
+            )?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for id in &ids {
+            tx.execute(
+                "UPDATE attempts SET state = 'ambiguous' WHERE work_order_id = ?1",
+                [id],
+            )?;
+            audit::append(&tx, now, "attempt.transition", &format!("{id}:ambiguous"))?;
+        }
+        tx.commit()?;
+        Ok(ids.len())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1367,6 +1518,185 @@ mod tests {
             // GC after expiry drops the stored revision.
             store.purge_expired_contracts(EXPIRES + 1).unwrap();
             assert!(store.get_contract(&rev0.digest).unwrap().is_none());
+        }
+    }
+
+    // --- work-order attempts / atomic claim (M8) ---
+
+    fn work_order(id: &str, nonce: &str) -> axon_authority::WorkOrder {
+        use axon_authority::{
+            Audience, Budgets, CapabilityVector, Grant, RequestOrigin, RespondScope,
+        };
+        use axon_contract::Identity;
+        axon_authority::WorkOrder {
+            version: 1,
+            work_order_id: id.to_owned(),
+            issuer: Identity {
+                issuer: "local".to_owned(),
+                agent: "authority".to_owned(),
+            },
+            issuer_assurance: "local-human".to_owned(),
+            audience: Audience {
+                daemon: "axond".to_owned(),
+                executor: "worker-1".to_owned(),
+            },
+            request_origin: RequestOrigin {
+                peer: Identity {
+                    issuer: "iss".to_owned(),
+                    agent: "requester".to_owned(),
+                },
+                tls_certificate_sha256: "ab".repeat(32),
+            },
+            task_id: "task-1".to_owned(),
+            context_id: "ctx-1".to_owned(),
+            message_id: "msg-1".to_owned(),
+            contract_revision: 0,
+            contract_digest: "a".repeat(64),
+            capabilities: CapabilityVector::new(vec![Grant::Respond(RespondScope {
+                task_id: "task-1".to_owned(),
+                message_id: "msg-1".to_owned(),
+                recipient: "request-origin".to_owned(),
+                max_responses: 1,
+                max_bytes: 8192,
+                deadline: "2030-01-01T00:00:00Z".to_owned(),
+            })])
+            .unwrap(),
+            input_manifest: vec!["src".to_owned()],
+            processor_digest: None,
+            runner_digest: None,
+            sandbox_digest: None,
+            profile_digest: None,
+            budgets: Budgets {
+                max_cost_microusd: 500,
+                max_bytes: 8192,
+                max_operations: 4,
+            },
+            evidence_slots: vec![],
+            policy_version: 1,
+            decision_id: "d-1".to_owned(),
+            not_before: "2026-01-01T00:00:00Z".to_owned(),
+            deadline: "2030-01-01T00:00:00Z".to_owned(),
+            nonce: nonce.to_owned(),
+            remote_cancel: None,
+        }
+    }
+
+    #[test]
+    fn claim_consumes_the_nonce_and_is_idempotent() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let order = work_order("wo-1", &"n".repeat(43));
+        assert_eq!(
+            store.claim_attempt(&order, 100).unwrap(),
+            ClaimOutcome::Claimed
+        );
+        assert_eq!(
+            store.attempt_state("wo-1").unwrap(),
+            Some(AttemptState::Claimed)
+        );
+        // Re-claiming the same work order returns the existing state — no second
+        // attempt.
+        assert_eq!(
+            store.claim_attempt(&order, 101).unwrap(),
+            ClaimOutcome::AlreadyClaimed(AttemptState::Claimed)
+        );
+    }
+
+    #[test]
+    fn a_reused_nonce_on_a_different_order_is_refused() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let nonce = "n".repeat(43);
+        store
+            .claim_attempt(&work_order("wo-1", &nonce), 100)
+            .unwrap();
+        // A different work order presenting the same one-use nonce is refused.
+        assert_eq!(
+            store
+                .claim_attempt(&work_order("wo-2", &nonce), 101)
+                .unwrap(),
+            ClaimOutcome::NonceReused
+        );
+        assert!(store.attempt_state("wo-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn advance_drives_the_state_machine_and_rejects_out_of_order() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let order = work_order("wo-1", &"n".repeat(43));
+        store.claim_attempt(&order, 100).unwrap();
+        assert_eq!(
+            store
+                .advance_attempt("wo-1", AttemptEvent::Start, 101)
+                .unwrap(),
+            Ok(AttemptState::Running)
+        );
+        assert_eq!(
+            store
+                .advance_attempt("wo-1", AttemptEvent::Succeed, 102)
+                .unwrap(),
+            Ok(AttemptState::Succeeded)
+        );
+        // A terminal attempt rejects further transitions (nothing persisted).
+        assert!(matches!(
+            store
+                .advance_attempt("wo-1", AttemptEvent::Start, 103)
+                .unwrap(),
+            Err(TransitionError::AlreadyTerminal { .. })
+        ));
+        assert_eq!(
+            store.attempt_state("wo-1").unwrap(),
+            Some(AttemptState::Succeeded)
+        );
+        // An unknown attempt is a store error, not a transition verdict.
+        assert!(matches!(
+            store.advance_attempt("nope", AttemptEvent::Start, 104),
+            Err(StoreError::UnknownAttempt(_))
+        ));
+    }
+
+    #[test]
+    fn crash_recovery_marks_claimed_and_running_ambiguous() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // One attempt left claimed, one left running.
+        store
+            .claim_attempt(&work_order("wo-1", &"n".repeat(43)), 100)
+            .unwrap();
+        store
+            .claim_attempt(&work_order("wo-2", &"m".repeat(43)), 100)
+            .unwrap();
+        store
+            .advance_attempt("wo-2", AttemptEvent::Start, 101)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(store.resolve_crashed_attempts(200).unwrap(), 2);
+        assert_eq!(
+            store.attempt_state("wo-1").unwrap(),
+            Some(AttemptState::Ambiguous)
+        );
+        assert_eq!(
+            store.attempt_state("wo-2").unwrap(),
+            Some(AttemptState::Ambiguous)
+        );
+        // A second recovery pass finds nothing to resolve (idempotent).
+        assert_eq!(store.resolve_crashed_attempts(201).unwrap(), 0);
+    }
+
+    #[test]
+    fn attempts_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let order = work_order("wo-1", &"n".repeat(43));
+        {
+            let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+            store.claim_attempt(&order, 100).unwrap();
+        }
+        {
+            let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+            // The nonce is still consumed after reopen — re-claim is idempotent.
+            assert_eq!(
+                store.claim_attempt(&order, 101).unwrap(),
+                ClaimOutcome::AlreadyClaimed(AttemptState::Claimed)
+            );
         }
     }
 }

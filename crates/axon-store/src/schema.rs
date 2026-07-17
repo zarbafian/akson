@@ -119,9 +119,29 @@ CREATE TABLE contracts (
 ) STRICT;
 "#;
 
+/// Version 6 (M8): work-order attempts (design §12.3). One row per attempt is the
+/// atomic claim — its insertion consumes the one-use `nonce` (UNIQUE) and records
+/// the reserved budgets in the same statement. `state` tracks
+/// pending→claimed→…→terminal; a claimed/running row found after a crash resolves
+/// to `ambiguous` and is never re-run.
+const V6: &str = r#"
+CREATE TABLE attempts (
+    work_order_id     TEXT PRIMARY KEY,
+    nonce             TEXT NOT NULL UNIQUE,
+    task_id           TEXT NOT NULL,
+    work_order_digest TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    max_cost_microusd INTEGER NOT NULL,
+    max_bytes         INTEGER NOT NULL,
+    max_operations    INTEGER NOT NULL,
+    claimed_at        INTEGER NOT NULL,
+    deadline          TEXT NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
-const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4), (5, V5)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6)];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent.
 pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
