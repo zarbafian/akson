@@ -299,10 +299,15 @@ with `purge_expired_pairing` GC — proven end-to-end over mTLS.
 (the §8.1 identity tuple, endpoint id from the card interface URL, projection vs
 full-card digests) via the `PairingStore` trait — `Store` persists to the
 encrypted `peers` table; proven end-to-end (pair over mTLS, then `get_peer`).
-**Remaining:** pending→active *confirmation* status (stored as active now; an
-operator-confirm step + status column is the refinement); QR transfer; re-pair;
-rate-limit + enable-only-when-active gating on `serve`; `axon endpoint check` /
-`axon pair diagnose` CLI.
+**Security-hardened** (self-review of the bootstrap/persistence flow): fixed
+peer-identity overwrite (a pairing can no longer silently replace an existing
+peer that shares an attacker-chosen agent id — refused via `detect_change`, §8.4)
+and unbounded request body (64 KiB cap, 413); added token-bucket rate limiting on
+`serve`. **Remaining:** enable-only-when-active gating; the accepter-side client
++ verification of the inviter's response (symmetric flow) and a per-request
+inviter response (`build_material` over the actual transcript, currently a static
+placeholder); pending→active *confirmation* status; QR transfer; re-pair;
+`axon endpoint check` / `axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
