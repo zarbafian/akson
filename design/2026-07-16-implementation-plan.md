@@ -384,7 +384,7 @@ is M12 assembly.
 *Exit:* §20.3 authority suite: work order binds exact task/revision/inputs/
 processor/nonce; crash-after-claim resolves ambiguous, never auto-retries.
 
-**M9. Sandbox and clean worker (XL)** — `axon-sandbox`, `axon-worker` — **in progress**
+**M9. Sandbox and clean worker (XL)** — `axon-sandbox`, `axon-worker` — **DONE (isolation)**; worker-run composition is M12
 Spike S2 first (ADR-0006, ~1 week, timeboxed): build the candidate launcher,
 run the §13.1 checklist as tests, publish profile. Then: namespaces (user,
 mount, PID, net, IPC, UTS), `no_new_privs`, default-deny seccomp, cgroups v2
@@ -452,15 +452,28 @@ is now the *only* public launch entry and requires both a `SeccompPolicy` and a
 `CgroupScope`: a partially-isolated launch is unrepresentable (no fail-open by
 omission §13.1); the seccomp-only / pre-made-scope paths are `pub(crate)` building
 blocks.
-**Remaining:** Landlock applied at the worker entrypoint; the worker protocol tail
-(delivering the staged inputs into the sandbox + bounded progress/result + the
-one-use descriptor — the daemon composition, M12); daemon-integration polish
-(clone3 `CLONE_INTO_CGROUP` for race-free placement). The experimental
-`NativeLauncher` (validated user+net entry + `pivot_root` fs isolation) awaits
-independent review + the review's structural fixes before it could ever be default.
+**Landlock at the worker entrypoint is done.** `SandboxSpec::landlock_profile`
+derives the worker's Landlock policy straight from the spec's filesystem boundary
+(read+execute the runtime binds and staged inputs, read-write the scratch/output
+tmpfs, everything else denied); the worker applies it as its first in-sandbox
+action — defense-in-depth inside the mount namespace. Validated live (read-not-write
+a bind, write the tmpfs, no access outside) and by a pure-derivation unit test.
+**§20.5 EXIT CRITERIA MET (validated live under bwrap + userns):** empty environment,
+no host reach (`/etc` gone), **no generic network** (the worker's `/proc/net/dev`
+lists only loopback — fresh net namespace), deadline/resource enforcement (64 MiB /
+16-pid cgroup), probing fails closed, and `axon doctor` reports every capability.
+**M9 clean-worker isolation is COMPLETE.**
+**Deferred (properly M12 daemon assembly, not M9):** the worker protocol tail — the
+runtime composition that stages the approved inputs, ro-binds them, launches via the
+full-stack seam, and gates the bounded result — plus clone3 `CLONE_INTO_CGROUP` for
+race-free cgroup placement (the current `pre_exec` placement is already correct;
+clone3 would need hand-rolled fork/exec, the heavy-unsafe path the review cautioned
+against, for a marginal gain). The experimental `NativeLauncher` (validated user+net
+entry + `pivot_root` fs isolation) awaits independent review + the review's
+structural fixes before it could ever be default.
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
-every capability.
+every capability. **— all met.**
 
 **M10. Processor broker (M)** — `axon-broker`
 Only egress path for approved plaintext. Durable sub-attempt
