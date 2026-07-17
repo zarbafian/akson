@@ -97,7 +97,10 @@ pub enum AttemptEvent {
     Fail,
     /// The outcome is uncertain. `claimed | running → ambiguous`.
     MarkAmbiguous,
-    /// Cancel a non-terminal attempt. `pending | claimed | running → cancelled`.
+    /// Cancel a non-terminal attempt. `pending | claimed → cancelled` (provably
+    /// before the first effect), but `running → ambiguous`: a running attempt may
+    /// already have committed an effect, and cancellation cannot undo a committed
+    /// result (§13.1), so a clean `cancelled` would be dishonest.
     Cancel,
     /// Recovery found a claimed/running attempt after a crash: it resolves to
     /// `ambiguous` and is never re-run. `claimed | running → ambiguous`.
@@ -135,7 +138,11 @@ pub fn next(state: AttemptState, event: AttemptEvent) -> Result<AttemptState, Tr
         (S::Claimed | S::Running, E::MarkAmbiguous) => S::Ambiguous,
         // A crash after the durable claim is uncertain, never auto-retried.
         (S::Claimed | S::Running, E::RecoverAfterCrash) => S::Ambiguous,
-        (S::Pending | S::Claimed | S::Running, E::Cancel) => S::Cancelled,
+        // Cancel is clean only before the first effect (pending/claimed). A running
+        // attempt may already have committed an effect that cancellation cannot undo
+        // (§13.1), so — like a post-claim crash — it resolves to ambiguous.
+        (S::Pending | S::Claimed, E::Cancel) => S::Cancelled,
+        (S::Running, E::Cancel) => S::Ambiguous,
         _ => return Err(invalid()),
     })
 }
@@ -187,10 +194,14 @@ mod tests {
     }
 
     #[test]
-    fn cancel_from_any_nonterminal() {
-        for s in [S::Pending, S::Claimed, S::Running] {
+    fn cancel_is_clean_before_effect_but_ambiguous_while_running() {
+        // Pending/claimed are provably before the first effect → clean cancel.
+        for s in [S::Pending, S::Claimed] {
             assert_eq!(next(s, E::Cancel).unwrap(), S::Cancelled);
         }
+        // Running may already have committed an effect cancellation can't undo, so
+        // it resolves to ambiguous (never auto-retried), like a post-claim crash.
+        assert_eq!(next(S::Running, E::Cancel).unwrap(), S::Ambiguous);
     }
 
     #[test]
