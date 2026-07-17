@@ -85,6 +85,10 @@ version = "0.0.1"
 [[package]]
 name = "axon-authority"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "axon-broker"

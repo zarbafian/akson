@@ -1,4 +1,16 @@
-//! Local policy, capability vector, one-shot work orders
+//! Local authority: the orthogonal capability vector, one-shot work orders, the
+//! claim/nonce/budget state machine, and deny/allow-once policy (design §12).
 //!
-//! See design/2026-07-16-threads-enterprise-agent-communication.md and the
-//! implementation plan for this crate's scope.
+//! Authority in Axon is never a bearer token a peer holds; it exists only in a
+//! locally issued, one-shot work order addressed to a local executor (§12.2).
+//! This crate builds those authorizations from local decisions.
+//!
+//! The first piece is the [`CapabilityVector`] (§12.1): independent, non-implying
+//! components, of which only v1's four are grantable.
+
+mod capability;
+
+pub use capability::{
+    ArtifactExportScope, CapabilityComponent, CapabilityVector, Grant, ProcessorUseScope,
+    ReadInputsScope, RespondScope, VectorError,
+};
