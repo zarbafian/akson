@@ -104,6 +104,9 @@ version = "0.0.1"
 [[package]]
 name = "axon-cli"
 version = "0.0.1"
+dependencies = [
+ "axon-sandbox",
+]
 
 [[package]]
 name = "axon-contract"
