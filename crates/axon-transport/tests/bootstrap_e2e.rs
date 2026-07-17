@@ -15,6 +15,7 @@ use axon_crypto::jwk::Ed25519PublicJwk;
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
 use axon_pairing::bootstrap::Transcript;
+use axon_pairing::handler::InviterMaterial;
 use axon_pairing::invitation::Invitation;
 use axon_pairing::session::key_binding_digest_hex;
 use axon_pairing::state_machine::{MemoryLedger, PairingLedger, PairingStore};
@@ -34,6 +35,34 @@ fn endpoint(seed: u8) -> (PurposeKey, EndpointCert) {
     let key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[seed; 32]);
     let cert = self_signed_endpoint(&key, "endpoint", Duration::from_secs(86_400)).unwrap();
     (key, cert)
+}
+
+/// Builds the inviter's own material (keys + signed card) for its response.
+fn inviter_material(inviter_tls: &str) -> InviterMaterial {
+    let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[55u8; 32]);
+    let mut card: AgentCard = serde_json::from_str(
+        r#"{"name":"Inviter","description":"d","version":"1.0.0",
+            "supportedInterfaces":[{"url":"https://inviter/x","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}],
+            "capabilities":{"streaming":false,"pushNotifications":false}}"#,
+    )
+    .unwrap();
+    card.signatures
+        .push(card_sig::sign_card(&card, &card_key).unwrap());
+    let mut keys = BTreeMap::new();
+    keys.insert(
+        KeyPurpose::AgentCard,
+        PurposeKey::from_seed(KeyPurpose::AgentCard, &[55u8; 32]),
+    );
+    InviterMaterial {
+        tls_sha256: inviter_tls.to_owned(),
+        subject_issuer: "local".to_owned(),
+        subject_agent: "inviter".to_owned(),
+        signed_card: card,
+        keys,
+        not_before: "2020-01-01T00:00:00Z".to_owned(),
+        not_after: "2030-01-01T00:00:00Z".to_owned(),
+        generation: 0,
+    }
 }
 
 /// Builds the accepter's bootstrap request body bound to `invitation_verifier`
@@ -155,11 +184,7 @@ async fn bootstrap_pairs_over_mtls_memory_ledger() {
     let mut ledger = MemoryLedger::new();
     ledger.add(pending);
 
-    let state = Arc::new(BootstrapState::new(
-        ledger,
-        inviter_tls.clone(),
-        b"INVITER-PENDING-PAIR".to_vec(),
-    ));
+    let state = Arc::new(BootstrapState::new(ledger, inviter_material(&inviter_tls)));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
 
     let text = accepter_bootstrap(
@@ -174,7 +199,10 @@ async fn bootstrap_pairs_over_mtls_memory_ledger() {
     )
     .await;
     assert!(text.starts_with("HTTP/1.1 200"), "got:\n{text}");
-    assert!(text.contains("INVITER-PENDING-PAIR"), "got:\n{text}");
+    assert!(
+        text.contains("extended_card"),
+        "expected inviter material, got:\n{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -184,8 +212,7 @@ async fn oversized_body_is_rejected() {
 
     let state = Arc::new(BootstrapState::new(
         MemoryLedger::new(),
-        inviter_cert.fingerprint.value.clone(),
-        Vec::new(),
+        inviter_material(&inviter_cert.fingerprint.value),
     ));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
 
@@ -252,11 +279,7 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
     .unwrap();
     store.put_active(verifier, pending).unwrap();
 
-    let state = Arc::new(BootstrapState::new(
-        store,
-        inviter_tls.clone(),
-        b"INVITER-PENDING-PAIR".to_vec(),
-    ));
+    let state = Arc::new(BootstrapState::new(store, inviter_material(&inviter_tls)));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state.clone()).await;
 
     let text = accepter_bootstrap(
@@ -274,7 +297,10 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
         text.starts_with("HTTP/1.1 200"),
         "persistent-ledger bootstrap, got:\n{text}"
     );
-    assert!(text.contains("INVITER-PENDING-PAIR"), "got:\n{text}");
+    assert!(
+        text.contains("extended_card"),
+        "expected inviter material, got:\n{text}"
+    );
 
     // The paired peer — including its endpoint — is now durably stored.
     let stored = state.ledger.lock().unwrap().get_peer("accepter").unwrap();

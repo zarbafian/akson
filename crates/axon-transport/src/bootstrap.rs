@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axon_crypto::identity::Fingerprint;
-use axon_pairing::handler::InviterConfig;
+use axon_pairing::handler::InviterMaterial;
 use axon_pairing::http::handle_http;
 use axon_pairing::state_machine::PairingStore;
 
@@ -81,19 +81,18 @@ impl RateLimiter {
 /// ledger so the same server runs against the in-memory or persistent ledger.
 pub struct BootstrapState<L: PairingStore> {
     pub ledger: Mutex<L>,
-    pub inviter_tls_sha256: String,
-    pub inviter_response: Vec<u8>,
+    /// The inviter's own material, used to build its per-request response.
+    pub inviter: InviterMaterial,
     pub rate_limiter: RateLimiter,
 }
 
 impl<L: PairingStore> BootstrapState<L> {
     /// Builds server state with an aggressive default rate limit (30 requests
     /// burst, refilling 5/s) suitable for a single pairing.
-    pub fn new(ledger: L, inviter_tls_sha256: String, inviter_response: Vec<u8>) -> Self {
+    pub fn new(ledger: L, inviter: InviterMaterial) -> Self {
         Self {
             ledger: Mutex::new(ledger),
-            inviter_tls_sha256,
-            inviter_response,
+            inviter,
             rate_limiter: RateLimiter::new(30, 5.0),
         }
     }
@@ -161,13 +160,9 @@ async fn handle<L: PairingStore + Send>(
             Ok(g) => g,
             Err(_) => return Ok(status(500)),
         };
-        let inviter = InviterConfig {
-            tls_sha256: &state.inviter_tls_sha256,
-            response_body: &state.inviter_response,
-        };
         handle_http(
             &mut *ledger,
-            &inviter,
+            &state.inviter,
             &method,
             authorization.as_deref(),
             peer_fp.as_deref(),

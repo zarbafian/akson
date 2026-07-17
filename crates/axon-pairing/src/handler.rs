@@ -6,21 +6,30 @@
 
 use std::collections::BTreeMap;
 
+use axon_crypto::keypair::PurposeKey;
+use axon_crypto::purpose::KeyPurpose;
 use axon_proto::v1::AgentCard;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::session::{to_peer_identity, verify_accepter};
+use crate::session::{build_material, to_peer_identity, verify_accepter, PairingContext};
 use crate::state_machine::{accept, verifier_of, Accepted, PairingStore};
 
-/// Inviter-side configuration for a bootstrap.
-pub struct InviterConfig<'a> {
-    /// The inviter's own TLS certificate SHA-256 (hex), bound into the
-    /// transcript both sides sign.
-    pub tls_sha256: &'a str,
-    /// The inviter's signed extended card and key bindings — the pending-pair
-    /// response returned to the accepter (design §8.2 step 6). Opaque here.
-    pub response_body: &'a [u8],
+/// The inviter's own material, used to build its equivalently-signed response
+/// (design §8.2 step 6): the extended card + key bindings + proofs the accepter
+/// verifies and pins. Held by the daemon; `keys` are its purpose-bound secrets.
+pub struct InviterMaterial {
+    /// The inviter's TLS certificate SHA-256 (hex), bound into the transcript.
+    pub tls_sha256: String,
+    pub subject_issuer: String,
+    pub subject_agent: String,
+    /// The inviter's extended Agent Card, already signed with the agent-card key.
+    pub signed_card: AgentCard,
+    /// The inviter's statement keys, keyed by purpose (must include agent-card).
+    pub keys: BTreeMap<KeyPurpose, PurposeKey>,
+    pub not_before: String,
+    pub not_after: String,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +58,7 @@ pub struct BootstrapReply {
 #[allow(clippy::too_many_arguments)]
 pub fn handle_bootstrap(
     ledger: &mut impl PairingStore,
-    inviter: &InviterConfig,
+    inviter: &InviterMaterial,
     accepter_tls_sha256: &str,
     bearer_secret: &str,
     key_binding_json: &Value,
@@ -78,7 +87,7 @@ pub fn handle_bootstrap(
     // Full verification of the accepter's presented material.
     let verified = match verify_accepter(
         &verifier,
-        inviter.tls_sha256,
+        &inviter.tls_sha256,
         accepter_tls_sha256,
         key_binding_json,
         extended_card,
@@ -89,12 +98,37 @@ pub fn handle_bootstrap(
         Err(_) => return reply(BootstrapStatus::BadRequest, vec![]),
     };
 
+    // Build the inviter's equivalently-signed response over this pairing's
+    // context (§8.2 step 6) — the material the accepter verifies and pins.
+    let ctx = PairingContext {
+        invitation_verifier: verifier,
+        inviter_tls_sha256: inviter.tls_sha256.clone(),
+        accepter_tls_sha256: accepter_tls_sha256.to_owned(),
+    };
+    let response = match build_material(
+        &ctx,
+        &inviter.tls_sha256,
+        &inviter.subject_issuer,
+        &inviter.subject_agent,
+        &inviter.signed_card,
+        &inviter.keys,
+        &inviter.not_before,
+        &inviter.not_after,
+        inviter.generation,
+    )
+    .ok()
+    .and_then(|m| serde_json::to_vec(&m).ok())
+    {
+        Some(bytes) => bytes,
+        None => return reply(BootstrapStatus::Error, vec![]),
+    };
+
     // Consume-once with idempotent retries.
     match accept(
         ledger,
         bearer_secret,
         verified.transcript.digest(),
-        inviter.response_body.to_vec(),
+        response,
         now_unix,
     ) {
         // A fresh pairing: persist the pending peer (§8.2 step 6-7). If the peer
@@ -203,10 +237,30 @@ mod tests {
         }
     }
 
-    fn config() -> InviterConfig<'static> {
-        InviterConfig {
-            tls_sha256: INVITER_TLS,
-            response_body: b"INVITER-CARD",
+    fn config() -> InviterMaterial {
+        let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]);
+        let mut card: AgentCard = serde_json::from_str(
+            r#"{"name":"Inviter","description":"d","version":"1.0.0",
+                "supportedInterfaces":[{"url":"https://inviter/x","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}],
+                "capabilities":{"streaming":false,"pushNotifications":false}}"#,
+        )
+        .unwrap();
+        card.signatures
+            .push(card_sig::sign_card(&card, &card_key).unwrap());
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            KeyPurpose::AgentCard,
+            PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]),
+        );
+        InviterMaterial {
+            tls_sha256: INVITER_TLS.to_owned(),
+            subject_issuer: "local".to_owned(),
+            subject_agent: "inviter".to_owned(),
+            signed_card: card,
+            keys,
+            not_before: "2020-01-01T00:00:00Z".to_owned(),
+            not_after: "2030-01-01T00:00:00Z".to_owned(),
+            generation: 0,
         }
     }
 
@@ -230,7 +284,10 @@ mod tests {
         let req = setup(&mut ledger);
         let reply = run(&mut ledger, &req);
         assert_eq!(reply.status, BootstrapStatus::Ok);
-        assert_eq!(reply.body, b"INVITER-CARD");
+        // The body is the inviter's built material (card + bindings + proofs).
+        let material: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert!(material.get("extended_card").is_some());
+        assert!(material.get("proofs").is_some());
 
         // The paired peer is persisted, with its endpoint captured from the card.
         let peers = ledger.pending_peers();
@@ -243,10 +300,13 @@ mod tests {
     fn retry_replays_the_same_response() {
         let mut ledger = MemoryLedger::new();
         let req = setup(&mut ledger);
-        run(&mut ledger, &req);
-        let reply = run(&mut ledger, &req);
-        assert_eq!(reply.status, BootstrapStatus::Ok);
-        assert_eq!(reply.body, b"INVITER-CARD");
+        let first = run(&mut ledger, &req);
+        let replay = run(&mut ledger, &req);
+        assert_eq!(replay.status, BootstrapStatus::Ok);
+        // The replay returns the byte-identical saved response.
+        assert_eq!(replay.body, first.body);
+        // ...and does not store a second peer.
+        assert_eq!(ledger.pending_peers().len(), 1);
     }
 
     #[test]

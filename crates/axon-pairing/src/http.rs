@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::handler::{handle_bootstrap, BootstrapStatus, InviterConfig};
+use crate::handler::{handle_bootstrap, BootstrapStatus, InviterMaterial};
 use crate::state_machine::PairingStore;
 
 /// An HTTP response from the bootstrap endpoint.
@@ -49,7 +49,7 @@ struct BootstrapBody {
 #[allow(clippy::too_many_arguments)]
 pub fn handle_http(
     ledger: &mut impl PairingStore,
-    inviter: &InviterConfig,
+    inviter: &InviterMaterial,
     method: &str,
     authorization: Option<&str>,
     peer_tls_sha256: Option<&str>,
@@ -122,10 +122,30 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_748_736_000).unwrap()
     }
 
-    fn config() -> InviterConfig<'static> {
-        InviterConfig {
-            tls_sha256: INVITER_TLS,
-            response_body: b"INVITER-CARD",
+    fn config() -> InviterMaterial {
+        let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]);
+        let mut card: AgentCard = serde_json::from_str(
+            r#"{"name":"Inviter","description":"d","version":"1.0.0",
+                "supportedInterfaces":[{"url":"https://inviter/x","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}],
+                "capabilities":{"streaming":false,"pushNotifications":false}}"#,
+        )
+        .unwrap();
+        card.signatures
+            .push(card_sig::sign_card(&card, &card_key).unwrap());
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            KeyPurpose::AgentCard,
+            PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]),
+        );
+        InviterMaterial {
+            tls_sha256: INVITER_TLS.to_owned(),
+            subject_issuer: "local".to_owned(),
+            subject_agent: "inviter".to_owned(),
+            signed_card: card,
+            keys,
+            not_before: "2020-01-01T00:00:00Z".to_owned(),
+            not_after: "2030-01-01T00:00:00Z".to_owned(),
+            generation: 0,
         }
     }
 
@@ -194,12 +214,16 @@ mod tests {
     }
 
     #[test]
-    fn valid_bootstrap_is_200_with_inviter_response() {
+    fn valid_bootstrap_is_200_with_inviter_material() {
         let mut ledger = MemoryLedger::new();
         let (auth, body) = seed(&mut ledger);
         let r = post(&mut ledger, Some(&auth), Some(ACCEPTER_TLS), &body);
         assert_eq!(r.status, 200);
-        assert_eq!(r.body, b"INVITER-CARD");
+        // The body is the inviter's built material, not a static blob.
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert!(v.get("key_binding").is_some());
+        assert!(v.get("extended_card").is_some());
+        assert!(v.get("proofs").is_some());
     }
 
     #[test]
