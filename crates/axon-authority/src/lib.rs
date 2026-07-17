@@ -9,8 +9,13 @@
 //! components, of which only v1's four are grantable.
 
 mod capability;
+mod work_order;
 
 pub use capability::{
     ArtifactExportScope, CapabilityComponent, CapabilityVector, Grant, ProcessorUseScope,
     ReadInputsScope, RespondScope, VectorError,
+};
+pub use work_order::{
+    Audience, Budgets, IssuedWorkOrder, RemoteCancelCaveat, RequestOrigin, WorkOrder,
+    WorkOrderError, WorkOrderKey,
 };

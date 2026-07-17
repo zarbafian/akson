@@ -86,7 +86,14 @@ version = "0.0.1"
 name = "axon-authority"
 version = "0.0.1"
 dependencies = [
+ "axon-contract",
+ "hex",
+ "hmac",
+ "json-canon",
  "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
  "thiserror",
 ]
 
