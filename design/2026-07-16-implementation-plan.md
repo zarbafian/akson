@@ -551,6 +551,14 @@ anchored here so they are not lost:
 - **M11** — result-manifest semantic validation (evidence resolution,
   bytewise ordering, dup-role/slot rejection) and per-attempt/task evidence
   binding.
+- **M15 (hostile-input)** — a hostile A2A **data Part** is decoded by prost and
+  converted (`extraction.rs::to_json`) then JCS-canonicalised in `bind_inputs`
+  without the I-JSON depth/node caps the contract payload gets, so a deeply
+  nested/huge data Part is a CPU/stack DoS on the receive path (digest still
+  fails closed — not a correctness/authorization defect). Fix belongs with the
+  A2A-parse fuzz/recursion-bound work: bound prost decode depth and apply
+  `ijson` depth/node limits to each data Part before canonicalisation. (From the
+  M7–M9 adversarial review, 2026-07-18.)
 - **ADR (before M5)** — **done** (ADR-0010): standard A2A objects preserve
   non-critical unknown fields via `pbjson ignore_unknown_fields()`, unknown
   safety-critical enum values still reject, extension objects stay
