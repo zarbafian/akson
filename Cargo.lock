@@ -159,6 +159,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-harness"
+version = "0.0.1"
+dependencies = [
+ "axon-crypto",
+ "axon-pairing",
+ "axon-proto",
+ "axon-store",
+ "axon-transport",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "axon-pairing"
 version = "0.0.1"
 dependencies = [

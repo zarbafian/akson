@@ -16,6 +16,7 @@ members = [
     "crates/axond",
     "crates/axon-cli",
     "crates/axon-adapter-sdk",
+    "harness/runner",
 ]
 
 [workspace.package]

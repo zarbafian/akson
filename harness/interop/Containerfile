@@ -1,0 +1,14 @@
+# Interop harness endpoint image (FOSS: Rust + Debian slim, all Apache/MIT/BSD).
+# Build with podman (or docker):  podman build -f harness/interop/Containerfile -t axon-harness .
+# Context is the repo root.
+FROM docker.io/library/rust:1-slim AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p axon-harness
+
+FROM docker.io/library/debian:stable-slim
+# The endpoint needs only CA-free self-signed TLS; no extra packages.
+COPY --from=build /src/target/release/axon-harness /usr/local/bin/axon-harness
+# A shared volume carries the invitation between endpoints.
+VOLUME ["/shared", "/state"]
+ENTRYPOINT ["axon-harness"]

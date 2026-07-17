@@ -1,0 +1,27 @@
+[package]
+name = "axon-harness"
+publish = false
+description = "Interop test harness: runnable endpoints for multi-endpoint scenarios (FOSS, container-agnostic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axon-harness"
+path = "src/main.rs"
+
+[dependencies]
+axon-crypto = { workspace = true }
+axon-proto = { workspace = true }
+axon-pairing = { workspace = true }
+axon-transport = { workspace = true }
+axon-store = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+
+[lints]
+workspace = true
