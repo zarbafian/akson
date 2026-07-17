@@ -69,6 +69,134 @@ impl SeccompPolicy {
         Self { allow, deny }
     }
 
+    /// A starting default-deny allowlist for the clean worker (design §13.1): the
+    /// common syscalls a sandboxed program needs to start and do bounded work, with
+    /// everything else denied. Deliberately conservative; task profiles refine it.
+    /// Uses `Errno` so a missing syscall degrades rather than killing outright —
+    /// the strict worker profile uses [`DenyAction::KillProcess`].
+    pub fn clean_worker_baseline(deny: DenyAction) -> Self {
+        Self::deny_all_except(
+            vec![
+                libc::SYS_read,
+                libc::SYS_write,
+                libc::SYS_readv,
+                libc::SYS_writev,
+                libc::SYS_pread64,
+                libc::SYS_pwrite64,
+                libc::SYS_lseek,
+                libc::SYS_close,
+                libc::SYS_openat,
+                libc::SYS_open,
+                libc::SYS_fstat,
+                libc::SYS_newfstatat,
+                libc::SYS_statx,
+                libc::SYS_lstat,
+                libc::SYS_stat,
+                libc::SYS_access,
+                libc::SYS_faccessat,
+                libc::SYS_faccessat2,
+                libc::SYS_readlink,
+                libc::SYS_readlinkat,
+                libc::SYS_getdents64,
+                libc::SYS_getcwd,
+                libc::SYS_mmap,
+                libc::SYS_munmap,
+                libc::SYS_mprotect,
+                libc::SYS_mremap,
+                libc::SYS_madvise,
+                libc::SYS_brk,
+                libc::SYS_rt_sigaction,
+                libc::SYS_rt_sigprocmask,
+                libc::SYS_rt_sigreturn,
+                libc::SYS_sigaltstack,
+                libc::SYS_ioctl,
+                libc::SYS_fcntl,
+                libc::SYS_dup,
+                libc::SYS_dup2,
+                libc::SYS_dup3,
+                libc::SYS_pipe2,
+                libc::SYS_poll,
+                libc::SYS_ppoll,
+                libc::SYS_execve,
+                libc::SYS_exit,
+                libc::SYS_exit_group,
+                libc::SYS_wait4,
+                libc::SYS_clone,
+                libc::SYS_clone3,
+                libc::SYS_futex,
+                libc::SYS_getpid,
+                libc::SYS_getppid,
+                libc::SYS_gettid,
+                libc::SYS_getuid,
+                libc::SYS_getgid,
+                libc::SYS_geteuid,
+                libc::SYS_getegid,
+                libc::SYS_arch_prctl,
+                libc::SYS_set_tid_address,
+                libc::SYS_set_robust_list,
+                libc::SYS_rseq,
+                libc::SYS_prlimit64,
+                libc::SYS_getrandom,
+                libc::SYS_clock_gettime,
+                libc::SYS_clock_nanosleep,
+                libc::SYS_nanosleep,
+                libc::SYS_sched_getaffinity,
+                libc::SYS_sched_yield,
+                libc::SYS_uname,
+                libc::SYS_sysinfo,
+                libc::SYS_tgkill,
+                libc::SYS_epoll_create1,
+                libc::SYS_epoll_ctl,
+                libc::SYS_epoll_pwait,
+            ],
+            deny,
+        )
+    }
+
+    /// Compiles the policy and writes the BPF program to an anonymous `memfd`,
+    /// returning the (non-`CLOEXEC`, so inheritable) fd to hand to `bwrap
+    /// --seccomp` (design §13.1, ADR-0006). Because everything the daemon opens via
+    /// `std` is `CLOEXEC`, only stdio and this fd cross into bubblewrap — the
+    /// inherited-fd allowlist is satisfied structurally.
+    pub fn to_memfd(&self) -> Result<std::os::fd::OwnedFd, SeccompError> {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let program = self.compile()?;
+        // SAFETY: a valid C name; flag 0 keeps the fd inheritable for the child.
+        let raw = unsafe { libc::memfd_create(c"axon-seccomp".as_ptr(), 0) };
+        if raw < 0 {
+            return Err(SeccompError::Apply(format!(
+                "memfd_create (errno {})",
+                errno()
+            )));
+        }
+        // SAFETY: memfd_create returned a fresh owned fd.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        // The BPF program is a packed array of sock_filter; write its raw bytes.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                program.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(program.as_slice()),
+            )
+        };
+        let mut done = 0;
+        while done < bytes.len() {
+            // SAFETY: writing our own buffer to our own memfd.
+            let n = unsafe { libc::write(raw, bytes[done..].as_ptr().cast(), bytes.len() - done) };
+            if n <= 0 {
+                return Err(SeccompError::Apply(format!(
+                    "write seccomp memfd (errno {})",
+                    errno()
+                )));
+            }
+            done += n as usize;
+        }
+        // SAFETY: rewind our own fd so bubblewrap reads from the start.
+        if unsafe { libc::lseek(raw, 0, libc::SEEK_SET) } < 0 {
+            return Err(SeccompError::Apply("lseek seccomp memfd".into()));
+        }
+        Ok(fd)
+    }
+
     /// Compiles the policy to a BPF program (does not install it). Pure.
     pub fn compile(&self) -> Result<BpfProgram, SeccompError> {
         let arch = host_target_arch().ok_or(SeccompError::UnsupportedArch)?;

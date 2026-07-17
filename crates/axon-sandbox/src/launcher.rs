@@ -303,6 +303,35 @@ impl BubblewrapLauncher {
         argv.extend(args.iter().cloned());
         argv
     }
+
+    /// Launch under `spec` with a compiled seccomp filter handed to bubblewrap via
+    /// `--seccomp` (design §13.1, ADR-0006). The seccomp memfd is inheritable;
+    /// every other daemon fd is `CLOEXEC`, so only stdio + the seccomp fd reach
+    /// bubblewrap — the §13.1 inherited-fd allowlist, satisfied structurally.
+    pub fn launch_seccomp(
+        &self,
+        spec: &SandboxSpec,
+        program: &str,
+        args: &[String],
+        seccomp: &crate::seccomp::SeccompPolicy,
+    ) -> Result<(), SandboxError> {
+        use std::os::fd::AsRawFd;
+        ensure(&detect(), required())?;
+        let memfd = seccomp
+            .to_memfd()
+            .map_err(|e| SandboxError::Apply(e.to_string()))?;
+        let argv = Self::build_argv(spec, program, args, Some(memfd.as_raw_fd()));
+        let status = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()
+            .map_err(|e| SandboxError::Apply(format!("spawning bwrap: {e}")))?;
+        drop(memfd); // close after bubblewrap has read the program
+        if status.success() {
+            Ok(())
+        } else {
+            Err(SandboxError::Apply(format!("worker exited: {status}")))
+        }
+    }
 }
 
 impl SandboxLauncher for BubblewrapLauncher {
@@ -478,6 +507,37 @@ mod tests {
         assert!(
             result.is_ok(),
             "bwrap clean-worker isolation checks failed: {result:?}"
+        );
+    }
+
+    /// Live: hand bubblewrap a compiled seccomp filter and confirm from inside the
+    /// worker that seccomp is in filter mode (`Seccomp: 2` in /proc/self/status) —
+    /// i.e. the memfd was read and the filter installed. Needs bwrap + userns.
+    #[test]
+    #[ignore = "needs bwrap + unprivileged userns; runs in CI's isolation job"]
+    fn live_bwrap_installs_the_seccomp_filter() {
+        use crate::seccomp::{DenyAction, SeccompPolicy};
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/usr", "/usr")
+            .ro_bind("/bin", "/bin")
+            .ro_bind("/lib", "/lib")
+            .ro_bind("/lib64", "/lib64");
+        let policy = SeccompPolicy::clean_worker_baseline(DenyAction::Errno(libc::EPERM as u32));
+        // Pure-shell check (no external commands): read /proc/self/status.
+        let script = concat!(
+            "s=\n",
+            "while read k v _; do [ \"$k\" = Seccomp: ] && s=$v; done < /proc/self/status\n",
+            "[ \"$s\" = 2 ] || exit 30\n",
+        );
+        let r = BubblewrapLauncher.launch_seccomp(
+            &spec,
+            "/bin/sh",
+            &["-c".to_owned(), script.to_owned()],
+            &policy,
+        );
+        assert!(
+            r.is_ok(),
+            "seccomp filter not installed / worker failed: {r:?}"
         );
     }
 
