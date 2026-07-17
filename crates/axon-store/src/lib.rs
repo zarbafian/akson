@@ -61,6 +61,8 @@ pub enum StoreError {
     Audit(#[from] audit::AuditError),
     #[error("serialization: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("corrupt store state: {0}")]
+    Corrupt(String),
 }
 
 /// State held outside the database and its backups (the OS keystore/TPM, per
@@ -126,6 +128,33 @@ pub struct StoredPeer {
     pub identity: PeerIdentity,
     /// Operator-private annotation; sensitive, sealed.
     pub local_note: String,
+}
+
+/// A pinned peer's lifecycle state (design §8.2 step 7). A freshly paired peer
+/// is [`Pending`](PeerStatus::Pending) until the operator confirms it; only an
+/// [`Active`](PeerStatus::Active) peer may exchange work. Stored as a queryable
+/// column (not sealed), so an idle-time gate need not unseal the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerStatus {
+    Pending,
+    Active,
+}
+
+impl PeerStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            PeerStatus::Pending => "pending",
+            PeerStatus::Active => "active",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(PeerStatus::Pending),
+            "active" => Some(PeerStatus::Active),
+            _ => None,
+        }
+    }
 }
 
 /// The verdict of an idempotent receive (design §9.2).
@@ -277,16 +306,30 @@ impl Store {
         Ok(audit::verify_chain(&self.conn)?)
     }
 
-    /// Inserts or updates a pinned peer. The full record is sealed; the agent
-    /// id, endpoint, issuer, and Agent Card thumbprint stay queryable.
+    /// Inserts or updates an already-active pinned peer (direct operator action,
+    /// not a fresh pairing). The full record is sealed; the agent id, endpoint,
+    /// issuer, and Agent Card thumbprint stay queryable.
     pub fn put_peer(&self, peer: &StoredPeer) -> Result<(), StoreError> {
+        self.put_peer_status(peer, PeerStatus::Active)
+    }
+
+    /// Inserts a peer with `status_on_insert`, or updates the identity of an
+    /// existing row. A conflict never changes an existing row's status: an
+    /// idempotent re-store must not silently downgrade an active peer to pending
+    /// (or re-open a pending one). Status transitions go through
+    /// [`confirm_peer`](Self::confirm_peer) alone.
+    fn put_peer_status(
+        &self,
+        peer: &StoredPeer,
+        status_on_insert: PeerStatus,
+    ) -> Result<(), StoreError> {
         let sealed = self
             .dek
             .seal(PEER_RECORD_CONTEXT, &serde_json::to_vec(peer)?);
         let id = &peer.identity;
         self.conn.execute(
-            "INSERT INTO peers (agent_id, issuer, endpoint_id, agent_card_thumbprint, record, created_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO peers (agent_id, issuer, endpoint_id, agent_card_thumbprint, record, created_generation, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(agent_id) DO UPDATE SET
                  issuer = excluded.issuer,
                  endpoint_id = excluded.endpoint_id,
@@ -299,9 +342,59 @@ impl Store {
                 id.agent_card_key.value,
                 sealed,
                 self.state_generation()? as i64,
+                status_on_insert.as_str(),
             ],
         )?;
         Ok(())
+    }
+
+    /// The lifecycle status of a peer by agent id, or `None` if unknown. A cheap
+    /// column read (no unseal) — the gate a work path checks before delivering.
+    pub fn peer_status(&self, agent_id: &str) -> Result<Option<PeerStatus>, StoreError> {
+        let s: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT status FROM peers WHERE agent_id = ?1",
+                [agent_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match s {
+            Some(text) => PeerStatus::from_str(&text)
+                .map(Some)
+                .ok_or_else(|| StoreError::Corrupt(format!("unknown peer status {text:?}"))),
+            None => Ok(None),
+        }
+    }
+
+    /// The agent ids of peers awaiting the operator's confirmation (design §8.2
+    /// step 7) — what `axon pair confirm` lists.
+    pub fn pending_peer_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT agent_id FROM peers WHERE status = 'pending' ORDER BY agent_id")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Confirms a pending peer, moving it to active so it may exchange work
+    /// (design §8.2 step 7). Idempotent-safe: returns `true` only when a pending
+    /// peer was actually promoted (a distinct, auditable operator act), `false`
+    /// if the peer was already active or does not exist. The transition and the
+    /// audit record commit together.
+    pub fn confirm_peer(&self, agent_id: &str, now: i64) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE peers SET status = 'active' WHERE agent_id = ?1 AND status = 'pending'",
+            [agent_id],
+        )?;
+        if changed == 1 {
+            audit::append(&tx, now, "peer.confirmed", agent_id)?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     /// Reads a pinned peer by agent id, unsealing the record.
@@ -640,10 +733,16 @@ impl PairingStore for Store {
                 )));
             }
         }
-        self.put_peer(&StoredPeer {
-            identity: peer.clone(),
-            local_note: String::new(),
-        })
+        // A freshly paired peer lands *pending*: it may not exchange work until
+        // the operator confirms it (§8.2 step 7). On an idempotent re-store the
+        // status is left untouched, never downgraded.
+        self.put_peer_status(
+            &StoredPeer {
+                identity: peer.clone(),
+                local_note: String::new(),
+            },
+            PeerStatus::Pending,
+        )
         .map_err(ledger_err)
     }
 }
@@ -691,6 +790,58 @@ mod tests {
         let got = store.get_peer("agent-a").unwrap().unwrap();
         assert_eq!(got.local_note, "private annotation");
         assert!(store.get_peer("nobody").unwrap().is_none());
+    }
+
+    #[test]
+    fn paired_peer_is_pending_until_confirmed() {
+        use axon_pairing::state_machine::PairingStore;
+        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store.store_pending_peer(&sample_peer("").identity).unwrap();
+
+        // Freshly paired → pending, and listed as awaiting confirmation.
+        assert_eq!(
+            store.peer_status("agent-a").unwrap(),
+            Some(PeerStatus::Pending)
+        );
+        assert_eq!(
+            store.pending_peer_ids().unwrap(),
+            vec!["agent-a".to_owned()]
+        );
+
+        // The operator confirms once; the promotion is reported and audited.
+        let before = store.verify_audit().unwrap();
+        assert!(store.confirm_peer("agent-a", 1_000).unwrap());
+        assert_eq!(store.verify_audit().unwrap(), before + 1);
+        assert_eq!(
+            store.peer_status("agent-a").unwrap(),
+            Some(PeerStatus::Active)
+        );
+        assert!(store.pending_peer_ids().unwrap().is_empty());
+
+        // Confirming again is a no-op: already active, nothing audited.
+        let after = store.verify_audit().unwrap();
+        assert!(!store.confirm_peer("agent-a", 1_001).unwrap());
+        assert!(!store.confirm_peer("nobody", 1_002).unwrap());
+        assert_eq!(store.verify_audit().unwrap(), after);
+    }
+
+    #[test]
+    fn direct_put_peer_is_active_and_restore_never_downgrades() {
+        use axon_pairing::state_machine::PairingStore;
+        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // An operator-added peer is active immediately.
+        store.put_peer(&sample_peer("note")).unwrap();
+        assert_eq!(
+            store.peer_status("agent-a").unwrap(),
+            Some(PeerStatus::Active)
+        );
+        // An idempotent re-store of the same identity must not silently reopen
+        // it as pending.
+        store.store_pending_peer(&sample_peer("").identity).unwrap();
+        assert_eq!(
+            store.peer_status("agent-a").unwrap(),
+            Some(PeerStatus::Active)
+        );
     }
 
     #[test]

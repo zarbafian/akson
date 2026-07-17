@@ -87,9 +87,17 @@ CREATE TABLE pending_pairs (
 ) STRICT;
 "#;
 
+/// Version 4 (M6): a freshly paired peer is *pending* until the operator
+/// confirms it (design §8.2 step 7). `status` is `'pending'` or `'active'`; only
+/// an active peer may exchange work. Existing peers predate the concept and are
+/// treated as already-confirmed, so the added column defaults to `'active'`.
+const V4: &str = r#"
+ALTER TABLE peers ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
-const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4)];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent.
 pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
