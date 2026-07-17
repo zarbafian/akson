@@ -384,7 +384,7 @@ is M12 assembly.
 *Exit:* §20.3 authority suite: work order binds exact task/revision/inputs/
 processor/nonce; crash-after-claim resolves ambiguous, never auto-retries.
 
-**M9. Sandbox and clean worker (XL)** — `axon-sandbox`, `axon-worker`
+**M9. Sandbox and clean worker (XL)** — `axon-sandbox`, `axon-worker` — **in progress**
 Spike S2 first (ADR-0006, ~1 week, timeboxed): build the candidate launcher,
 run the §13.1 checklist as tests, publish profile. Then: namespaces (user,
 mount, PID, net, IPC, UTS), `no_new_privs`, default-deny seccomp, cgroups v2
@@ -393,6 +393,25 @@ private `/proc`, no network, Landlock where available; capability probing
 fails closed; worker protocol (input manifest in, bounded progress/result
 out) over the work-order descriptor (CLOEXEC, one-use); output gate: size,
 media-type, recipient, schema checks (§7.2 step 10).
+**Backend decided + backend-independent pieces done** (all unit-tested):
+**ADR-0006 accepted** — bubblewrap behind a `SandboxLauncher` trait seam (reviewed
+sandbox for v1, pure-Rust backend swappable later). `axon-worker::gate_outputs`
+(the output gate — every result held to the granted §12.1 scope: channel grant,
+recipient, artifact media type, byte budget, response/artifact count; rejection
+carries the offending index). `axon-sandbox`: fail-closed capability probe
+(`detect` reads /proc+/sys honouring Ubuntu's AppArmor userns restriction,
+`ensure` refuses a launch when any required feature is missing — validated live:
+on this host userns is restricted so it correctly REFUSES); `SandboxSpec` +
+`BubblewrapLauncher::build_argv` (the isolation policy as the bwrap argv —
+--unshare-all/no-network, --die-with-parent, --cap-drop ALL, --clearenv, private
+/proc+/dev, ro-bind digest-pinned runtime, tmpfs scratch/output, --seccomp fd,
+--chdir — unit-tested; `launch()` probes first, fails closed).
+**Remaining:** live §13.1-checklist validation (needs a permissive Linux env —
+userns unrestricted / setuid bwrap / root; can't run on the AppArmor-restricted
+host); seccomp BPF (`seccompiler`) + Landlock ruleset (`landlock` crate) authored
+in Rust, applied via bwrap/post-exec; worker protocol (input-manifest delivery,
+bounded progress/result, the CLOEXEC one-use descriptor across the exec boundary);
+`axon doctor` (surfaces the probe report; CLI is M12).
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability.
