@@ -100,6 +100,7 @@ version = "0.0.1"
 dependencies = [
  "axon-crypto",
  "axon-ext",
+ "axon-proto",
  "base64",
  "ed25519-dalek",
  "hex",

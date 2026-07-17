@@ -1,23 +1,33 @@
 //! Contract validation, revision chain, decisions, risk-card projection
 //! (design §10.2, §9.3, §5.2).
 //!
-//! M7 builds the decision core: extract the one contract-control Part, verify
-//! its DSSE envelope under a `contract-proposal`-pinned key, validate the
-//! payload (I-JSON + RFC 8785 canonical + JSON Schema), bind every other Part to
-//! exactly one input-manifest entry, chain revisions under a compare-and-swap
-//! head, and sign accept/reject/revision-request decisions.
+//! M7 is the decision core. The receive path is one call — [`receive_proposal`]
+//! — composing the pieces this crate provides, each usable on its own:
 //!
-//! This module lands the first piece — the payload validate-and-digest spine
-//! ([`parse_payload`]). Later pieces (Part extraction + identity binding, input
-//! manifest binding, revision chain, decisions) build on the [`Contract`] and
-//! the [`digest`](ParsedContract::digest) it produces.
+//! - [`extract_proposal`] — pull the one contract-control Part and the
+//!   worker-input Parts out of an A2A Message (ADR-0012 envelope media type);
+//! - [`verify_proposal`] + [`check_proposal_identities`] — DSSE-verify under the
+//!   `contract-proposal` key, requester==mTLS-origin, performer==local;
+//! - [`parse_payload`] — I-JSON + RFC 8785-canonical + schema + typed
+//!   [`Contract`] with its [`digest`](ParsedContract::digest);
+//! - [`bind_inputs`] — every worker Part binds to exactly one manifest entry;
+//! - [`validity`] — expiry against trusted time;
+//! - [`apply_revision`] / [`accept_head`] — the compare-and-swap head;
+//! - [`sign_decision`] / [`verify_decision`] — the performer's signed accept,
+//!   reject, or revision request, bound to the exact proposal.
+//!
+//! `receive_proposal` performs no I/O and invokes no model, tool, file, URL, or
+//! credential; it returns a validated, inert proposal the caller records as a
+//! `submitted` Task and applies to its head.
 
 mod chain;
 mod contract;
 mod decision;
 mod expiry;
+mod extraction;
 mod manifest;
 mod proposal;
+mod receive;
 
 pub use chain::{
     accept_head, apply_revision, Head, HeadState, LockError, RevisionVerdict, StaleReason,
@@ -31,5 +41,7 @@ pub use decision::{
     check_binds_to, sign_decision, verify_decision, Decision, DecisionError, DecisionKind,
 };
 pub use expiry::{validity, TimestampError, Validity};
+pub use extraction::{extract_proposal, ExtractError, Extracted};
 pub use manifest::{bind_inputs, BindError, InputPart, PartBody};
 pub use proposal::{check_proposal_identities, sign_proposal, verify_proposal, ProposalError};
+pub use receive::{receive_proposal, ReceiveError, ReceivedProposal};
