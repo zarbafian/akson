@@ -58,13 +58,19 @@ pub struct VerifiedAccepter {
     pub transcript: Transcript,
 }
 
-/// Verifies all of the accepter's presented material. `accepter_tls_sha256` is
-/// the SHA-256/DER fingerprint of the certificate presented on *this* mTLS
-/// connection (not a claim in the body).
+/// Verifies a party's presented bootstrap material. Symmetric: the inviter uses
+/// it to verify the accepter, and the accepter uses it to verify the inviter's
+/// response. `inviter_tls_sha256`/`accepter_tls_sha256` are the shared transcript
+/// fingerprints; `subject_tls_sha256` is the certificate the *verified* party
+/// presented on this connection (the accepter's mTLS cert when the inviter
+/// verifies it; the inviter's pinned server cert when the accepter verifies it),
+/// which the record's claimed TLS cert must match.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_accepter(
     invitation_verifier: &[u8; 32],
     inviter_tls_sha256: &str,
     accepter_tls_sha256: &str,
+    subject_tls_sha256: &str,
     key_binding_json: &Value,
     extended_card: &AgentCard,
     pop_proofs: &BTreeMap<String, String>,
@@ -73,10 +79,11 @@ pub fn verify_accepter(
     // 1. Schema + thumbprint==JWK + validity.
     let bindings = key_binding::verify(key_binding_json, now)?;
 
-    // 2. The claimed TLS certificate must be the one on this connection.
+    // 2. The claimed TLS certificate must be the one the verified party
+    //    presented on this connection.
     if !bindings
         .tls_certificate_sha256
-        .eq_ignore_ascii_case(accepter_tls_sha256)
+        .eq_ignore_ascii_case(subject_tls_sha256)
     {
         return Err(BootstrapVerifyError::TlsCertificateMismatch);
     }
@@ -397,7 +404,17 @@ mod tests {
         card: &AgentCard,
         proofs: &BTreeMap<String, String>,
     ) -> Result<VerifiedAccepter, BootstrapVerifyError> {
-        verify_accepter(verifier, INVITER_TLS, accepter_tls, kb, card, proofs, now())
+        // The verified party is the accepter, so its subject cert is accepter_tls.
+        verify_accepter(
+            verifier,
+            INVITER_TLS,
+            accepter_tls,
+            accepter_tls,
+            kb,
+            card,
+            proofs,
+            now(),
+        )
     }
 
     #[test]
@@ -489,12 +506,71 @@ mod tests {
             &ctx.invitation_verifier,
             INVITER_TLS,
             ACCEPTER_TLS,
+            ACCEPTER_TLS,
             &key_binding,
             &extended_card,
             &proofs,
             now(),
         );
         assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn accepter_verifies_the_inviter_material() {
+        // The other direction of the symmetric exchange: the inviter builds its
+        // response material with its *own* TLS cert, and the accepter verifies
+        // it — the verified party is the inviter, so the subject cert is the
+        // inviter's (its pinned server cert), not the accepter's.
+        let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[30u8; 32]);
+        let mut card: AgentCard = serde_json::from_str(card_json()).unwrap();
+        card.signatures
+            .push(card_sig::sign_card(&card, &card_key).unwrap());
+
+        let ctx = PairingContext {
+            invitation_verifier: [4u8; 32],
+            inviter_tls_sha256: INVITER_TLS.to_owned(),
+            accepter_tls_sha256: ACCEPTER_TLS.to_owned(),
+        };
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            KeyPurpose::AgentCard,
+            PurposeKey::from_seed(KeyPurpose::AgentCard, &[30u8; 32]),
+        );
+        // Built by the inviter with its own cert as the subject.
+        let material = build_material(
+            &ctx,
+            INVITER_TLS,
+            "local",
+            "inviter",
+            &card,
+            &keys,
+            "2020-01-01T00:00:00Z",
+            "2030-01-01T00:00:00Z",
+            0,
+        )
+        .unwrap();
+
+        let key_binding = material["key_binding"].clone();
+        let extended_card: AgentCard =
+            serde_json::from_value(material["extended_card"].clone()).unwrap();
+        let proofs: BTreeMap<String, String> =
+            serde_json::from_value(material["proofs"].clone()).unwrap();
+
+        let result = verify_accepter(
+            &ctx.invitation_verifier,
+            INVITER_TLS,
+            ACCEPTER_TLS,
+            INVITER_TLS, // subject = the inviter's cert
+            &key_binding,
+            &extended_card,
+            &proofs,
+            now(),
+        );
+        assert!(
+            result.is_ok(),
+            "the accepter must verify the inviter's material: {:?}",
+            result.err()
+        );
     }
 
     #[test]

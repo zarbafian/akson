@@ -84,10 +84,12 @@ pub fn handle_bootstrap(
         return reply(BootstrapStatus::Unauthorized, vec![]);
     }
 
-    // Full verification of the accepter's presented material.
+    // Full verification of the accepter's presented material. The verified
+    // party is the accepter, so its subject cert is the mTLS peer cert.
     let verified = match verify_accepter(
         &verifier,
         &inviter.tls_sha256,
+        accepter_tls_sha256,
         accepter_tls_sha256,
         key_binding_json,
         extended_card,
