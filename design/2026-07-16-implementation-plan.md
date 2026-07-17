@@ -442,9 +442,19 @@ subtree with memory/pids/cpu limits; the worker moved in via a no-alloc `pre_exe
 → the output gate. Live tests confirm each layer from inside a real worker: host
 `/etc` gone + env cleared + scratch writable; `Seccomp: 2`; a 64 MiB/16-pid cgroup
 enforced. `diagnose()` backs `axon doctor` (every capability + fail-closed gate).
-**Remaining:** Landlock applied at the worker entrypoint; the worker protocol
-(input-manifest delivery into the sandbox, bounded progress/result, the one-use
-descriptor); `axon doctor` CLI rendering (M12); daemon-integration polish
+**Input staging + doctor + the full-stack seam are done.** `axon-worker::stage_inputs`
+materialises exactly the approved inputs into a directory (with a `manifest.json`
+of in-sandbox paths + SHA-256) the daemon read-only-binds — fails closed on unsafe
+(slug-only, no traversal) / duplicate ids (§7.2 step 9, §13.1). `axon doctor` (the
+M9 exit surface) renders `diagnose()` with a fail-closed exit code. An adversarial
+review flagged that isolation lived in side-path helpers, so `SandboxLauncher::launch`
+is now the *only* public launch entry and requires both a `SeccompPolicy` and a
+`CgroupScope`: a partially-isolated launch is unrepresentable (no fail-open by
+omission §13.1); the seccomp-only / pre-made-scope paths are `pub(crate)` building
+blocks.
+**Remaining:** Landlock applied at the worker entrypoint; the worker protocol tail
+(delivering the staged inputs into the sandbox + bounded progress/result + the
+one-use descriptor — the daemon composition, M12); daemon-integration polish
 (clone3 `CLONE_INTO_CGROUP` for race-free placement). The experimental
 `NativeLauncher` (validated user+net entry + `pivot_root` fs isolation) awaits
 independent review + the review's structural fixes before it could ever be default.
