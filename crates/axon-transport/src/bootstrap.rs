@@ -10,6 +10,7 @@
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axon_crypto::identity::Fingerprint;
 use axon_pairing::handler::InviterConfig;
@@ -32,13 +33,70 @@ use tokio_rustls::TlsAcceptor;
 /// that bounds memory against a hostile accepter.
 const MAX_BOOTSTRAP_BODY: usize = 64 * 1024;
 
-/// Shared bootstrap server state: the invitation ledger, and the inviter's own
-/// TLS fingerprint and pending-pair response. Generic over the ledger so the
-/// same server runs against the in-memory or the persistent (SQLite) ledger.
+/// A token-bucket rate limiter — the bootstrap endpoint is aggressively rate
+/// limited (design §8.2). One global bucket suffices: the endpoint is active
+/// only briefly during a single pairing.
+pub struct RateLimiter {
+    inner: Mutex<Bucket>,
+    capacity: f64,
+    refill_per_sec: f64,
+}
+
+struct Bucket {
+    tokens: f64,
+    last: Instant,
+}
+
+impl RateLimiter {
+    pub fn new(capacity: u32, refill_per_sec: f64) -> Self {
+        Self {
+            inner: Mutex::new(Bucket {
+                tokens: capacity as f64,
+                last: Instant::now(),
+            }),
+            capacity: capacity as f64,
+            refill_per_sec,
+        }
+    }
+
+    /// Consumes a token if one is available. A poisoned lock is recovered rather
+    /// than panicking.
+    pub fn allow(&self) -> bool {
+        let mut b = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(b.last).as_secs_f64();
+        b.tokens = (b.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        b.last = now;
+        if b.tokens >= 1.0 {
+            b.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Shared bootstrap server state: the invitation ledger, the inviter's own TLS
+/// fingerprint and pending-pair response, and the rate limiter. Generic over the
+/// ledger so the same server runs against the in-memory or persistent ledger.
 pub struct BootstrapState<L: PairingStore> {
     pub ledger: Mutex<L>,
     pub inviter_tls_sha256: String,
     pub inviter_response: Vec<u8>,
+    pub rate_limiter: RateLimiter,
+}
+
+impl<L: PairingStore> BootstrapState<L> {
+    /// Builds server state with an aggressive default rate limit (30 requests
+    /// burst, refilling 5/s) suitable for a single pairing.
+    pub fn new(ledger: L, inviter_tls_sha256: String, inviter_response: Vec<u8>) -> Self {
+        Self {
+            ledger: Mutex::new(ledger),
+            inviter_tls_sha256,
+            inviter_response,
+            rate_limiter: RateLimiter::new(30, 5.0),
+        }
+    }
 }
 
 /// Serves bootstrap connections until `listener` errors. Each connection runs
@@ -51,6 +109,11 @@ pub async fn serve<L: PairingStore + Send + 'static>(
 ) -> std::io::Result<()> {
     loop {
         let (tcp, _) = listener.accept().await?;
+        // Rate-limit before the TLS handshake so a flood is cheap to shed.
+        if !state.rate_limiter.allow() {
+            drop(tcp);
+            continue;
+        }
         let acceptor = acceptor.clone();
         let state = state.clone();
         tokio::spawn(async move {
@@ -134,4 +197,19 @@ fn status(code: u16) -> Response<Full<Bytes>> {
     let mut out = Response::new(Full::new(Bytes::new()));
     *out.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RateLimiter;
+
+    #[test]
+    fn bucket_allows_up_to_capacity_then_denies() {
+        // No refill: exactly `capacity` requests are allowed, then denied.
+        let limiter = RateLimiter::new(3, 0.0);
+        assert!(limiter.allow());
+        assert!(limiter.allow());
+        assert!(limiter.allow());
+        assert!(!limiter.allow(), "the fourth request must be rate-limited");
+    }
 }

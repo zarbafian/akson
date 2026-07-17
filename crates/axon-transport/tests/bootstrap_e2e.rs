@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
@@ -155,11 +155,11 @@ async fn bootstrap_pairs_over_mtls_memory_ledger() {
     let mut ledger = MemoryLedger::new();
     ledger.add(pending);
 
-    let state = Arc::new(BootstrapState {
-        ledger: Mutex::new(ledger),
-        inviter_tls_sha256: inviter_tls.clone(),
-        inviter_response: b"INVITER-PENDING-PAIR".to_vec(),
-    });
+    let state = Arc::new(BootstrapState::new(
+        ledger,
+        inviter_tls.clone(),
+        b"INVITER-PENDING-PAIR".to_vec(),
+    ));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
 
     let text = accepter_bootstrap(
@@ -182,11 +182,11 @@ async fn oversized_body_is_rejected() {
     let (inviter_key, inviter_cert) = endpoint(7);
     let (accepter_key, accepter_cert) = endpoint(8);
 
-    let state = Arc::new(BootstrapState {
-        ledger: Mutex::new(MemoryLedger::new()),
-        inviter_tls_sha256: inviter_cert.fingerprint.value.clone(),
-        inviter_response: Vec::new(),
-    });
+    let state = Arc::new(BootstrapState::new(
+        MemoryLedger::new(),
+        inviter_cert.fingerprint.value.clone(),
+        Vec::new(),
+    ));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
 
     let client_cfg =
@@ -252,11 +252,11 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
     .unwrap();
     store.put_active(verifier, pending).unwrap();
 
-    let state = Arc::new(BootstrapState {
-        ledger: Mutex::new(store),
-        inviter_tls_sha256: inviter_tls.clone(),
-        inviter_response: b"INVITER-PENDING-PAIR".to_vec(),
-    });
+    let state = Arc::new(BootstrapState::new(
+        store,
+        inviter_tls.clone(),
+        b"INVITER-PENDING-PAIR".to_vec(),
+    ));
     let addr = serve_inviter(&inviter_key, &inviter_cert, state.clone()).await;
 
     let text = accepter_bootstrap(
