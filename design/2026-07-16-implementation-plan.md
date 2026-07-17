@@ -359,13 +359,28 @@ property is structurally guaranteed by `receive_proposal` doing zero I/O).
 `submitted` Task and provably invokes no model, tool, file, URL, or
 credential (no-effect harness, below).
 
-**M8. Local authority (M)** — `axon-authority`
+**M8. Local authority (M)** — `axon-authority` — **DONE** (core library)
 Capability vector (all components typed now; only v1's four are grantable:
 respond, read_supplied_inputs, processor_use, artifact_export §12.1),
 deny / allow-once policy, one-shot work order with every §12.3 binding,
 atomic claim + budget + nonce consumption, `pending → claimed → running →
 succeeded|failed|ambiguous|cancelled`, remote-cancel caveat handling
 (TaskNotCancelableError otherwise).
+**Done** (all unit-tested): `CapabilityVector` (§12.1 — twelve components named,
+only the four v1-grantable carry a `Grant`; the type system prevents granting the
+rest; absence is denial, components never imply one another); `WorkOrder`
+binding every §12.3 field with a local HMAC (`issue`/`verify` over RFC 8785
+bytes — any field change breaks the digest, a recomputed digest still needs the
+key); `next` attempt state machine (crash-after-claim → ambiguous, never
+auto-retried; terminal states final); durable **atomic claim** in the store
+(schema V6 `attempts`: one insert consumes the one-use nonce + reserves budget;
+idempotent re-claim, nonce-reuse refused; `advance_attempt` drives transitions;
+`resolve_crashed_attempts` → ambiguous); `evaluate` deny/allow-once policy +
+`binding_changed` suspension primitive (§12.4, also feeds the §5.2 risk card);
+`WorkOrder::remote_cancel_allowed` (§12.1). **Remaining (deferred, not
+authority-core scope):** the executor descriptor (CLOEXEC, cgroup-bound, one-use)
+is the M9 sandbox/worker handoff; wiring policy→issue→claim into the daemon flow
+is M12 assembly.
 *Exit:* §20.3 authority suite: work order binds exact task/revision/inputs/
 processor/nonce; crash-after-claim resolves ambiguous, never auto-retries.
 
