@@ -15,10 +15,12 @@
 //! present before any worker runs — a launch is refused, never downgraded, when
 //! isolation cannot be established.
 
+mod landlock;
 mod launcher;
 mod probe;
 mod seccomp;
 
+pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
     MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher, SandboxPlan, SandboxSpec,
 };
