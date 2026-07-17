@@ -149,20 +149,24 @@ pub enum SandboxError {
 /// seam between the v1 native launcher and any alternative (e.g. a bubblewrap
 /// backend used as a test oracle).
 pub trait SandboxLauncher {
-    /// Launches `program` with `args` under `spec`, with the default-deny `seccomp`
-    /// filter installed (design §13.1). Implementations MUST run the capability
-    /// probe first and fail closed.
+    /// Launches `program` with `args` under `spec` with the **full** clean-worker
+    /// isolation stack: namespace/mount isolation, the default-deny `seccomp` filter,
+    /// and confinement in `cgroup` (design §13.1). Implementations MUST run the
+    /// capability probe first and fail closed.
     ///
-    /// The `seccomp` argument is mandatory by construction: there is deliberately no
-    /// un-filtered launch on this seam, so a worker without the reviewed default-deny
-    /// profile is unrepresentable (§13.1). Resource bounding is layered on top by
-    /// [`BubblewrapLauncher::launch_confined`] at daemon integration.
+    /// This is the *only* public launch entry, and both `seccomp` and `cgroup` are
+    /// mandatory by construction — so a call site that consumes authority cannot
+    /// launch a worker missing part of the stack (no fail-open by omission §13.1).
+    /// The internal seccomp-only / pre-made-scope building blocks are `pub(crate)`
+    /// and exist only for layered testing. (Landlock is applied best-effort by the
+    /// worker entrypoint per §13.1.)
     fn launch(
         &self,
         spec: &SandboxSpec,
         program: &str,
         args: &[String],
         seccomp: &crate::seccomp::SeccompPolicy,
+        cgroup: &crate::cgroup::CgroupScope,
     ) -> Result<(), SandboxError>;
 }
 
@@ -230,6 +234,7 @@ impl SandboxLauncher for NativeLauncher {
         _program: &str,
         _args: &[String],
         _seccomp: &crate::seccomp::SeccompPolicy,
+        _cgroup: &crate::cgroup::CgroupScope,
     ) -> Result<(), SandboxError> {
         // Fail closed: refuse to run without the required isolation (§13.1).
         ensure(&detect(), required())?;
@@ -316,7 +321,12 @@ impl BubblewrapLauncher {
     /// `--seccomp` (design §13.1, ADR-0006). The seccomp memfd is inheritable;
     /// every other daemon fd is `CLOEXEC`, so only stdio + the seccomp fd reach
     /// bubblewrap — the §13.1 inherited-fd allowlist, satisfied structurally.
-    pub fn launch_seccomp(
+    ///
+    /// Internal building block (seccomp without resource bounds): the public seam is
+    /// [`SandboxLauncher::launch`], which always adds the cgroup. Test-only — no
+    /// production path launches without a cgroup.
+    #[cfg(test)]
+    pub(crate) fn launch_seccomp(
         &self,
         spec: &SandboxSpec,
         program: &str,
@@ -345,7 +355,10 @@ impl BubblewrapLauncher {
     /// isolation + the seccomp filter + confinement in `cgroup`. Before exec, the
     /// bubblewrap process moves itself into the cgroup, so the worker it forks (and
     /// its whole tree) is bounded by the cgroup's limits.
-    pub fn launch_confined(
+    ///
+    /// This is the body behind the public [`SandboxLauncher::launch`] seam; it is
+    /// `pub(crate)` so a caller-provided pre-made scope can be inspected in tests.
+    pub(crate) fn launch_confined(
         &self,
         spec: &SandboxSpec,
         program: &str,
@@ -422,10 +435,11 @@ impl SandboxLauncher for BubblewrapLauncher {
         program: &str,
         args: &[String],
         seccomp: &crate::seccomp::SeccompPolicy,
+        cgroup: &crate::cgroup::CgroupScope,
     ) -> Result<(), SandboxError> {
-        // The seam always installs the default-deny filter (§13.1) — the
-        // fail-closed probe runs inside launch_seccomp.
-        self.launch_seccomp(spec, program, args, seccomp)
+        // The seam always composes the full stack (§13.1) — the fail-closed probe
+        // runs inside launch_confined.
+        self.launch_confined(spec, program, args, seccomp, cgroup)
     }
 }
 
@@ -512,8 +526,13 @@ mod tests {
         let seccomp = crate::seccomp::SeccompPolicy::clean_worker_baseline(
             crate::seccomp::DenyAction::KillProcess,
         );
+        // A detached scope the native path never reaches (it fails at the probe or
+        // the not-wired error first).
+        let cgroup = crate::cgroup::CgroupScope::detached(std::path::PathBuf::from(
+            "/sys/fs/cgroup/axon-detached-test",
+        ));
         assert!(NativeLauncher
-            .launch(&spec(), "worker", &[], &seccomp)
+            .launch(&spec(), "worker", &[], &seccomp, &cgroup)
             .is_err());
     }
 
@@ -554,9 +573,12 @@ mod tests {
 
     /// Live: run a real worker under bubblewrap and confirm the clean-worker
     /// properties from *inside* — host `/etc` gone, the environment cleared (only
-    /// our `--setenv` survives), and the scratch tmpfs writable. Needs bwrap +
-    /// unprivileged userns, so it is `#[ignore]`d and runs in CI's isolation job or
-    /// locally once userns is enabled.
+    /// our `--setenv` survives), and the scratch tmpfs writable. Exercises the
+    /// namespace/mount + seccomp building block (`launch_seccomp`) so it needs no
+    /// delegated cgroup; the full-stack seam is covered by
+    /// `live_confined_launch_composes_all_isolation`. Needs bwrap + unprivileged
+    /// userns, so it is `#[ignore]`d and runs in CI's isolation job or locally once
+    /// userns is enabled.
     #[test]
     #[ignore = "needs bwrap + unprivileged userns; runs in CI's isolation job"]
     fn live_bwrap_isolates_the_worker() {
@@ -579,7 +601,7 @@ mod tests {
         let seccomp = crate::seccomp::SeccompPolicy::clean_worker_baseline(
             crate::seccomp::DenyAction::KillProcess,
         );
-        let result = BubblewrapLauncher.launch(
+        let result = BubblewrapLauncher.launch_seccomp(
             &spec,
             "/bin/sh",
             &["-c".to_owned(), script.to_owned()],

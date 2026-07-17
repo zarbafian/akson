@@ -92,6 +92,14 @@ impl CgroupScope {
         &self.path
     }
 
+    /// A scope naming `path` without creating or owning any real cgroup — only for
+    /// unit tests of launch paths that fail (probe/not-wired) before the cgroup is
+    /// ever used. Drop's `remove_dir` is best-effort and harmless on such a path.
+    #[cfg(test)]
+    pub(crate) fn detached(path: PathBuf) -> Self {
+        Self { path }
+    }
+
     fn write(&self, file: &str, value: &str) -> Result<(), CgroupError> {
         fs::write(self.path.join(file), value).map_err(io(leaked(file)))
     }
