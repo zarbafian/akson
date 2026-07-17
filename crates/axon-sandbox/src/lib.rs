@@ -1,6 +1,13 @@
 //! The Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock, and
 //! fail-closed capability probing (design §13.1).
 //!
+//! This crate is the workspace's OS-syscall boundary: applying namespaces,
+//! seccomp, Landlock, and cgroup limits requires direct `libc`/`prctl`/`seccomp`
+//! calls, so `unsafe` (denied workspace-wide) is allowed here alone. Every
+//! `unsafe` block carries a `SAFETY:` justification and is confined to raw
+//! syscalls that do not allocate or lock.
+#![allow(unsafe_code)]
+//!
 //! The isolation *mechanism* (the launcher backend) is decided by ADR-0006 and
 //! requires a permissive Linux environment to validate. This module lands the
 //! backend-independent, always-testable piece first: [`detect`]ing which kernel
@@ -10,8 +17,10 @@
 
 mod launcher;
 mod probe;
+mod seccomp;
 
 pub use launcher::{
     MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher, SandboxPlan, SandboxSpec,
 };
 pub use probe::{detect, ensure, required, Feature, IsolationFeatures, MissingFeatures};
+pub use seccomp::{DenyAction, SeccompError, SeccompPolicy};
