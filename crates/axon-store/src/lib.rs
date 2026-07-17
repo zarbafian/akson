@@ -397,6 +397,26 @@ impl Store {
         Ok(changed == 1)
     }
 
+    /// Forgets a pinned peer (design §8.4 removal): deletes the record so it may
+    /// no longer exchange work — `get_peer` returns `None` and the work path
+    /// finds no peer. Returns whether a peer existed; the removal is audited.
+    ///
+    /// This is also the sanctioned first half of an **explicit re-pair** (§8.4):
+    /// re-pairing a peer whose pinned key/endpoint legitimately rotated is
+    /// `remove_peer` (the deliberate operator act that authorizes dropping the
+    /// old identity), then a fresh pairing — which lands *pending* and must be
+    /// confirmed again. The [`store_pending_peer`](PairingStore::store_pending_peer)
+    /// hijack guard is never bypassed; the operator removes first, on purpose.
+    pub fn remove_peer(&self, agent_id: &str, now: i64) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let removed = tx.execute("DELETE FROM peers WHERE agent_id = ?1", [agent_id])?;
+        if removed == 1 {
+            audit::append(&tx, now, "peer.removed", agent_id)?;
+        }
+        tx.commit()?;
+        Ok(removed == 1)
+    }
+
     /// Reads a pinned peer by agent id, unsealing the record.
     pub fn get_peer(&self, agent_id: &str) -> Result<Option<StoredPeer>, StoreError> {
         let sealed: Option<Vec<u8>> = self
@@ -822,6 +842,52 @@ mod tests {
         let after = store.verify_audit().unwrap();
         assert!(!store.confirm_peer("agent-a", 1_001).unwrap());
         assert!(!store.confirm_peer("nobody", 1_002).unwrap());
+        assert_eq!(store.verify_audit().unwrap(), after);
+    }
+
+    #[test]
+    fn remove_enables_explicit_repair_of_a_rotated_peer() {
+        use axon_pairing::state_machine::PairingStore;
+        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store.store_pending_peer(&sample_peer("").identity).unwrap();
+        store.confirm_peer("agent-a", 1_000).unwrap();
+
+        // A same-id peer presenting a rotated key is refused: the hijack guard
+        // (§8.4) never silently overwrites a pinned identity.
+        let mut rotated = sample_peer("").identity;
+        rotated.agent_card_key =
+            Fingerprint::jwk(&ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]).verifying_key());
+        assert!(store.store_pending_peer(&rotated).is_err());
+
+        // The operator removes the peer on purpose (audited); it can no longer
+        // exchange work.
+        let before = store.verify_audit().unwrap();
+        assert!(store.remove_peer("agent-a", 1_001).unwrap());
+        assert_eq!(store.verify_audit().unwrap(), before + 1);
+        assert!(store.get_peer("agent-a").unwrap().is_none());
+        assert!(store.peer_status("agent-a").unwrap().is_none());
+
+        // Now the rotated identity re-pairs cleanly — landing pending, requiring
+        // a fresh confirmation, never silently active.
+        store.store_pending_peer(&rotated).unwrap();
+        assert_eq!(
+            store.peer_status("agent-a").unwrap(),
+            Some(PeerStatus::Pending)
+        );
+        store.confirm_peer("agent-a", 1_002).unwrap();
+        assert_eq!(
+            store
+                .get_peer("agent-a")
+                .unwrap()
+                .unwrap()
+                .identity
+                .agent_card_key,
+            rotated.agent_card_key
+        );
+
+        // Removing an unknown peer is a no-op, unaudited.
+        let after = store.verify_audit().unwrap();
+        assert!(!store.remove_peer("nobody", 1_003).unwrap());
         assert_eq!(store.verify_audit().unwrap(), after);
     }
 
