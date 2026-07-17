@@ -1,4 +1,13 @@
-//! Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock; fail-closed capability probing
+//! The Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock, and
+//! fail-closed capability probing (design §13.1).
 //!
-//! See design/2026-07-16-threads-enterprise-agent-communication.md and the
-//! implementation plan for this crate's scope.
+//! The isolation *mechanism* (the launcher backend) is decided by ADR-0006 and
+//! requires a permissive Linux environment to validate. This module lands the
+//! backend-independent, always-testable piece first: [`detect`]ing which kernel
+//! isolation features are available and [`ensure`]-ing the required ones are
+//! present before any worker runs — a launch is refused, never downgraded, when
+//! isolation cannot be established.
+
+mod probe;
+
+pub use probe::{detect, ensure, required, Feature, IsolationFeatures, MissingFeatures};

@@ -201,6 +201,9 @@ dependencies = [
 [[package]]
 name = "axon-sandbox"
 version = "0.0.1"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "axon-store"
