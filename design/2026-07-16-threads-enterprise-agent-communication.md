@@ -1063,7 +1063,10 @@ The Message contains exactly one contract-control Part whose
 <code>data</code> value is the DSSE envelope and whose media type is the
 versioned contract-envelope media type selected in Phase 0. The DSSE
 <code>payloadType</code> identifies the corresponding contract payload. A
-missing or second contract Part rejects the request. Each input manifest entry
+missing or second contract Part rejects the request. (Implementation: the
+envelope media type is realized as one generic DSSE-envelope type shared by all
+signed extension objects, with <code>payloadType</code> as the sole content
+discriminator — see ADR-0012.) Each input manifest entry
 contains:
 
 ~~~text

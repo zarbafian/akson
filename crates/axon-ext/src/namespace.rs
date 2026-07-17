@@ -36,7 +36,8 @@ pub fn required_extension_uris() -> [String; 5] {
 
 /// Builds the versioned payload media type for an extension object, e.g.
 /// `payload_media_type("contract", 1)` →
-/// `application/vnd.axon-dev.contract.v1+json`.
+/// `application/vnd.axon-dev.contract.v1+json`. This is the DSSE `payloadType`
+/// that identifies the signed content; it is covered by the signature.
 ///
 /// The `vnd.axon-dev` tree is an unregistered development placeholder; design
 /// §14.2 assigns the real media types through the normal registration process
@@ -44,6 +45,18 @@ pub fn required_extension_uris() -> [String; 5] {
 pub fn payload_media_type(name: &str, version: u32) -> String {
     format!("application/vnd.axon-dev.{name}.v{version}+json")
 }
+
+/// The media type carried on the A2A `Part` that holds a signed Axon extension
+/// object as a DSSE envelope — the "envelope media type" of design §10.2.
+///
+/// One uniform envelope type is used for *every* signed object (contract,
+/// decision, result-manifest, …); the DSSE `payloadType` (see
+/// [`payload_media_type`]) is the sole discriminator of the content (ADR-0012).
+/// The `Part` media type is a routing label only and is not covered by the
+/// signature, so it is never a trust anchor. The `v1` is the DSSE-envelope
+/// profile version, independent of any payload schema version. Placeholder tree,
+/// gated by [`NAMESPACE_IS_PLACEHOLDER`] like the payload types.
+pub const DSSE_ENVELOPE_MEDIA_TYPE: &str = "application/vnd.axon-dev.dsse.v1+json";
 
 #[cfg(test)]
 mod tests {
