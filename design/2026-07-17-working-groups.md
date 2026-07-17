@@ -1,6 +1,7 @@
 # Working groups: coordinating sovereign endpoints
 
-Status: **Proposal / draft** (two open forks, below) — not yet normative.
+Status: **Proposal / draft** — fork #1 (authorization/trust) resolved; one fork
+(discovery scope) open. Not yet normative.
 Date: 2026-07-17
 Relates to: pairing (§8), reliable delivery (§9), task contract (§10), local
 authority (§12), risk card (§5).
@@ -146,20 +147,47 @@ it provides a context and a bounded interaction channel. Concretely:
 - Removing/suspending a member from a group denies further group interaction the
   same way peer removal denies work (§8.4), without touching any bilateral pairing.
 
-## Open forks (decide before schema)
+## Authorization model (resolves fork #1)
 
-1. **The introduction / trust model** for members not directly paired
-   (forum- or group-introduced). This is the heart of the design: how a group
-   safely lets me interact with a friend-of-a-friend without pretending I trust
-   them. Options range from *no transitive introduction* (you must bilaterally
-   pair before you interact, the group only correlates) to *coordinator-vouched
-   introduction* (the coordinator introduces two members, each still gating with a
-   bounded default) to *forum-attested* (a forum vouches identities).
+Identity and authority are fully separate, and authority is incremental.
 
-2. **How much discovery** to include in v1: from **none** (invite/assign among
-   existing contacts only — no forums) up to **public forums** with capability
-   advertisement and self-assembly. Discovery is the biggest new surface and the
-   biggest new attack surface.
+- **Pairing — and any group/forum introduction — grants identity, never
+  authority.** An introduction gives a verified channel to a party you now
+  recognise; it confers zero authority. A friend-of-a-friend is an introduced
+  identity with no trust attached — there is no transitive authority to leak. This
+  rule is uniform for paired, introduced, and forum-met parties.
+- **Authority is incremental and bidirectional**, in the §12.1 capability
+  vocabulary. Each side may raise (or lower) the standing authorization it holds
+  for another party, and a party may *request* authorizations for itself
+  preemptively (to avoid prompting mid-task). A standing authorization is still
+  materialised into a one-shot work order per actual execution (§12.3).
+- **Pause-and-obtain during execution.** When an attempt reaches a point needing an
+  authorization it lacks, it neither fails nor proceeds — it **pauses**, and the
+  daemon tries to obtain the increment, in order: a standing local policy
+  (auto-grant on match), else the human (risk card, §5), else an **authoritative
+  agent**. On success the attempt resumes with the increment; on failure it stays
+  paused and then cancels — fail-closed, never proceeding without authority.
+
+Two follow-on design points this decision creates:
+
+1. **Authority can grow mid-attempt**, extending the one-shot work order (§12.3).
+   The clean worker (§13) grants itself nothing: it signals an authority-need
+   outward through the worker protocol and pauses; the daemon runs the escalation
+   and issues an authority increment or denies. This adds a
+   `paused / awaiting-authorization` attempt state and an authority-request channel
+   in the worker protocol.
+2. **"Authoritative agent" is a locally-configured deferral, never ambient.** The
+   performer's own policy names which agent it defers to for which authority; that
+   agent's grants are signed and bounded. Enforcement stays local; the
+   authoritative agent is a *chosen* delegate — a group coordinator or org-policy
+   agent slots in here naturally.
+
+## Open fork (decide before schema)
+
+**How much discovery** to include in v1: from **none** (invite/assign among
+existing contacts only — no forums) up to **public forums** with capability
+advertisement and self-assembly. Discovery is the biggest new surface and the
+biggest new attack surface.
 
 ## Delivery sketch (after the forks are settled)
 
