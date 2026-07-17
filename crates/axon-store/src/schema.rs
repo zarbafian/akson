@@ -143,11 +143,13 @@ CREATE TABLE attempts (
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6)];
 
-/// Applies pragmas and runs outstanding migrations. Idempotent.
-pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
+/// Applies pragmas and runs outstanding migrations. Idempotent. Returns the
+/// resulting `journal_mode` so the caller can assert WAL actually took effect
+/// (the durable claim/CAS paths depend on WAL snapshot isolation).
+pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<String> {
     // Setting journal_mode returns the resulting mode as a row (and yields
     // "memory" for an in-memory database, which is expected, not an error).
-    let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", true)?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
 
@@ -158,7 +160,7 @@ pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.pragma_update(None, "user_version", *target)?;
         }
     }
-    Ok(())
+    Ok(mode)
 }
 
 /// Reads a raw `meta` value.

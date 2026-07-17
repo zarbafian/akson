@@ -195,11 +195,27 @@ impl Store {
     }
 
     fn from_conn(
-        conn: Connection,
+        mut conn: Connection,
         kek: &Kek,
         checkpoint: ExternalCheckpoint,
     ) -> Result<Self, StoreError> {
-        schema::open_and_migrate(&conn)?;
+        // Every claim/CAS method reads then writes in one transaction; DEFERRED
+        // (the default) takes no write lock until the write, so under a second
+        // connection the guard read and the write are not serialized and the loser
+        // gets a raw SQLITE_BUSY_SNAPSHOT instead of the right verdict. IMMEDIATE
+        // takes the write lock at BEGIN, so the check-and-act is a genuine CAS.
+        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+
+        let journal_mode = schema::open_and_migrate(&conn)?;
+        // WAL must be in effect on disk — the claim/CAS serialization above relies
+        // on its snapshot isolation. An in-memory database reports "memory" (WAL is
+        // not applicable); any rollback-journal mode means WAL silently failed
+        // (e.g. a network filesystem), so fail closed rather than run unserialized.
+        if journal_mode != "wal" && journal_mode != "memory" {
+            return Err(StoreError::Corrupt(format!(
+                "journal_mode is {journal_mode:?}, expected wal (durable claim/CAS need WAL)"
+            )));
+        }
 
         // Load the wrapped DEK, or generate one on first init and adopt the
         // external checkpoint as the database's initial state.
@@ -864,10 +880,20 @@ impl Store {
         let head = self.contract_head(task_id)?;
         match accept_head(&head, accepted_digest) {
             Ok(_) => {
-                tx.execute(
-                    "UPDATE contract_heads SET status = 'locked' WHERE task_id = ?1",
-                    [task_id],
+                // Self-contained CAS: lock only the exact open head `accept_head`
+                // validated (its digest, still open), not merely the task id, so the
+                // pre-condition is in the SQL. A 0-row result means the head moved —
+                // fail closed.
+                let changed = tx.execute(
+                    "UPDATE contract_heads SET status = 'locked'
+                     WHERE task_id = ?1 AND digest = ?2 AND status = 'open'",
+                    params![task_id, accepted_digest],
                 )?;
+                if changed != 1 {
+                    return Err(StoreError::Corrupt(format!(
+                        "contract head for {task_id:?} moved under accept (digest {accepted_digest:?})"
+                    )));
+                }
                 audit::append(&tx, now, "contract.accepted", accepted_digest)?;
                 tx.commit()?;
                 Ok(Ok(()))
@@ -992,10 +1018,20 @@ impl Store {
             .ok_or_else(|| StoreError::UnknownAttempt(work_order_id.to_owned()))?;
         match next(state, event) {
             Ok(new_state) => {
-                tx.execute(
-                    "UPDATE attempts SET state = ?1 WHERE work_order_id = ?2",
-                    params![new_state.as_str(), work_order_id],
+                // Self-contained CAS: the UPDATE re-asserts the state `next` decided
+                // from, so the pre-condition lives in the SQL, not just the earlier
+                // read. Serialized by IMMEDIATE, so it always matches; a 0-row result
+                // would mean the state moved under us — fail closed rather than lie.
+                let changed = tx.execute(
+                    "UPDATE attempts SET state = ?1 WHERE work_order_id = ?2 AND state = ?3",
+                    params![new_state.as_str(), work_order_id, state.as_str()],
                 )?;
+                if changed != 1 {
+                    return Err(StoreError::Corrupt(format!(
+                        "attempt {work_order_id} changed state concurrently (expected {})",
+                        state.as_str()
+                    )));
+                }
                 audit::append(
                     &tx,
                     now,
