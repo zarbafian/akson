@@ -97,6 +97,16 @@ version = "0.0.1"
 [[package]]
 name = "axon-contract"
 version = "0.0.1"
+dependencies = [
+ "axon-crypto",
+ "axon-ext",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
 
 [[package]]
 name = "axon-crypto"
