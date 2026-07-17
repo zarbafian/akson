@@ -303,10 +303,13 @@ encrypted `peers` table; proven end-to-end (pair over mTLS, then `get_peer`).
 peer-identity overwrite (a pairing can no longer silently replace an existing
 peer that shares an attacker-chosen agent id — refused via `detect_change`, §8.4)
 and unbounded request body (64 KiB cap, 413); added token-bucket rate limiting on
-`serve`. **Remaining:** enable-only-when-active gating; the accepter-side client
-+ verification of the inviter's response (symmetric flow) and a per-request
-inviter response (`build_material` over the actual transcript, currently a static
-placeholder); pending→active *confirmation* status; QR transfer; re-pair;
+`serve`. **Two-way pairing complete:** the inviter builds a real per-request
+response (`build_material`); `verify_accepter` is symmetric (explicit subject
+cert); the accepter-side client (`client::accept_invitation`) connects over the
+pinned TLS, presents its material, verifies the inviter's response, and pins it —
+proven by `two_way_pairing_both_sides_pin_each_other` (both stores hold the other
+as a verified peer, the G0 shape). **Remaining:** enable-only-when-active gating
+on `serve`; pending→active *confirmation* status; QR transfer; re-pair;
 `axon endpoint check` / `axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
