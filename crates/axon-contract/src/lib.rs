@@ -16,6 +16,7 @@ mod chain;
 mod contract;
 mod decision;
 mod manifest;
+mod proposal;
 
 pub use chain::{
     accept_head, apply_revision, Head, HeadState, LockError, RevisionVerdict, StaleReason,
@@ -29,3 +30,4 @@ pub use decision::{
     check_binds_to, sign_decision, verify_decision, Decision, DecisionError, DecisionKind,
 };
 pub use manifest::{bind_inputs, BindError, InputPart, PartBody};
+pub use proposal::{check_proposal_identities, sign_proposal, verify_proposal, ProposalError};
