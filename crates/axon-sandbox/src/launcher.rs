@@ -723,6 +723,46 @@ mod tests {
         );
     }
 
+    /// Live: the clean worker has no generic network (§13.1, §20.5). `--unshare-all`
+    /// puts it in a fresh network namespace, so its own `/proc/net/dev` lists only
+    /// loopback — any host interface would mean network leaked in. Needs bwrap +
+    /// unprivileged userns.
+    #[test]
+    #[ignore = "needs bwrap + unprivileged userns; runs in CI's isolation job"]
+    fn live_bwrap_worker_has_no_network() {
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/usr", "/usr")
+            .ro_bind("/bin", "/bin")
+            .ro_bind("/lib", "/lib")
+            .ro_bind("/lib64", "/lib64");
+        // Pure-shell (no external commands — the seccomp baseline blocks their
+        // fork/exec). Interface lines in /proc/net/dev contain a colon; the two
+        // header lines do not. A fresh net namespace has exactly one, loopback.
+        let script = concat!(
+            "n=0; lo=0\n",
+            "while IFS= read -r line; do\n",
+            "  case \"$line\" in *:*) n=$((n+1));; esac\n",
+            "  case \"$line\" in *lo:*) lo=1;; esac\n",
+            "done < /proc/net/dev\n",
+            "[ \"$n\" = 1 ] || exit 30\n",  // exactly one interface
+            "[ \"$lo\" = 1 ] || exit 31\n", // and it is loopback
+        );
+        let seccomp = crate::seccomp::SeccompPolicy::clean_worker_baseline(
+            crate::seccomp::DenyAction::KillProcess,
+        );
+        let result = BubblewrapLauncher.launch_seccomp(
+            &spec,
+            "/bin/sh",
+            &["-c".to_owned(), script.to_owned()],
+            &seccomp,
+        );
+        // Exit 30 = a host interface is visible, 31 = loopback missing.
+        assert!(
+            result.is_ok(),
+            "clean worker has network reachability: {result:?}"
+        );
+    }
+
     /// Live: hand bubblewrap a compiled seccomp filter and confirm from inside the
     /// worker that seccomp is in filter mode (`Seccomp: 2` in /proc/self/status) —
     /// i.e. the memfd was read and the filter installed. Needs bwrap + userns.
