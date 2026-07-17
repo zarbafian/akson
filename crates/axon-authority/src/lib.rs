@@ -8,9 +8,11 @@
 //! The first piece is the [`CapabilityVector`] (§12.1): independent, non-implying
 //! components, of which only v1's four are grantable.
 
+mod attempt;
 mod capability;
 mod work_order;
 
+pub use attempt::{next, AttemptEvent, AttemptState, TransitionError};
 pub use capability::{
     ArtifactExportScope, CapabilityComponent, CapabilityVector, Grant, ProcessorUseScope,
     ReadInputsScope, RespondScope, VectorError,
