@@ -10,12 +10,16 @@
 
 mod attempt;
 mod capability;
+mod policy;
 mod work_order;
 
 pub use attempt::{next, AttemptEvent, AttemptState, TransitionError};
 pub use capability::{
     ArtifactExportScope, CapabilityComponent, CapabilityVector, Grant, ProcessorUseScope,
     ReadInputsScope, RespondScope, VectorError,
+};
+pub use policy::{
+    binding_changed, evaluate, PolicyChange, PolicyDecision, RuleBinding, StandingRule,
 };
 pub use work_order::{
     Audience, Budgets, IssuedWorkOrder, RemoteCancelCaveat, RequestOrigin, WorkOrder,

@@ -150,6 +150,17 @@ pub enum WorkOrderError {
 }
 
 impl WorkOrder {
+    /// Whether the authenticated `origin` may cancel this attempt over the remote
+    /// path (§12.1 `remote_cancel`). Remote cancellation is advisory: it is
+    /// permitted only when this exact work order carries a caveat naming that
+    /// origin. Otherwise the caller returns `TaskNotCancelableError` — local
+    /// operator cancellation is always available regardless.
+    pub fn remote_cancel_allowed(&self, origin: &Identity) -> bool {
+        self.remote_cancel
+            .as_ref()
+            .is_some_and(|c| &c.allowed_origin == origin)
+    }
+
     /// The RFC 8785-canonical bytes of the order (the MAC and digest input).
     fn canonical_bytes(&self) -> Result<Vec<u8>, WorkOrderError> {
         json_canon::to_vec(self).map_err(|_| WorkOrderError::Canonicalize)
@@ -281,6 +292,21 @@ mod tests {
         // digest the MAC was computed over.
         issued.order.budgets.max_bytes = 1_000_000;
         assert_eq!(issued.verify(&key()), Err(WorkOrderError::DigestMismatch));
+    }
+
+    #[test]
+    fn remote_cancel_requires_a_matching_caveat() {
+        // No caveat: remote cancellation is refused for everyone.
+        let order = order();
+        assert!(!order.remote_cancel_allowed(&identity("requester")));
+
+        // A caveat naming the requester permits only that origin.
+        let mut with_caveat = order;
+        with_caveat.remote_cancel = Some(RemoteCancelCaveat {
+            allowed_origin: identity("requester"),
+        });
+        assert!(with_caveat.remote_cancel_allowed(&identity("requester")));
+        assert!(!with_caveat.remote_cancel_allowed(&identity("someone-else")));
     }
 
     #[test]
