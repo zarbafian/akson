@@ -24,7 +24,8 @@ mod seccomp;
 
 pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
-    MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher, SandboxPlan, SandboxSpec,
+    BubblewrapLauncher, MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher,
+    SandboxPlan, SandboxSpec,
 };
 pub use mount::{setup_root, MountError};
 pub use namespace::{enter_namespaces, NamespaceError};

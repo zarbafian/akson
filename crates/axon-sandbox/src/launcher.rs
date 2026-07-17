@@ -1,15 +1,17 @@
 //! The sandbox launcher (design §13.1, ADR-0006): the isolation policy and the
-//! pure-Rust native backend that enforces it.
+//! backends that enforce it.
 //!
 //! Axon *authors* the isolation policy as a [`SandboxSpec`]; a [`SandboxLauncher`]
-//! backend enforces it. The v1 backend is [`NativeLauncher`], which resolves the
-//! spec into a [`SandboxPlan`] — the ordered isolation steps — and applies it in
-//! process (namespaces, mounts, `no_new_privs`, capability drop, seccomp,
-//! Landlock, cgroup limits), with no external binary. The **plan is data**, so it
-//! is fully unit-tested without executing anything; the seccomp and Landlock
-//! pieces are additionally enforced and tested unprivileged (they need no user
-//! namespace), while the namespace/mount/exec sequence is validated in a
-//! permissive Linux environment. The trait is the swap seam.
+//! backend enforces it. Per ADR-0006 (revised after adversarial review), the **v1
+//! default is [`BubblewrapLauncher`]** — bubblewrap, an independently-reviewed
+//! sandbox (§13.1/§13.4/§19), enforces the namespace/mount/`pivot_root`/exec
+//! boundary Axon authors, and the pure-Rust seccomp filter is handed to it via
+//! `--seccomp`; Landlock is applied by the worker entrypoint. [`NativeLauncher`]
+//! (the pure-Rust namespace/mount code) is retained **behind the same trait as an
+//! experimental backend**, promoted to default only after independent review +
+//! differential testing and the structural fixes the review named (inherited-fd
+//! allowlist, a fork→exec-init process model, an unpredictable root). The trait is
+//! the swap seam.
 //!
 //! Every launch is gated by the [capability probe](crate::ensure): if a required
 //! feature is unavailable the launcher refuses rather than run un-isolated.
@@ -157,8 +159,16 @@ pub trait SandboxLauncher {
     ) -> Result<(), SandboxError>;
 }
 
-/// The v1 launcher: resolves a spec into a [`SandboxPlan`] and applies it with
-/// pure-Rust primitives (ADR-0006) — no external binary.
+/// **Experimental** pure-Rust launcher (ADR-0006): resolves a spec into a
+/// [`SandboxPlan`] and applies it with in-process syscalls — no external binary.
+///
+/// NOT the v1 default. Retained behind the trait and promoted only after
+/// independent review + differential testing against bubblewrap and the structural
+/// fixes the review named (inherited-fd allowlist + `close_range` sweep; a
+/// fork→exec-init process model rather than heavy allocation between fork and
+/// exec; an unpredictable `O_NOFOLLOW` root; unconditional `nosuid`/`nodev`; real
+/// cgroup enforcement; best-effort Landlock ABI). Until then, use
+/// [`BubblewrapLauncher`].
 #[derive(Debug, Clone, Default)]
 pub struct NativeLauncher;
 
@@ -224,6 +234,98 @@ impl SandboxLauncher for NativeLauncher {
             "native namespace/mount application not yet wired; validated in a permissive env"
                 .into(),
         ))
+    }
+}
+
+/// The **v1 default** launcher (ADR-0006): bubblewrap enforces the namespace/mount
+/// policy Axon authors; the pure-Rust seccomp filter is handed to it via
+/// `--seccomp <fd>`, and Landlock is applied by the worker entrypoint.
+///
+/// Bubblewrap is an independently-reviewed, widely-deployed sandbox, which is what
+/// §13.1/§13.4/§19 call for at the escape boundary — and it handles the exact
+/// classes of bug (inherited-fd leaks, the fork/exec model) that a hand-rolled
+/// launcher is prone to.
+#[derive(Debug, Clone, Default)]
+pub struct BubblewrapLauncher;
+
+impl BubblewrapLauncher {
+    /// Builds the `bwrap` argv enforcing `spec`. Pure — the security policy in
+    /// explicit flags, fully testable without executing. `seccomp_fd`, when set, is
+    /// the fd of a compiled default-deny BPF program passed to `--seccomp`.
+    ///
+    /// The §13.1 inherited-fd allowlist is a *launch-time* duty of the caller: set
+    /// `CLOEXEC` on every fd except stdio and `seccomp_fd` before spawning, so
+    /// bubblewrap's child inherits only the allowlisted descriptors.
+    pub fn build_argv(
+        spec: &SandboxSpec,
+        program: &str,
+        args: &[String],
+        seccomp_fd: Option<i32>,
+    ) -> Vec<String> {
+        let mut argv = vec!["bwrap".to_owned()];
+        // All namespaces; --unshare-all includes the network, so no connectivity
+        // unless network is explicitly allowed (the clean worker never does).
+        argv.push("--unshare-all".to_owned());
+        if spec.allow_network {
+            argv.push("--share-net".to_owned());
+        }
+        argv.push("--die-with-parent".to_owned());
+        argv.push("--new-session".to_owned());
+        argv.push("--cap-drop".to_owned());
+        argv.push("ALL".to_owned());
+        argv.push("--clearenv".to_owned());
+        for (k, v) in &spec.env {
+            argv.push("--setenv".to_owned());
+            argv.push(k.clone());
+            argv.push(v.clone());
+        }
+        argv.push("--proc".to_owned());
+        argv.push("/proc".to_owned());
+        argv.push("--dev".to_owned());
+        argv.push("/dev".to_owned());
+        for (host, sandbox) in &spec.ro_binds {
+            argv.push("--ro-bind".to_owned());
+            argv.push(host.clone());
+            argv.push(sandbox.clone());
+        }
+        for path in &spec.tmpfs {
+            argv.push("--tmpfs".to_owned());
+            argv.push(path.clone());
+        }
+        if let Some(fd) = seccomp_fd {
+            argv.push("--seccomp".to_owned());
+            argv.push(fd.to_string());
+        }
+        argv.push("--chdir".to_owned());
+        argv.push(spec.chdir.clone());
+        argv.push("--".to_owned());
+        argv.push(program.to_owned());
+        argv.extend(args.iter().cloned());
+        argv
+    }
+}
+
+impl SandboxLauncher for BubblewrapLauncher {
+    fn launch(
+        &self,
+        spec: &SandboxSpec,
+        program: &str,
+        args: &[String],
+    ) -> Result<(), SandboxError> {
+        // Fail closed: refuse to run without the required isolation (§13.1).
+        ensure(&detect(), required())?;
+        // (Seccomp-fd + the CLOEXEC fd-allowlist sweep are wired at daemon
+        // integration; passing None here runs bubblewrap's own default profile.)
+        let argv = Self::build_argv(spec, program, args, None);
+        let status = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()
+            .map_err(|e| SandboxError::Apply(format!("spawning bwrap: {e}")))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(SandboxError::Apply(format!("worker exited: {status}")))
+        }
     }
 }
 
@@ -304,11 +406,68 @@ mod tests {
     }
 
     #[test]
-    fn launch_refuses_when_isolation_is_unavailable() {
-        // On a host without unprivileged userns (this one), the probe refuses.
-        // (Where isolation IS available, application is not yet wired, so it
-        // returns an Apply error — never Ok until the native path lands.)
-        let result = NativeLauncher.launch(&spec(), "worker", &[]);
-        assert!(result.is_err());
+    fn native_launch_never_succeeds_yet() {
+        // The experimental native launcher never returns Ok: without userns the
+        // probe refuses; with userns the namespace/mount application is not wired.
+        assert!(NativeLauncher.launch(&spec(), "worker", &[]).is_err());
+    }
+
+    // --- BubblewrapLauncher (v1 default, ADR-0006) ---
+
+    fn bwrap_argv() -> Vec<String> {
+        BubblewrapLauncher::build_argv(&spec(), "worker", &["--run".to_owned()], None)
+    }
+
+    fn has(argv: &[String], flag: &str) -> bool {
+        argv.iter().any(|a| a == flag)
+    }
+
+    fn value_after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+        argv.iter()
+            .position(|a| a == flag)
+            .and_then(|i| argv.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn bwrap_policy_hardens_by_default() {
+        let argv = bwrap_argv();
+        assert_eq!(argv[0], "bwrap");
+        assert!(has(&argv, "--unshare-all"));
+        assert!(!has(&argv, "--share-net")); // clean worker has no network
+        assert!(has(&argv, "--die-with-parent"));
+        assert!(has(&argv, "--new-session"));
+        assert!(has(&argv, "--clearenv"));
+        assert_eq!(value_after(&argv, "--cap-drop"), Some("ALL"));
+        assert_eq!(value_after(&argv, "--proc"), Some("/proc"));
+        assert_eq!(value_after(&argv, "--dev"), Some("/dev"));
+        // Program and args after the `--` separator, last.
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(argv[sep + 1], "worker");
+        assert_eq!(argv[sep + 2], "--run");
+    }
+
+    #[test]
+    fn bwrap_wires_binds_env_seccomp_and_network() {
+        let argv = bwrap_argv();
+        let ro = argv
+            .windows(3)
+            .any(|w| w == ["--ro-bind", "/opt/axon/runtime", "/runtime"].map(String::from));
+        assert!(ro, "digest-pinned runtime must be a read-only bind");
+        assert_eq!(argv.iter().filter(|a| *a == "--tmpfs").count(), 2);
+        // env set only after clearenv.
+        let clear = argv.iter().position(|a| a == "--clearenv").unwrap();
+        let setenv = argv.iter().position(|a| a == "--setenv").unwrap();
+        assert!(setenv > clear);
+        // seccomp fd wired when provided.
+        let with_fd = BubblewrapLauncher::build_argv(&spec(), "worker", &[], Some(7));
+        assert_eq!(value_after(&with_fd, "--seccomp"), Some("7"));
+        // network shared only when explicitly allowed.
+        let mut netspec = spec();
+        netspec.allow_network = true;
+        assert!(has(
+            &BubblewrapLauncher::build_argv(&netspec, "worker", &[], None),
+            "--share-net"
+        ));
     }
 }
