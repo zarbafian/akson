@@ -332,6 +332,79 @@ impl BubblewrapLauncher {
             Err(SandboxError::Apply(format!("worker exited: {status}")))
         }
     }
+
+    /// The full clean-worker launch (design §13.1): bubblewrap namespace/mount
+    /// isolation + the seccomp filter + confinement in `cgroup`. Before exec, the
+    /// bubblewrap process moves itself into the cgroup, so the worker it forks (and
+    /// its whole tree) is bounded by the cgroup's limits.
+    pub fn launch_confined(
+        &self,
+        spec: &SandboxSpec,
+        program: &str,
+        args: &[String],
+        seccomp: &crate::seccomp::SeccompPolicy,
+        cgroup: &crate::cgroup::CgroupScope,
+    ) -> Result<(), SandboxError> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        ensure(&detect(), required())?;
+        let memfd = seccomp
+            .to_memfd()
+            .map_err(|e| SandboxError::Apply(e.to_string()))?;
+        let argv = Self::build_argv(spec, program, args, Some(memfd.as_raw_fd()));
+
+        // Pre-open cgroup.procs (CLOEXEC, so it never reaches the worker); the
+        // pre_exec hook moves bubblewrap into the cgroup before it runs.
+        let procs = std::fs::OpenOptions::new()
+            .write(true)
+            .open(cgroup.path().join("cgroup.procs"))
+            .map_err(|e| SandboxError::Apply(format!("open cgroup.procs: {e}")))?;
+        let procs_fd = procs.as_raw_fd();
+
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        // SAFETY: the hook runs post-fork, pre-exec, and does only async-signal-safe
+        // work — write the (no-alloc formatted) pid to the pre-opened fd.
+        unsafe {
+            cmd.pre_exec(move || write_self_pid(procs_fd));
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| SandboxError::Apply(format!("spawning bwrap: {e}")))?;
+        drop(procs);
+        drop(memfd);
+        if status.success() {
+            Ok(())
+        } else {
+            Err(SandboxError::Apply(format!("worker exited: {status}")))
+        }
+    }
+}
+
+/// Writes the calling process's pid to `fd` (a cgroup.procs) without allocating —
+/// safe to call between `fork` and `exec`.
+fn write_self_pid(fd: i32) -> std::io::Result<()> {
+    // SAFETY: getpid is always safe; pid is positive.
+    let mut n = unsafe { libc::getpid() } as u32;
+    let mut buf = [0u8; 12];
+    let mut i = buf.len();
+    if n == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    }
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    let s = &buf[i..];
+    // SAFETY: writing a stack buffer to the caller-provided fd.
+    let w = unsafe { libc::write(fd, s.as_ptr().cast(), s.len()) };
+    if w < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 impl SandboxLauncher for BubblewrapLauncher {
@@ -359,7 +432,7 @@ impl SandboxLauncher for BubblewrapLauncher {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -539,6 +612,47 @@ mod tests {
             r.is_ok(),
             "seccomp filter not installed / worker failed: {r:?}"
         );
+    }
+
+    /// Live: the full clean-worker launch — bubblewrap isolation, the seccomp
+    /// filter, and cgroup confinement — composes and runs a worker to success.
+    /// Needs bwrap, userns, and a delegated cgroup subtree.
+    #[test]
+    #[ignore = "needs bwrap + userns + delegated cgroup subtree; runs in CI's isolation job"]
+    fn live_confined_launch_composes_all_isolation() {
+        use crate::cgroup::{CgroupLimits, CgroupScope};
+        use crate::seccomp::{DenyAction, SeccompPolicy};
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/usr", "/usr")
+            .ro_bind("/bin", "/bin")
+            .ro_bind("/lib", "/lib")
+            .ro_bind("/lib64", "/lib64")
+            .tmpfs("/scratch");
+        let seccomp = SeccompPolicy::clean_worker_baseline(DenyAction::Errno(libc::EPERM as u32));
+        let cgroup = CgroupScope::create(
+            &format!("axon-confined-{}", std::process::id()),
+            &CgroupLimits {
+                max_memory_bytes: Some(128 * 1024 * 1024),
+                max_pids: Some(64),
+                cpu_max: None,
+            },
+        )
+        .expect("create cgroup");
+        // A worker that confirms seccomp is active and scratch is writable.
+        let script = concat!(
+            "s=\n",
+            "while read k v _; do [ \"$k\" = Seccomp: ] && s=$v; done < /proc/self/status\n",
+            "[ \"$s\" = 2 ] || exit 30\n",
+            ": > /scratch/ok || exit 31\n",
+        );
+        let r = BubblewrapLauncher.launch_confined(
+            &spec,
+            "/bin/sh",
+            &["-c".to_owned(), script.to_owned()],
+            &seccomp,
+            &cgroup,
+        );
+        assert!(r.is_ok(), "confined clean-worker launch failed: {r:?}");
     }
 
     #[test]
