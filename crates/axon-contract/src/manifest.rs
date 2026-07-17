@@ -112,10 +112,9 @@ pub fn bind_inputs(entries: &[InputEntry], parts: &[InputPart]) -> Result<(), Bi
         }
     }
 
-    // Each Part must resolve to its entry and match it; track which entries are
-    // consumed so dangling (Part-less) entries are caught afterward.
+    // Each Part must resolve to its entry and match it; track which Part
+    // coordinates were supplied so dangling (Part-less) entries are caught after.
     let mut seen_parts: HashMap<(&str, u32), ()> = HashMap::new();
-    let mut matched: HashMap<&str, ()> = HashMap::new();
     for part in parts {
         let coords = (part.message_id.as_str(), part.part_index);
         if seen_parts.insert(coords, ()).is_some() {
@@ -131,12 +130,16 @@ pub fn bind_inputs(entries: &[InputEntry], parts: &[InputPart]) -> Result<(), Bi
                 part_index: part.part_index,
             })?;
         check_part(entry, part)?;
-        matched.insert(entry.id.as_str(), ());
     }
 
-    // Every entry must have been matched by a supplied Part.
+    // Every entry must have been matched by a supplied Part — keyed by the entry's
+    // (unique) coordinates, NOT its id. The schema does not force `id` unique, so
+    // two entries may share an id at different coordinates; keying completeness by
+    // id would let a Part-less duplicate-id entry pass (the shared id is already
+    // "matched"), a fail-open in the bijection. Coordinates are unique by
+    // construction (`by_coords` rejects collisions above).
     for entry in entries {
-        if !matched.contains_key(entry.id.as_str()) {
+        if !seen_parts.contains_key(&(entry.message_id.as_str(), entry.part_index)) {
             return Err(BindError::DanglingEntry {
                 id: entry.id.clone(),
             });
@@ -272,6 +275,20 @@ mod tests {
             Err(BindError::DanglingEntry {
                 id: "missing".to_owned()
             })
+        );
+    }
+
+    #[test]
+    fn duplicate_id_entry_without_a_part_still_dangles() {
+        // Two entries share the id "x" at different coordinates; only the first has
+        // a supplied Part. Keying completeness by id would let the Part-less second
+        // entry pass (the shared id is already "matched") — a fail-open; keying by
+        // coordinates correctly reports it dangling.
+        let entries = vec![text_entry("x", 0, "hello"), text_entry("x", 1, "world")];
+        let parts = vec![text_part(0, "hello")];
+        assert_eq!(
+            bind_inputs(&entries, &parts),
+            Err(BindError::DanglingEntry { id: "x".to_owned() })
         );
     }
 
