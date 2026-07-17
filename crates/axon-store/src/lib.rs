@@ -31,6 +31,9 @@ pub mod schema;
 
 use std::path::Path;
 
+use axon_contract::{
+    accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
+};
 use axon_crypto::identity::PeerIdentity;
 use axon_pairing::invitation::PendingInvitation;
 use axon_pairing::state_machine::{Consumed, LedgerError, PairingLedger, PairingStore};
@@ -55,6 +58,7 @@ const INBOX_BODY_CONTEXT: &str = "inbox.body";
 const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
 const INVITATION_CONTEXT: &str = "pairing.invitation";
 const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
+const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -745,6 +749,144 @@ impl PairingStore for Store {
     }
 }
 
+/// The task-contract head and stored revisions (design §9.3, §10.2). The pure
+/// compare-and-swap logic lives in `axon-contract`; the store persists the head
+/// and applies each verdict inside one transaction, so a submission is a true CAS
+/// and a locked head cannot race a successor.
+impl Store {
+    /// Loads a Task's compare-and-swap head, or [`HeadState::Empty`] if none.
+    pub fn contract_head(&self, task_id: &str) -> Result<HeadState, StoreError> {
+        let row: Option<(u64, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT revision, digest, status FROM contract_heads WHERE task_id = ?1",
+                [task_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        match row {
+            None => Ok(HeadState::Empty),
+            Some((revision, digest, status)) => {
+                let head = Head { revision, digest };
+                match status.as_str() {
+                    "open" => Ok(HeadState::Open(head)),
+                    "locked" => Ok(HeadState::Locked(head)),
+                    other => Err(StoreError::Corrupt(format!(
+                        "unknown head status {other:?}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Submits a validated revision as an atomic compare-and-swap on the Task's
+    /// head (design §9.3). On [`RevisionVerdict::Advance`] the head moves to the
+    /// new (open) revision and the contract is stored (sealed, retained until
+    /// `expires_at_unix`); a [`RevisionVerdict::Stale`] changes nothing. The whole
+    /// decision-and-write is one transaction, so it is a real CAS.
+    ///
+    /// `task_id` is the receiver-assigned Task id (assigned for revision zero,
+    /// which the contract itself does not carry). `expires_at_unix` is the
+    /// contract's expiry as unix seconds, computed by the caller.
+    pub fn submit_revision(
+        &self,
+        task_id: &str,
+        proposal: &ParsedContract,
+        expires_at_unix: i64,
+        now: i64,
+    ) -> Result<RevisionVerdict, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let head = self.contract_head(task_id)?;
+        let verdict = apply_revision(&head, proposal);
+        if let RevisionVerdict::Advance(new_head) = &verdict {
+            let c = &proposal.contract;
+            tx.execute(
+                "INSERT INTO contract_heads (task_id, contract_id, revision, digest, status)
+                 VALUES (?1, ?2, ?3, ?4, 'open')
+                 ON CONFLICT(task_id) DO UPDATE SET
+                     contract_id = excluded.contract_id,
+                     revision = excluded.revision,
+                     digest = excluded.digest,
+                     status = 'open'",
+                params![
+                    task_id,
+                    c.contract_id,
+                    new_head.revision as i64,
+                    new_head.digest
+                ],
+            )?;
+            let sealed = self.dek.seal(CONTRACT_PAYLOAD_CONTEXT, &proposal.payload);
+            tx.execute(
+                "INSERT INTO contracts (digest, task_id, contract_id, revision, payload, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(digest) DO NOTHING",
+                params![
+                    proposal.digest,
+                    task_id,
+                    c.contract_id,
+                    new_head.revision as i64,
+                    sealed,
+                    expires_at_unix
+                ],
+            )?;
+            audit::append(&tx, now, "contract.submitted", &proposal.digest)?;
+        }
+        tx.commit()?;
+        Ok(verdict)
+    }
+
+    /// Locks a Task's head at `accepted_digest` — the atomic effect of a signed
+    /// acceptance (design §9.3). The pure `accept_head` decides; on success the
+    /// row moves to `locked` and the acceptance is audited. Returns the inner
+    /// [`LockError`] (a stale/duplicate acceptance) without failing the call.
+    pub fn accept_contract(
+        &self,
+        task_id: &str,
+        accepted_digest: &str,
+        now: i64,
+    ) -> Result<Result<(), LockError>, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let head = self.contract_head(task_id)?;
+        match accept_head(&head, accepted_digest) {
+            Ok(_) => {
+                tx.execute(
+                    "UPDATE contract_heads SET status = 'locked' WHERE task_id = ?1",
+                    [task_id],
+                )?;
+                audit::append(&tx, now, "contract.accepted", accepted_digest)?;
+                tx.commit()?;
+                Ok(Ok(()))
+            }
+            Err(e) => {
+                tx.commit()?;
+                Ok(Err(e))
+            }
+        }
+    }
+
+    /// Retrieves a stored contract revision's canonical payload by digest.
+    pub fn get_contract(&self, digest: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM contracts WHERE digest = ?1",
+                [digest],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => Ok(Some(self.dek.open(CONTRACT_PAYLOAD_CONTEXT, &bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Purges stored contract revisions past their expiry (design §10.2).
+    pub fn purge_expired_contracts(&self, now: i64) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM contracts WHERE expires_at <= ?1", [now])?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1035,5 +1177,196 @@ mod tests {
                 .unwrap(),
             Receipt::Conflict
         );
+    }
+
+    // --- contract head persistence (M7) ---
+
+    /// Builds a validated contract revision. `predecessor` and `task_id` are set
+    /// for follow-up revisions (the schema requires both for rev > 0).
+    fn parsed(rev: u64, predecessor: Option<&str>, task_id: Option<&str>) -> ParsedContract {
+        let mut v = serde_json::json!({
+            "schema_version": 1,
+            "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
+            "revision": rev,
+            "task_type": "https://axon.invalid/t",
+            "message_id": "m1",
+            "requester": {"issuer": "iss", "agent": "requester"},
+            "performer": {"issuer": "iss", "agent": "performer"},
+            "objective": "o",
+            "inputs": [],
+            "deliverables": [{"role": "r", "media_type": "text/plain"}],
+            "evidence_slots": [],
+            "requested_capabilities": [],
+            "processor_constraints": {"disclosure": "none"},
+            "limits": {"deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 1024},
+            "result_recipient": "request-origin",
+            "created_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2030-01-01T00:00:00Z"
+        });
+        if let Some(p) = predecessor {
+            v["predecessor_digest"] = serde_json::Value::from(p);
+        }
+        if let Some(t) = task_id {
+            v["task_id"] = serde_json::Value::from(t);
+        }
+        let payload = json_canon::to_vec(&v).unwrap();
+        axon_contract::parse_payload(&payload).unwrap()
+    }
+
+    /// A valid revision-zero contract with a custom objective (a distinct digest).
+    fn parsed_with_objective(objective: &str) -> ParsedContract {
+        let v = serde_json::json!({
+            "schema_version": 1,
+            "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
+            "revision": 0,
+            "task_type": "https://axon.invalid/t",
+            "message_id": "m1",
+            "requester": {"issuer": "iss", "agent": "requester"},
+            "performer": {"issuer": "iss", "agent": "performer"},
+            "objective": objective,
+            "inputs": [],
+            "deliverables": [{"role": "r", "media_type": "text/plain"}],
+            "evidence_slots": [],
+            "requested_capabilities": [],
+            "processor_constraints": {"disclosure": "none"},
+            "limits": {"deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 1024},
+            "result_recipient": "request-origin",
+            "created_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2030-01-01T00:00:00Z"
+        });
+        axon_contract::parse_payload(&json_canon::to_vec(&v).unwrap()).unwrap()
+    }
+
+    const EXPIRES: i64 = 1_893_456_000; // 2030-01-01
+
+    #[test]
+    fn submit_advances_head_and_stores_contract() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let rev0 = parsed(0, None, None);
+        let verdict = store
+            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .unwrap();
+        assert!(matches!(verdict, RevisionVerdict::Advance(_)));
+
+        assert_eq!(
+            store.contract_head("task-1").unwrap(),
+            HeadState::Open(Head {
+                revision: 0,
+                digest: rev0.digest.clone()
+            })
+        );
+        // The sealed payload round-trips back to the exact signed bytes.
+        assert_eq!(
+            store.get_contract(&rev0.digest).unwrap().unwrap(),
+            rev0.payload
+        );
+        assert!(store.get_contract(&"0".repeat(64)).unwrap().is_none());
+    }
+
+    #[test]
+    fn stale_revision_leaves_head_untouched() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let rev0 = parsed(0, None, None);
+        store
+            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .unwrap();
+        // A second, distinct rev-0 (a sibling) is stale; the head must not move.
+        // It is still a valid revision zero (no task_id), differing only in its
+        // objective, so it has a different digest.
+        let sibling = parsed_with_objective("a different objective");
+        assert_ne!(sibling.digest, rev0.digest);
+        let verdict = store
+            .submit_revision("task-1", &sibling, EXPIRES, 101)
+            .unwrap();
+        assert_eq!(
+            verdict,
+            RevisionVerdict::Stale(axon_contract::StaleReason::HeadAlreadyExists)
+        );
+        assert_eq!(
+            store.contract_head("task-1").unwrap(),
+            HeadState::Open(Head {
+                revision: 0,
+                digest: rev0.digest
+            })
+        );
+    }
+
+    #[test]
+    fn chain_then_lock_bars_successors() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let rev0 = parsed(0, None, None);
+        store
+            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .unwrap();
+        let rev1 = parsed(1, Some(&rev0.digest), Some("task-1"));
+        assert!(matches!(
+            store
+                .submit_revision("task-1", &rev1, EXPIRES, 101)
+                .unwrap(),
+            RevisionVerdict::Advance(_)
+        ));
+
+        // Accept (lock) the head at rev1, audited.
+        let before = store.verify_audit().unwrap();
+        assert!(store
+            .accept_contract("task-1", &rev1.digest, 102)
+            .unwrap()
+            .is_ok());
+        assert_eq!(store.verify_audit().unwrap(), before + 1);
+        assert!(matches!(
+            store.contract_head("task-1").unwrap(),
+            HeadState::Locked(_)
+        ));
+
+        // A would-be successor onto a locked head is stale.
+        let rev2 = parsed(2, Some(&rev1.digest), Some("task-1"));
+        assert_eq!(
+            store
+                .submit_revision("task-1", &rev2, EXPIRES, 103)
+                .unwrap(),
+            RevisionVerdict::Stale(axon_contract::StaleReason::HeadLocked)
+        );
+    }
+
+    #[test]
+    fn accept_stale_digest_returns_lock_error() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let rev0 = parsed(0, None, None);
+        store
+            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .unwrap();
+        let r = store
+            .accept_contract("task-1", &"a".repeat(64), 101)
+            .unwrap();
+        assert_eq!(r, Err(LockError::DigestMismatch));
+        // Nothing was locked.
+        assert!(matches!(
+            store.contract_head("task-1").unwrap(),
+            HeadState::Open(_)
+        ));
+    }
+
+    #[test]
+    fn head_and_contracts_survive_reopen_and_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let rev0 = parsed(0, None, None);
+        {
+            let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+            store
+                .submit_revision("task-1", &rev0, EXPIRES, 100)
+                .unwrap();
+        }
+        {
+            let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+            assert!(matches!(
+                store.contract_head("task-1").unwrap(),
+                HeadState::Open(_)
+            ));
+            assert!(store.get_contract(&rev0.digest).unwrap().is_some());
+            // GC after expiry drops the stored revision.
+            store.purge_expired_contracts(EXPIRES + 1).unwrap();
+            assert!(store.get_contract(&rev0.digest).unwrap().is_none());
+        }
     }
 }

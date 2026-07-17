@@ -95,9 +95,33 @@ const V4: &str = r#"
 ALTER TABLE peers ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 "#;
 
+/// Version 5 (M7): the task-contract head and stored revisions (design §9.3,
+/// §10.2). `contract_heads` is the one compare-and-swap head per Task (`open`
+/// while awaiting input, `locked` once a decision accepts it). `contracts` holds
+/// each validated revision by its canonical digest, payload sealed at rest;
+/// retained until expiry.
+const V5: &str = r#"
+CREATE TABLE contract_heads (
+    task_id     TEXT PRIMARY KEY,
+    contract_id TEXT NOT NULL,
+    revision    INTEGER NOT NULL,
+    digest      TEXT NOT NULL,
+    status      TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE contracts (
+    digest      TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    revision    INTEGER NOT NULL,
+    payload     BLOB NOT NULL,
+    expires_at  INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
-const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4), (5, V5)];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent.
 pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<()> {

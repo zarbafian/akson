@@ -195,6 +195,7 @@ version = "0.0.1"
 name = "axon-store"
 version = "0.0.1"
 dependencies = [
+ "axon-contract",
  "axon-crypto",
  "axon-pairing",
  "base64",
