@@ -308,9 +308,17 @@ response (`build_material`); `verify_accepter` is symmetric (explicit subject
 cert); the accepter-side client (`client::accept_invitation`) connects over the
 pinned TLS, presents its material, verifies the inviter's response, and pins it —
 proven by `two_way_pairing_both_sides_pin_each_other` (both stores hold the other
-as a verified peer, the G0 shape). **Remaining:** enable-only-when-active gating
-on `serve`; pending→active *confirmation* status; QR transfer; re-pair;
-`axon endpoint check` / `axon pair diagnose` CLI.
+as a verified peer, the G0 shape). **Lifecycle/ops hardening done:**
+enable-only-when-pairing gate (`PairingLedger::any_pairing_open` — no live
+invitation and no retriable consumed record ⇒ the bootstrap endpoint answers 404,
+as if unmounted); pending→active *confirmation* (schema V4 `status` column, a
+freshly paired peer lands pending — `store_pending_peer` — until `confirm_peer`,
+which audits `peer.confirmed`; `pending_peer_ids`/`peer_status` expose it);
+peer removal + explicit re-pair (`remove_peer` audits `peer.removed` and deletes,
+then a fresh pairing re-lands pending — the hijack guard is never bypassed).
+**Remaining (deferred to daemon-assembly milestone, both binaries still stubs):**
+QR invitation transfer; `axon pair confirm` / `axon endpoint check` /
+`axon pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
