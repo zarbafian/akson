@@ -178,6 +178,48 @@ async fn bootstrap_pairs_over_mtls_memory_ledger() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_body_is_rejected() {
+    let (inviter_key, inviter_cert) = endpoint(7);
+    let (accepter_key, accepter_cert) = endpoint(8);
+
+    let state = Arc::new(BootstrapState {
+        ledger: Mutex::new(MemoryLedger::new()),
+        inviter_tls_sha256: inviter_cert.fingerprint.value.clone(),
+        inviter_response: Vec::new(),
+    });
+    let addr = serve_inviter(&inviter_key, &inviter_cert, state).await;
+
+    let client_cfg =
+        client_config(&accepter_key, &accepter_cert, &inviter_cert.fingerprint).unwrap();
+    let connector = TlsConnector::from(Arc::new(client_cfg));
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let mut tls = connector
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .expect("handshake");
+
+    // A body well over the 64 KiB cap.
+    let big = vec![b'x'; 96 * 1024];
+    let request = format!(
+        "POST /bootstrap HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer y\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        big.len()
+    );
+    // The server may reject and close before the whole body is written; ignore
+    // write errors and read whatever response arrived.
+    let _ = tls.write_all(request.as_bytes()).await;
+    let _ = tls.write_all(&big).await;
+    let _ = tls.flush().await;
+    let mut response = Vec::new();
+    let _ = tls.read_to_end(&mut response).await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 413"),
+        "expected 413 Payload Too Large, got:\n{}",
+        &text[..text.len().min(120)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bootstrap_pairs_over_mtls_persistent_ledger() {
     use axon_store::envelope::Kek;
     use axon_store::{ExternalCheckpoint, Store};

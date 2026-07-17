@@ -611,8 +611,19 @@ impl PairingLedger for Store {
 
 impl PairingStore for Store {
     fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError> {
-        // Persist the pending peer in the encrypted `peers` table (§8.2 step 7).
-        // A pending→active status column is a later refinement.
+        // A pairing must never silently overwrite an existing peer that shares
+        // this (attacker-chosen) agent id with *different* cryptographic
+        // identity — that would let an invited party hijack another peer's
+        // record. A safety-critical change is refused; re-pairing must be
+        // explicit (design §8.4). An unchanged identity is idempotent.
+        if let Some(existing) = self.get_peer(&peer.agent_id).map_err(ledger_err)? {
+            if let Some(reason) = axon_pairing::lifecycle::detect_change(&existing.identity, peer) {
+                return Err(LedgerError(format!(
+                    "refusing to overwrite peer {:?}: {reason:?} (re-pair explicitly)",
+                    peer.agent_id
+                )));
+            }
+        }
         self.put_peer(&StoredPeer {
             identity: peer.clone(),
             local_note: String::new(),

@@ -3,8 +3,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use axon_crypto::identity::{Fingerprint, PeerIdentity};
 use axon_pairing::invitation::Invitation;
-use axon_pairing::state_machine::{accept, Accepted, PairingLedger};
+use axon_pairing::state_machine::{accept, Accepted, PairingLedger, PairingStore};
 use axon_store::envelope::Kek;
 use axon_store::{ExternalCheckpoint, Store};
 
@@ -77,6 +78,47 @@ fn purge_removes_expired_consumed_records() {
         accept(&mut store, &secret, [1u8; 32], b"x".to_vec(), 2_100).unwrap(),
         Accepted::BadSecret
     );
+}
+
+fn peer(agent: &str, tls: &[u8]) -> PeerIdentity {
+    PeerIdentity {
+        issuer: None,
+        agent_id: agent.to_owned(),
+        workload_id: None,
+        endpoint_id: "https://ep/x".to_owned(),
+        tls_cert: Fingerprint::cert_sha256(tls),
+        agent_card_key: Fingerprint::json_sha256(b"k"),
+        key_bindings: vec![],
+        security_projection_digest: Fingerprint::json_sha256(b"{}"),
+        full_card_digest: Fingerprint::json_sha256(b"{}"),
+    }
+}
+
+#[test]
+fn refuses_to_overwrite_a_peer_whose_identity_changed() {
+    let mut store = Store::open_in_memory(&Kek::from_bytes([5u8; 32]), checkpoint()).unwrap();
+
+    // First pairing under an agent id: stored.
+    store
+        .store_pending_peer(&peer("agent-x", b"cert-1"))
+        .unwrap();
+    // Re-storing the identical identity is idempotent.
+    store
+        .store_pending_peer(&peer("agent-x", b"cert-1"))
+        .unwrap();
+
+    // A different pairing that reuses the same agent id but a different TLS cert
+    // (identity hijack attempt) is refused, not silently overwritten (§8.4).
+    assert!(store
+        .store_pending_peer(&peer("agent-x", b"cert-2"))
+        .is_err());
+
+    // The original identity is intact.
+    let stored = store.get_peer("agent-x").unwrap().unwrap();
+    assert!(stored
+        .identity
+        .tls_cert
+        .matches(&Fingerprint::cert_sha256(b"cert-1")));
 }
 
 #[test]

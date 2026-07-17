@@ -17,7 +17,7 @@ use axon_pairing::http::handle_http;
 use axon_pairing::state_machine::PairingStore;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
 use hyper::service::service_fn;
@@ -26,6 +26,11 @@ use hyper_util::rt::TokioIo;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+
+/// Maximum bootstrap request body (design §9.1: limits before allocation). A
+/// signed card + key bindings + proofs is a few KiB; this is a generous cap
+/// that bounds memory against a hostile accepter.
+const MAX_BOOTSTRAP_BODY: usize = 64 * 1024;
 
 /// Shared bootstrap server state: the invitation ledger, and the inviter's own
 /// TLS fingerprint and pending-pair response. Generic over the ledger so the
@@ -77,12 +82,15 @@ async fn handle<L: PairingStore + Send>(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().as_str().to_owned();
     let authorization = header(req.headers(), AUTHORIZATION);
-    let body = req
-        .into_body()
+    // Cap the body before reading it into memory; an oversized body is rejected
+    // (413) rather than allocated (design §9.1).
+    let body = match Limited::new(req.into_body(), MAX_BOOTSTRAP_BODY)
         .collect()
         .await
-        .map(|b| b.to_bytes())
-        .unwrap_or_default();
+    {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => return Ok(status(413)),
+    };
 
     let now = OffsetDateTime::now_utc();
     let response = {
