@@ -277,6 +277,10 @@ name = "axon-worker"
 version = "0.0.1"
 dependencies = [
  "axon-authority",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror",
 ]
 
