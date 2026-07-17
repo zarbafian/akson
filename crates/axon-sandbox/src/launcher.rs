@@ -447,6 +447,40 @@ mod tests {
         assert_eq!(argv[sep + 2], "--run");
     }
 
+    /// Live: run a real worker under bubblewrap and confirm the clean-worker
+    /// properties from *inside* — host `/etc` gone, the environment cleared (only
+    /// our `--setenv` survives), and the scratch tmpfs writable. Needs bwrap +
+    /// unprivileged userns, so it is `#[ignore]`d and runs in CI's isolation job or
+    /// locally once userns is enabled.
+    #[test]
+    #[ignore = "needs bwrap + unprivileged userns; runs in CI's isolation job"]
+    fn live_bwrap_isolates_the_worker() {
+        // A host env var that --clearenv must strip from the worker.
+        std::env::set_var("AXON_HOST_SECRET", "leak");
+        // A minimal read-only runtime so /bin/sh runs; no /etc (must be absent).
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/usr", "/usr")
+            .ro_bind("/bin", "/bin")
+            .ro_bind("/lib", "/lib")
+            .ro_bind("/lib64", "/lib64")
+            .tmpfs("/scratch")
+            .setenv("AXON_TASK", "task-1");
+        let script = concat!(
+            "[ ! -e /etc ] || exit 20\n",                // host filesystem gone
+            "[ -z \"$AXON_HOST_SECRET\" ] || exit 21\n", // host env cleared
+            "[ \"$AXON_TASK\" = task-1 ] || exit 22\n",  // our setenv present
+            ": > /scratch/ok || exit 23\n",              // scratch writable
+        );
+        let result =
+            BubblewrapLauncher.launch(&spec, "/bin/sh", &["-c".to_owned(), script.to_owned()]);
+        std::env::remove_var("AXON_HOST_SECRET");
+        // Exit 20 = /etc reachable, 21 = env leaked, 22 = setenv missing, 23 = scratch RO.
+        assert!(
+            result.is_ok(),
+            "bwrap clean-worker isolation checks failed: {result:?}"
+        );
+    }
+
     #[test]
     fn bwrap_wires_binds_env_seccomp_and_network() {
         let argv = bwrap_argv();
