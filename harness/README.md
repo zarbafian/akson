@@ -5,6 +5,16 @@ exchange, work-order flow, and (later) `codex ↔ claude`-style adapter runs —
 real sockets, real mTLS, and real on-disk state. The harness exercises the shipped
 crates end to end; it is **not** the daemon (that is M12).
 
+## On-demand validation (no CI service required)
+
+`./harness/run-checks.sh` runs the whole local validation suite on demand — format,
+clippy, unit + integration tests (including the seccomp and Landlock enforcement
+tests), the golden-vector cross-check, and the pairing interop scenario. The
+namespace-isolation checks are gated on **unprivileged user namespaces**; when a
+host restricts them (e.g. Ubuntu's `apparmor_restrict_unprivileged_userns`), the
+script skips that section and prints the exact one-run enable/restore commands.
+`FAST=1` skips clippy for a quicker loop.
+
 **Open-source tools only.** Container scenarios use **Podman** (Apache-2.0,
 daemonless, rootless) as the reference runtime; the compose file and scripts are
 runtime-agnostic and also run under `docker compose`. The eventual model
@@ -57,7 +67,17 @@ host does, and it will look like the sandbox is broken when it is not
 (sandbox-inside-sandbox: the outer runtime must be permissive enough for the inner
 one). Run sandbox-validation scenarios with a deliberately permissive runtime —
 `--privileged`, or targeted `--cap-add`/`--security-opt seccomp=unconfined
---security-opt apparmor=unconfined` plus userns config. **GitHub Actions
-`ubuntu-latest` runners permit this**, which is the CI home for the §13.1
-checklist. (seccomp and Landlock need no user namespace and are validated
-directly, even on a restricted host.)
+--security-opt apparmor=unconfined` plus userns config.
+
+For **local, on-demand** validation without containers, the simplest path is to
+enable unprivileged user namespaces for a single run and let `run-checks.sh`
+execute the namespace checklist directly:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+./harness/run-checks.sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1   # restore hardening
+```
+
+(seccomp and Landlock need no user namespace and are validated directly, even on
+a restricted host.)

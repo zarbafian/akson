@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# On-demand local validation — the CI replacement. Runs everything that can be
+# checked without special privileges, then the live namespace-isolation checks
+# when unprivileged user namespaces are available (and prints exactly how to
+# enable them, for one run, when they are not).
+#
+# Usage:  ./harness/run-checks.sh            # everything runnable now
+#         FAST=1 ./harness/run-checks.sh     # skip clippy for a quicker loop
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+fail=0
+step() { printf '\n=== %s ===\n' "$*"; }
+run()  { "$@" || fail=1; }
+
+step "format"
+run cargo fmt --all --check
+
+if [ "${FAST:-0}" != "1" ]; then
+  step "clippy (deny warnings)"
+  run cargo clippy --workspace --all-targets -- -D warnings
+fi
+
+step "unit + integration tests (incl. seccomp + Landlock enforcement)"
+run cargo test --workspace
+
+step "golden-vector cross-check (Rust vs Python)"
+if [ -x xcheck/.venv/bin/python ]; then
+  run xcheck/.venv/bin/python xcheck/run.py spec/vectors
+else
+  run python3 xcheck/run.py spec/vectors
+fi
+
+step "interop: pairing over mTLS (two processes, no containers)"
+run bash harness/interop/scenario-pairing.sh
+
+step "live namespace isolation (needs unprivileged user namespaces)"
+if unshare --user --map-root-user true 2>/dev/null; then
+  echo "user namespaces available — running the live sandbox checklist"
+  # Live namespace/mount/exec tests are marked #[ignore]; run them explicitly.
+  run cargo test -p axon-sandbox -- --ignored
+else
+  restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '?')"
+  cat <<EOF
+SKIPPED — unprivileged user namespaces are blocked on this host
+  (kernel.apparmor_restrict_unprivileged_userns=$restrict).
+  seccomp and Landlock were still validated above (they need no user namespace).
+  To validate the namespace/mount path too, enable userns for one run and restore:
+
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    ./harness/run-checks.sh
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+EOF
+fi
+
+printf '\n'
+if [ "$fail" -eq 0 ]; then
+  echo "ALL ON-DEMAND CHECKS PASSED"
+else
+  echo "SOME CHECKS FAILED"
+  exit 1
+fi
