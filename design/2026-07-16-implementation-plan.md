@@ -334,6 +334,22 @@ binding of every Part (unmanifested/duplicate/kind/digest mismatch rejects),
 revision chain with compare-and-swap head, decision signing (accept /
 reject / revision-request), expiry per trusted time (§10.2, §9.3). Risk-card
 projection: the five questions as structured data consumed by the CLI (§5.2).
+**Logic core DONE** (pure/crypto, standards-first, all unit+doctested):
+`parse_payload` (I-JSON → RFC 8785-canonical assertion → schema → typed +
+SHA-256 digest over the signed bytes); `bind_inputs` input-manifest binding
+(every Part ↔ exactly one entry by digest; text=utf8-exact, data=jcs; fails
+closed on unmanifested/duplicate/multiply-referenced/dangling/kind/media-type/
+byte-length/digest); `apply_revision` + `accept_head` compare-and-swap head
+(chain-on-exact, lock-on-accept, later siblings/revisions stale); `sign_decision`
+/`verify_decision`/`check_binds_to` (contract-decision-pinned DSSE, bound to the
+exact proposal); `sign_proposal`/`verify_proposal`/`check_proposal_identities`
+(contract-proposal-pinned DSSE + requester==mTLS-origin, performer==local);
+`validity` expiry over trusted time. **Remaining:** risk-card projection
+(deferred to M12 where the CLI consumes it — pure contract projection + peer/
+policy overlay); the A2A-Message Part-extraction step (find the one
+contract-control Part; settles the contract-*envelope* media type, distinct from
+the DSSE payload type); persistent contract/head store tables (durable CAS);
+receive-path wiring.
 *Exit:* §20.3 contract vectors; a valid proposal yields an inert
 `submitted` Task and provably invokes no model, tool, file, URL, or
 credential (no-effect harness, below).
