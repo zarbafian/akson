@@ -13,9 +13,11 @@
 //! the [`digest`](ParsedContract::digest) it produces.
 
 mod contract;
+mod manifest;
 
 pub use contract::{
     parse_payload, CanonicalRule, Capability, Contract, ContractError, Deliverable, Disclosure,
     EvidenceSlot, Identity, InputEntry, Limits, ParsedContract, PartKind, ProcessorConstraints,
     ResultRecipient, RetentionRequest, TrustClass,
 };
+pub use manifest::{bind_inputs, BindError, InputPart, PartBody};
