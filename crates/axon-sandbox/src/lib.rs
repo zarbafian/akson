@@ -17,6 +17,7 @@
 
 mod landlock;
 mod launcher;
+mod mount;
 mod namespace;
 mod probe;
 mod seccomp;
@@ -25,6 +26,7 @@ pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
     MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher, SandboxPlan, SandboxSpec,
 };
+pub use mount::{setup_root, MountError};
 pub use namespace::{enter_namespaces, NamespaceError};
 pub use probe::{detect, ensure, required, Feature, IsolationFeatures, MissingFeatures};
 pub use seccomp::{DenyAction, SeccompError, SeccompPolicy};
