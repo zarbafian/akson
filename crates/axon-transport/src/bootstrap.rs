@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axon_crypto::identity::Fingerprint;
-use axon_pairing::handler::InviterMaterial;
+use axon_pairing::handler::BootstrapMaterial;
 use axon_pairing::http::handle_http;
 use axon_pairing::state_machine::PairingStore;
 
@@ -82,14 +82,14 @@ impl RateLimiter {
 pub struct BootstrapState<L: PairingStore> {
     pub ledger: Mutex<L>,
     /// The inviter's own material, used to build its per-request response.
-    pub inviter: InviterMaterial,
+    pub inviter: BootstrapMaterial,
     pub rate_limiter: RateLimiter,
 }
 
 impl<L: PairingStore> BootstrapState<L> {
     /// Builds server state with an aggressive default rate limit (30 requests
     /// burst, refilling 5/s) suitable for a single pairing.
-    pub fn new(ledger: L, inviter: InviterMaterial) -> Self {
+    pub fn new(ledger: L, inviter: BootstrapMaterial) -> Self {
         Self {
             ledger: Mutex::new(ledger),
             inviter,

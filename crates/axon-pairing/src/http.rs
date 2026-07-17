@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use crate::handler::{handle_bootstrap, BootstrapStatus, InviterMaterial};
+use crate::handler::{handle_bootstrap, BootstrapMaterial, BootstrapStatus};
 use crate::state_machine::PairingStore;
 
 /// An HTTP response from the bootstrap endpoint.
@@ -49,7 +49,7 @@ struct BootstrapBody {
 #[allow(clippy::too_many_arguments)]
 pub fn handle_http(
     ledger: &mut impl PairingStore,
-    inviter: &InviterMaterial,
+    inviter: &BootstrapMaterial,
     method: &str,
     authorization: Option<&str>,
     peer_tls_sha256: Option<&str>,
@@ -122,7 +122,7 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_748_736_000).unwrap()
     }
 
-    fn config() -> InviterMaterial {
+    fn config() -> BootstrapMaterial {
         let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]);
         let mut card: AgentCard = serde_json::from_str(
             r#"{"name":"Inviter","description":"d","version":"1.0.0",
@@ -137,7 +137,7 @@ mod tests {
             KeyPurpose::AgentCard,
             PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]),
         );
-        InviterMaterial {
+        BootstrapMaterial {
             tls_sha256: INVITER_TLS.to_owned(),
             subject_issuer: "local".to_owned(),
             subject_agent: "inviter".to_owned(),

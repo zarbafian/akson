@@ -15,7 +15,7 @@ use axon_crypto::jwk::Ed25519PublicJwk;
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
 use axon_pairing::bootstrap::Transcript;
-use axon_pairing::handler::InviterMaterial;
+use axon_pairing::handler::BootstrapMaterial;
 use axon_pairing::invitation::Invitation;
 use axon_pairing::session::key_binding_digest_hex;
 use axon_pairing::state_machine::{MemoryLedger, PairingLedger, PairingStore};
@@ -37,12 +37,12 @@ fn endpoint(seed: u8) -> (PurposeKey, EndpointCert) {
     (key, cert)
 }
 
-/// Builds the inviter's own material (keys + signed card) for its response.
-fn inviter_material(inviter_tls: &str) -> InviterMaterial {
-    let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[55u8; 32]);
+/// Builds an endpoint's bootstrap material (keys + signed card) for `agent`.
+fn bootstrap_material(tls: &str, agent: &str, key_seed: u8) -> BootstrapMaterial {
+    let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[key_seed; 32]);
     let mut card: AgentCard = serde_json::from_str(
-        r#"{"name":"Inviter","description":"d","version":"1.0.0",
-            "supportedInterfaces":[{"url":"https://inviter/x","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}],
+        r#"{"name":"Endpoint","description":"d","version":"1.0.0",
+            "supportedInterfaces":[{"url":"https://endpoint/x","protocolBinding":"HTTP+JSON","protocolVersion":"1.0"}],
             "capabilities":{"streaming":false,"pushNotifications":false}}"#,
     )
     .unwrap();
@@ -51,18 +51,23 @@ fn inviter_material(inviter_tls: &str) -> InviterMaterial {
     let mut keys = BTreeMap::new();
     keys.insert(
         KeyPurpose::AgentCard,
-        PurposeKey::from_seed(KeyPurpose::AgentCard, &[55u8; 32]),
+        PurposeKey::from_seed(KeyPurpose::AgentCard, &[key_seed; 32]),
     );
-    InviterMaterial {
-        tls_sha256: inviter_tls.to_owned(),
+    BootstrapMaterial {
+        tls_sha256: tls.to_owned(),
         subject_issuer: "local".to_owned(),
-        subject_agent: "inviter".to_owned(),
+        subject_agent: agent.to_owned(),
         signed_card: card,
         keys,
         not_before: "2020-01-01T00:00:00Z".to_owned(),
         not_after: "2030-01-01T00:00:00Z".to_owned(),
         generation: 0,
     }
+}
+
+/// The inviter's material for the existing one-directional tests.
+fn inviter_material(inviter_tls: &str) -> BootstrapMaterial {
+    bootstrap_material(inviter_tls, "inviter", 55)
 }
 
 /// Builds the accepter's bootstrap request body bound to `invitation_verifier`
@@ -307,4 +312,78 @@ async fn bootstrap_pairs_over_mtls_persistent_ledger() {
     let peer = stored.expect("the paired peer should be persisted");
     assert_eq!(peer.identity.endpoint_id, "https://a/x");
     assert_eq!(peer.identity.tls_cert.value, accepter_tls);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_way_pairing_both_sides_pin_each_other() {
+    use axon_store::envelope::Kek;
+    use axon_store::{ExternalCheckpoint, Store};
+    use axon_transport::client::accept_invitation;
+
+    let (inviter_key, inviter_cert) = endpoint(11);
+    let (accepter_key, accepter_cert) = endpoint(12);
+    let inviter_tls = inviter_cert.fingerprint.value.clone();
+    let accepter_tls = accepter_cert.fingerprint.value.clone();
+    let cp = ExternalCheckpoint {
+        state_generation: 0,
+        trusted_time: 0,
+        rollback_detectable: true,
+    };
+
+    // Bind first so the invitation can carry the real endpoint URL.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let endpoint_url = format!("https://127.0.0.1:{}/bootstrap", addr.port());
+
+    let now = time::OffsetDateTime::now_utc();
+    let (invitation, pending) = Invitation::create(
+        endpoint_url,
+        inviter_tls.clone(),
+        "kid".to_owned(),
+        now.unix_timestamp(),
+        900,
+        5,
+    );
+    let verifier = pending.verifier();
+
+    // Inviter: seed the invitation into its store and serve.
+    let mut inviter_store = Store::open_in_memory(&Kek::from_bytes([1u8; 32]), cp).unwrap();
+    inviter_store.put_active(verifier, pending).unwrap();
+    let state = Arc::new(BootstrapState::new(
+        inviter_store,
+        bootstrap_material(&inviter_tls, "inviter", 55),
+    ));
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&inviter_key, &inviter_cert).unwrap(),
+    ));
+    let serve_state = state.clone();
+    tokio::spawn(async move {
+        let _ = serve(listener, acceptor, serve_state).await;
+    });
+
+    // Accepter: run the client end to end.
+    let mut accepter_store = Store::open_in_memory(&Kek::from_bytes([2u8; 32]), cp).unwrap();
+    let accepter_material = bootstrap_material(&accepter_tls, "accepter", 66);
+    let inviter_peer = accept_invitation(
+        &invitation,
+        &accepter_key,
+        &accepter_cert,
+        &accepter_material,
+        &mut accepter_store,
+        now,
+    )
+    .await
+    .expect("two-way pairing");
+
+    // The accepter verified and pinned the inviter.
+    assert_eq!(inviter_peer.agent_id, "inviter");
+    assert!(accepter_store.get_peer("inviter").unwrap().is_some());
+    // The inviter, while serving the bootstrap, pinned the accepter.
+    assert!(state
+        .ledger
+        .lock()
+        .unwrap()
+        .get_peer("accepter")
+        .unwrap()
+        .is_some());
 }

@@ -10,5 +10,6 @@
 //! configs and act on the [`ingress`] verdict.
 
 pub mod bootstrap;
+pub mod client;
 pub mod ingress;
 pub mod tls;

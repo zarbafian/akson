@@ -18,7 +18,7 @@ use crate::state_machine::{accept, verifier_of, Accepted, PairingStore};
 /// The inviter's own material, used to build its equivalently-signed response
 /// (design §8.2 step 6): the extended card + key bindings + proofs the accepter
 /// verifies and pins. Held by the daemon; `keys` are its purpose-bound secrets.
-pub struct InviterMaterial {
+pub struct BootstrapMaterial {
     /// The inviter's TLS certificate SHA-256 (hex), bound into the transcript.
     pub tls_sha256: String,
     pub subject_issuer: String,
@@ -58,7 +58,7 @@ pub struct BootstrapReply {
 #[allow(clippy::too_many_arguments)]
 pub fn handle_bootstrap(
     ledger: &mut impl PairingStore,
-    inviter: &InviterMaterial,
+    inviter: &BootstrapMaterial,
     accepter_tls_sha256: &str,
     bearer_secret: &str,
     key_binding_json: &Value,
@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    fn config() -> InviterMaterial {
+    fn config() -> BootstrapMaterial {
         let card_key = PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]);
         let mut card: AgentCard = serde_json::from_str(
             r#"{"name":"Inviter","description":"d","version":"1.0.0",
@@ -254,7 +254,7 @@ mod tests {
             KeyPurpose::AgentCard,
             PurposeKey::from_seed(KeyPurpose::AgentCard, &[20u8; 32]),
         );
-        InviterMaterial {
+        BootstrapMaterial {
             tls_sha256: INVITER_TLS.to_owned(),
             subject_issuer: "local".to_owned(),
             subject_agent: "inviter".to_owned(),
