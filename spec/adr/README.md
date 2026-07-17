@@ -38,7 +38,7 @@ Index:
 | [0003](0003-storage.md) | SQLite storage with application-layer encryption | accepted |
 | [0004](0004-signing.md) | Ed25519 purpose-separated signing keys | accepted |
 | [0005](0005-envelope-encryption.md) | Envelope encryption for sensitive columns | accepted |
-| 0006 | Sandbox launcher | open |
+| [0006](0006-sandbox-launcher.md) | Sandbox launcher — bubblewrap behind a trait seam | accepted |
 | [0007](0007-jws-agent-card.md) | Minimal EdDSA JWS for Agent Card signatures | accepted |
 | 0008 | DSSE/in-toto implementation | open |
 | [0009](0009-keystore-rollback.md) | Keystore abstraction and rollback checkpoint | accepted |

@@ -8,6 +8,8 @@
 //! present before any worker runs — a launch is refused, never downgraded, when
 //! isolation cannot be established.
 
+mod launcher;
 mod probe;
 
+pub use launcher::{BubblewrapLauncher, SandboxError, SandboxLauncher, SandboxSpec};
 pub use probe::{detect, ensure, required, Feature, IsolationFeatures, MissingFeatures};
