@@ -22,6 +22,7 @@
 //! assert_eq!(staged.manifest[0].path, "/inputs/diff");
 //! ```
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -89,7 +90,10 @@ fn is_safe_id(id: &str) -> bool {
 /// returning the manifest with in-sandbox paths under `sandbox_input_root`.
 ///
 /// Fails closed on an unsafe id (path traversal) or a duplicate id — the worker
-/// must receive exactly the approved set, unambiguously.
+/// must receive exactly the approved set, unambiguously. Every file is created
+/// with `O_CREAT|O_EXCL`, so staging never follows a symlink at the target and
+/// never overwrites a pre-existing file: a non-pristine staging directory is
+/// refused rather than written through.
 pub fn stage_inputs(
     items: &[StageItem],
     staging_dir: &Path,
@@ -106,7 +110,7 @@ pub fn stage_inputs(
         if manifest.iter().any(|s: &StagedInput| s.id == item.id) {
             return Err(StageError::DuplicateId(item.id.clone()));
         }
-        std::fs::write(staging_dir.join(&item.id), &item.content)?;
+        write_new(&staging_dir.join(&item.id), &item.content)?;
         manifest.push(StagedInput {
             id: item.id.clone(),
             path: format!("{root}/{}", item.id),
@@ -117,11 +121,22 @@ pub fn stage_inputs(
     }
 
     let json = serde_json::to_vec_pretty(&Manifest { inputs: &manifest })?;
-    std::fs::write(staging_dir.join("manifest.json"), json)?;
+    write_new(&staging_dir.join("manifest.json"), &json)?;
     Ok(StagedInputs {
         dir: staging_dir.to_path_buf(),
         manifest,
     })
+}
+
+/// Creates `path` with `O_CREAT|O_EXCL` and writes `content`. `create_new` refuses
+/// a pre-existing file and refuses to follow a symlink at the final component (the
+/// `O_EXCL` guarantee), so a poisoned staging directory fails closed.
+fn write_new(path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.write_all(content)
 }
 
 #[cfg(test)]
@@ -199,6 +214,27 @@ mod tests {
             stage_inputs(&dup, &dir, "/inputs"),
             Err(StageError::DuplicateId(_))
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_a_preexisting_target() {
+        let dir = std::env::temp_dir().join(format!("axon-stage-poison-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Poison the staging dir with a file at the id path (stands in for a symlink
+        // an attacker might plant): staging must refuse rather than write through.
+        std::fs::write(dir.join("diff"), b"pre-existing").unwrap();
+        let item = vec![StageItem {
+            id: "diff".to_owned(),
+            media_type: "text/plain".to_owned(),
+            content: b"new".to_vec(),
+        }];
+        assert!(matches!(
+            stage_inputs(&item, &dir, "/inputs"),
+            Err(StageError::Io(_))
+        ));
+        // The pre-existing content is untouched (not written through).
+        assert_eq!(std::fs::read(dir.join("diff")).unwrap(), b"pre-existing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
