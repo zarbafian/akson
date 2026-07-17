@@ -5,15 +5,22 @@ exchange, work-order flow, and (later) `codex ↔ claude`-style adapter runs —
 real sockets, real mTLS, and real on-disk state. The harness exercises the shipped
 crates end to end; it is **not** the daemon (that is M12).
 
-## On-demand validation (no CI service required)
+## Validation: local on demand + CI
 
-`./harness/run-checks.sh` runs the whole local validation suite on demand — format,
-clippy, unit + integration tests (including the seccomp and Landlock enforcement
-tests), the golden-vector cross-check, and the pairing interop scenario. The
-namespace-isolation checks are gated on **unprivileged user namespaces**; when a
-host restricts them (e.g. Ubuntu's `apparmor_restrict_unprivileged_userns`), the
-script skips that section and prints the exact one-run enable/restore commands.
-`FAST=1` skips clippy for a quicker loop.
+Two complementary paths:
+
+- **Local, on demand** — `./harness/run-checks.sh` runs the whole suite: format,
+  clippy, unit + integration tests (including the seccomp and Landlock enforcement
+  tests), the golden-vector cross-check, and the pairing interop scenario. The
+  namespace-isolation checks are gated on **unprivileged user namespaces**; when a
+  host restricts them (e.g. Ubuntu's `apparmor_restrict_unprivileged_userns`), the
+  script skips that section and prints the exact one-run enable/restore commands.
+  `FAST=1` skips clippy for a quicker loop.
+- **CI** (`.github/workflows/ci.yml`) — the `isolation` job runs on a GitHub
+  `ubuntu-latest` runner, which has passwordless sudo, so it **enables unprivileged
+  user namespaces itself** and runs the live namespace/mount checklist that a
+  restricted local host cannot. This is the home for validating the namespace path
+  on every push.
 
 **Open-source tools only.** Container scenarios use **Podman** (Apache-2.0,
 daemonless, rootless) as the reference runtime; the compose file and scripts are

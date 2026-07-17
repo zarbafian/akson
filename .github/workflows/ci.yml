@@ -49,3 +49,26 @@ jobs:
         run: pip install -r xcheck/requirements.txt
       - name: Cross-check golden vectors
         run: python xcheck/run.py spec/vectors
+
+  isolation:
+    name: sandbox isolation (permissive runner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      # The clean worker (§13.1) needs unprivileged user namespaces, which recent
+      # Ubuntu restricts via AppArmor. GitHub runners grant passwordless sudo, so
+      # enable it for this job (the local host cannot, hence CI validates it).
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user true && echo "user namespaces available"
+      - name: seccomp + Landlock enforcement
+        run: cargo test -p axon-sandbox --locked
+      - name: live namespace/mount checklist (#[ignore] tests)
+        run: cargo test -p axon-sandbox --locked -- --ignored
+      - name: interop — pairing over mTLS (two processes)
+        run: bash harness/interop/scenario-pairing.sh
