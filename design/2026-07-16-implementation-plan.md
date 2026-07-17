@@ -411,12 +411,20 @@ on this host userns is restricted so it correctly REFUSES); `SandboxSpec` +
 --unshare-all/no-network, --die-with-parent, --cap-drop ALL, --clearenv, private
 /proc+/dev, ro-bind digest-pinned runtime, tmpfs scratch/output, --seccomp fd,
 --chdir — unit-tested; `launch()` probes first, fails closed).
-**Remaining:** live §13.1-checklist validation (needs a permissive Linux env —
-userns unrestricted / setuid bwrap / root; can't run on the AppArmor-restricted
-host); seccomp BPF (`seccompiler`) + Landlock ruleset (`landlock` crate) authored
-in Rust, applied via bwrap/post-exec; worker protocol (input-manifest delivery,
-bounded progress/result, the CLOEXEC one-use descriptor across the exec boundary);
-`axon doctor` (surfaces the probe report; CLI is M12).
+**seccomp + Landlock done and VALIDATED unprivileged** (they need no user
+namespace, so enforcement is tested even on this restricted host): `SeccompPolicy`
+(default-deny allowlist compiled via `seccompiler` to a BPF program; `apply` sets
+`no_new_privs` + installs — a fork test proves a denied `socket()` is blocked);
+`LandlockPolicy` (read-only + read-write path confinement via `restrict_self`,
+best-effort per §13.1 — a fork test proves a write outside the granted set is
+denied, fully enforced here; CI-portable skip if the kernel lacks Landlock).
+`axon-sandbox` carries a documented crate-level `#![allow(unsafe_code)]` (it is
+the workspace OS-syscall boundary; every `unsafe` block has a `SAFETY:` note).
+**Remaining:** the namespace/mount/`pivot_root`/exec application (`nix`) — needs a
+permissive Linux env (userns unrestricted / GitHub CI); cgroup v2 limit writes;
+worker protocol (input-manifest delivery, bounded progress/result, the CLOEXEC
+one-use descriptor across the exec boundary); `axon doctor` (surfaces the probe
+report; CLI is M12).
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability.
