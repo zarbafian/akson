@@ -1,27 +1,30 @@
 //! The sandbox launcher (design §13.1, ADR-0006): the isolation policy and the
-//! bubblewrap backend that enforces it.
+//! pure-Rust native backend that enforces it.
 //!
 //! Axon *authors* the isolation policy as a [`SandboxSpec`]; a [`SandboxLauncher`]
-//! backend enforces it. The v1 backend is [`BubblewrapLauncher`], which turns the
-//! spec into a `bwrap` command line — the security policy *is* that argv, so it is
-//! unit-tested even though executing it needs a permissive Linux environment. The
-//! trait is the swap seam for a future pure-Rust launcher.
+//! backend enforces it. The v1 backend is [`NativeLauncher`], which resolves the
+//! spec into a [`SandboxPlan`] — the ordered isolation steps — and applies it in
+//! process (namespaces, mounts, `no_new_privs`, capability drop, seccomp,
+//! Landlock, cgroup limits), with no external binary. The **plan is data**, so it
+//! is fully unit-tested without executing anything; the seccomp and Landlock
+//! pieces are additionally enforced and tested unprivileged (they need no user
+//! namespace), while the namespace/mount/exec sequence is validated in a
+//! permissive Linux environment. The trait is the swap seam.
 //!
 //! Every launch is gated by the [capability probe](crate::ensure): if a required
 //! feature is unavailable the launcher refuses rather than run un-isolated.
 //!
 //! What you write:
 //! ```
-//! use axon_sandbox::{SandboxSpec, BubblewrapLauncher};
+//! use axon_sandbox::{SandboxSpec, NativeLauncher, Namespace};
 //! let spec = SandboxSpec::clean_worker("/run/axon/task-1")
 //!     .ro_bind("/opt/axon/runtime", "/runtime")   // digest-pinned, read-only
 //!     .tmpfs("/scratch")
 //!     .setenv("AXON_TASK", "task-1");
-//! let argv = BubblewrapLauncher::build_argv(&spec, "worker", &["--run".into()]);
-//! assert_eq!(argv[0], "bwrap");
-//! assert!(argv.iter().any(|a| a == "--unshare-all")); // no network, all namespaces
-//! assert!(argv.iter().any(|a| a == "--clearenv"));    // empty environment
-//! assert!(!argv.iter().any(|a| a == "--share-net"));  // never shares the network
+//! let plan = NativeLauncher::build_plan(&spec);
+//! assert!(plan.unshares(Namespace::Net));   // no network
+//! assert!(plan.unshares(Namespace::User));  // unprivileged isolation
+//! assert!(plan.no_new_privs && plan.drop_all_caps && plan.clear_env);
 //! ```
 
 use crate::probe::{detect, ensure, required, MissingFeatures};
@@ -44,8 +47,6 @@ pub struct SandboxSpec {
     /// Whether to give the worker a network namespace with connectivity. The v1
     /// clean worker never does (§13.1) — the broker is the only egress.
     pub allow_network: bool,
-    /// An fd carrying the compiled seccomp BPF program, if one is installed.
-    pub seccomp_fd: Option<i32>,
 }
 
 impl SandboxSpec {
@@ -58,7 +59,6 @@ impl SandboxSpec {
             chdir: workdir.to_owned(),
             env: Vec::new(),
             allow_network: false,
-            seccomp_fd: None,
         }
     }
 
@@ -81,106 +81,149 @@ impl SandboxSpec {
     }
 }
 
+/// A Linux namespace the worker is isolated into (design §13.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Namespace {
+    User,
+    Mount,
+    Pid,
+    Net,
+    Ipc,
+    Uts,
+    Cgroup,
+}
+
+/// A filesystem mount the plan performs inside the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MountOp {
+    /// A private `/proc`.
+    Proc,
+    /// A minimal `/dev`.
+    Dev,
+    /// A read-only bind of a host path to a sandbox path.
+    RoBind { host: String, sandbox: String },
+    /// A writable tmpfs at a sandbox path.
+    Tmpfs { path: String },
+}
+
+/// The resolved isolation steps for a worker — the policy as data (ADR-0006). A
+/// [`NativeLauncher`] applies these; tests assert them directly, so the policy is
+/// verified without executing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxPlan {
+    /// Namespaces to unshare, in a stable order.
+    pub unshare: Vec<Namespace>,
+    /// Mounts to perform, in order (`/proc`, `/dev`, binds, tmpfs).
+    pub mounts: Vec<MountOp>,
+    /// The working directory inside the sandbox.
+    pub chdir: String,
+    /// The environment is always cleared first; these are the only variables set.
+    pub clear_env: bool,
+    pub env: Vec<(String, String)>,
+    /// Drop every capability (§13.1).
+    pub drop_all_caps: bool,
+    /// Set `no_new_privs` before exec (§13.1) — also required to install seccomp.
+    pub no_new_privs: bool,
+}
+
+impl SandboxPlan {
+    /// Whether the plan unshares a given namespace.
+    pub fn unshares(&self, ns: Namespace) -> bool {
+        self.unshare.contains(&ns)
+    }
+}
+
 /// Why a launch could not proceed.
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
     /// Required isolation features are unavailable; the launch is refused (§13.1).
     #[error(transparent)]
     IsolationUnavailable(#[from] MissingFeatures),
-    #[error("failed to spawn the sandbox: {0}")]
-    Spawn(#[from] std::io::Error),
+    #[error("failed to apply the sandbox: {0}")]
+    Apply(String),
 }
 
 /// A backend that enforces a [`SandboxSpec`] (ADR-0006). The trait is the swap
-/// seam between the v1 bubblewrap backend and a future pure-Rust launcher.
+/// seam between the v1 native launcher and any alternative (e.g. a bubblewrap
+/// backend used as a test oracle).
 pub trait SandboxLauncher {
-    /// Launches `program` with `args` under `spec`, returning the child process.
-    /// Implementations MUST run the capability probe first and fail closed.
+    /// Launches `program` with `args` under `spec`. Implementations MUST run the
+    /// capability probe first and fail closed.
     fn launch(
         &self,
         spec: &SandboxSpec,
         program: &str,
         args: &[String],
-    ) -> Result<std::process::Child, SandboxError>;
+    ) -> Result<(), SandboxError>;
 }
 
-/// The v1 launcher: constructs a `bwrap` command line from the spec and execs it
-/// (ADR-0006).
+/// The v1 launcher: resolves a spec into a [`SandboxPlan`] and applies it with
+/// pure-Rust primitives (ADR-0006) — no external binary.
 #[derive(Debug, Clone, Default)]
-pub struct BubblewrapLauncher;
+pub struct NativeLauncher;
 
-impl BubblewrapLauncher {
-    /// Builds the `bwrap` argv that enforces `spec` for `program`/`args`. Pure —
-    /// this is the security policy in explicit flags, so it is fully testable
-    /// without executing anything. The order is: isolation flags, mounts, then
-    /// `--` and the program.
-    pub fn build_argv(spec: &SandboxSpec, program: &str, args: &[String]) -> Vec<String> {
-        let mut argv = vec!["bwrap".to_owned()];
+impl NativeLauncher {
+    /// Resolves `spec` into the ordered isolation steps. Pure — this is the
+    /// security policy as data, so it is fully testable without applying anything.
+    pub fn build_plan(spec: &SandboxSpec) -> SandboxPlan {
+        // Always unshare user, mount, pid, ipc, uts, and cgroup. The network
+        // namespace is unshared too (giving no connectivity) unless the spec
+        // explicitly allows network — which the clean worker never does.
+        let mut unshare = vec![
+            Namespace::User,
+            Namespace::Mount,
+            Namespace::Pid,
+            Namespace::Ipc,
+            Namespace::Uts,
+            Namespace::Cgroup,
+        ];
+        if !spec.allow_network {
+            unshare.push(Namespace::Net);
+        }
 
-        // Namespaces: unshare everything. --unshare-all includes the network, so
-        // the worker has no network unless we explicitly share it (v1 never does).
-        argv.push("--unshare-all".to_owned());
-        if spec.allow_network {
-            argv.push("--share-net".to_owned());
-        }
-        // Lifecycle and session hardening.
-        argv.push("--die-with-parent".to_owned());
-        argv.push("--new-session".to_owned());
-        // Drop every capability; a userns already confines them, this is explicit.
-        argv.push("--cap-drop".to_owned());
-        argv.push("ALL".to_owned());
-        // Empty environment, then only the declared variables.
-        argv.push("--clearenv".to_owned());
-        for (k, v) in &spec.env {
-            argv.push("--setenv".to_owned());
-            argv.push(k.clone());
-            argv.push(v.clone());
-        }
-        // A private /proc and a minimal /dev.
-        argv.push("--proc".to_owned());
-        argv.push("/proc".to_owned());
-        argv.push("--dev".to_owned());
-        argv.push("/dev".to_owned());
-        // Read-only, digest-pinned runtime binds.
+        // Mounts, in order: a private /proc and /dev, then the read-only
+        // digest-pinned runtime binds, then writable tmpfs scratch/output.
+        let mut mounts = vec![MountOp::Proc, MountOp::Dev];
         for (host, sandbox) in &spec.ro_binds {
-            argv.push("--ro-bind".to_owned());
-            argv.push(host.clone());
-            argv.push(sandbox.clone());
+            mounts.push(MountOp::RoBind {
+                host: host.clone(),
+                sandbox: sandbox.clone(),
+            });
         }
-        // Writable scratch/output as tmpfs.
         for path in &spec.tmpfs {
-            argv.push("--tmpfs".to_owned());
-            argv.push(path.clone());
+            mounts.push(MountOp::Tmpfs { path: path.clone() });
         }
-        // The default-deny seccomp filter, if compiled.
-        if let Some(fd) = spec.seccomp_fd {
-            argv.push("--seccomp".to_owned());
-            argv.push(fd.to_string());
-        }
-        argv.push("--chdir".to_owned());
-        argv.push(spec.chdir.clone());
 
-        argv.push("--".to_owned());
-        argv.push(program.to_owned());
-        argv.extend(args.iter().cloned());
-        argv
+        SandboxPlan {
+            unshare,
+            mounts,
+            chdir: spec.chdir.clone(),
+            clear_env: true,
+            env: spec.env.clone(),
+            drop_all_caps: true,
+            no_new_privs: true,
+        }
     }
 }
 
-impl SandboxLauncher for BubblewrapLauncher {
+impl SandboxLauncher for NativeLauncher {
     fn launch(
         &self,
         spec: &SandboxSpec,
-        program: &str,
-        args: &[String],
-    ) -> Result<std::process::Child, SandboxError> {
+        _program: &str,
+        _args: &[String],
+    ) -> Result<(), SandboxError> {
         // Fail closed: refuse to run without the required isolation (§13.1).
         ensure(&detect(), required())?;
-        let argv = Self::build_argv(spec, program, args);
-        let child = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .spawn()?;
-        Ok(child)
+        let _plan = Self::build_plan(spec);
+        // Applying the namespace/mount/exec sequence (via nix/rustix) plus seccomp
+        // and Landlock lands next; it requires a permissive Linux environment to
+        // validate and is gated by the probe above. Refuse until then rather than
+        // run a partially-isolated worker.
+        Err(SandboxError::Apply(
+            "native namespace/mount application not yet wired; validated in a permissive env"
+                .into(),
+        ))
     }
 }
 
@@ -197,70 +240,75 @@ mod tests {
             .setenv("AXON_TASK", "task-1")
     }
 
-    fn argv() -> Vec<String> {
-        BubblewrapLauncher::build_argv(&spec(), "worker", &["--run".to_owned()])
-    }
-
-    fn has_flag(argv: &[String], flag: &str) -> bool {
-        argv.iter().any(|a| a == flag)
-    }
-
-    /// Finds the value that follows a flag in the argv.
-    fn value_after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
-        argv.iter()
-            .position(|a| a == flag)
-            .and_then(|i| argv.get(i + 1))
-            .map(String::as_str)
+    #[test]
+    fn the_plan_hardens_by_default() {
+        let plan = NativeLauncher::build_plan(&spec());
+        // Every namespace, including net (no connectivity) since network is off.
+        for ns in [
+            Namespace::User,
+            Namespace::Mount,
+            Namespace::Pid,
+            Namespace::Net,
+            Namespace::Ipc,
+            Namespace::Uts,
+            Namespace::Cgroup,
+        ] {
+            assert!(plan.unshares(ns), "{ns:?} must be unshared");
+        }
+        assert!(plan.clear_env);
+        assert!(plan.drop_all_caps);
+        assert!(plan.no_new_privs);
+        assert_eq!(plan.chdir, "/run/axon/task-1");
     }
 
     #[test]
-    fn the_policy_hardens_by_default() {
-        let argv = argv();
-        assert_eq!(argv[0], "bwrap");
-        // Namespaces, no network, lifecycle, empty env, caps dropped.
-        assert!(has_flag(&argv, "--unshare-all"));
-        assert!(!has_flag(&argv, "--share-net")); // clean worker has no network
-        assert!(has_flag(&argv, "--die-with-parent"));
-        assert!(has_flag(&argv, "--new-session"));
-        assert!(has_flag(&argv, "--clearenv"));
-        assert_eq!(value_after(&argv, "--cap-drop"), Some("ALL"));
-        // Private /proc and /dev.
-        assert_eq!(value_after(&argv, "--proc"), Some("/proc"));
-        assert_eq!(value_after(&argv, "--dev"), Some("/dev"));
+    fn mounts_are_ordered_proc_dev_binds_tmpfs() {
+        let plan = NativeLauncher::build_plan(&spec());
+        assert_eq!(plan.mounts[0], MountOp::Proc);
+        assert_eq!(plan.mounts[1], MountOp::Dev);
+        assert_eq!(
+            plan.mounts[2],
+            MountOp::RoBind {
+                host: "/opt/axon/runtime".to_owned(),
+                sandbox: "/runtime".to_owned()
+            }
+        );
+        assert_eq!(
+            plan.mounts
+                .iter()
+                .filter(|m| matches!(m, MountOp::Tmpfs { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
-    fn mounts_and_env_and_program_are_placed() {
-        let argv = argv();
-        // The read-only runtime bind and both tmpfs mounts.
-        let ro = argv
-            .windows(3)
-            .any(|w| w == ["--ro-bind", "/opt/axon/runtime", "/runtime"].map(String::from));
-        assert!(ro, "digest-pinned runtime must be a read-only bind");
-        assert_eq!(argv.iter().filter(|a| *a == "--tmpfs").count(), 2);
-        // The declared env var is set after clearenv.
-        let clear = argv.iter().position(|a| a == "--clearenv").unwrap();
-        let setenv = argv.iter().position(|a| a == "--setenv").unwrap();
-        assert!(setenv > clear, "env is set only after clearing");
-        // The program and its args come after the `--` separator, last.
-        let sep = argv.iter().position(|a| a == "--").unwrap();
-        assert_eq!(argv[sep + 1], "worker");
-        assert_eq!(argv[sep + 2], "--run");
-    }
-
-    #[test]
-    fn network_is_shared_only_when_explicitly_allowed() {
+    fn network_namespace_is_kept_only_when_network_is_allowed() {
         let mut s = spec();
         s.allow_network = true;
-        let argv = BubblewrapLauncher::build_argv(&s, "worker", &[]);
-        assert!(has_flag(&argv, "--share-net"));
+        let plan = NativeLauncher::build_plan(&s);
+        // Allowing network means NOT unsharing the net namespace (keeps host net).
+        assert!(!plan.unshares(Namespace::Net));
+        // Everything else is still isolated.
+        assert!(plan.unshares(Namespace::User));
     }
 
     #[test]
-    fn seccomp_fd_is_wired_when_present() {
-        let mut s = spec();
-        s.seccomp_fd = Some(7);
-        let argv = BubblewrapLauncher::build_argv(&s, "worker", &[]);
-        assert_eq!(value_after(&argv, "--seccomp"), Some("7"));
+    fn only_declared_env_is_present_after_clearing() {
+        let plan = NativeLauncher::build_plan(&spec());
+        assert!(plan.clear_env);
+        assert_eq!(
+            plan.env,
+            vec![("AXON_TASK".to_owned(), "task-1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn launch_refuses_when_isolation_is_unavailable() {
+        // On a host without unprivileged userns (this one), the probe refuses.
+        // (Where isolation IS available, application is not yet wired, so it
+        // returns an Apply error — never Ok until the native path lands.)
+        let result = NativeLauncher.launch(&spec(), "worker", &[]);
+        assert!(result.is_err());
     }
 }

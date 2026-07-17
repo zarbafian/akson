@@ -11,5 +11,7 @@
 mod launcher;
 mod probe;
 
-pub use launcher::{BubblewrapLauncher, SandboxError, SandboxLauncher, SandboxSpec};
+pub use launcher::{
+    MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher, SandboxPlan, SandboxSpec,
+};
 pub use probe::{detect, ensure, required, Feature, IsolationFeatures, MissingFeatures};
