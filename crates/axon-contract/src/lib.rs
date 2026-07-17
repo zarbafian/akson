@@ -14,6 +14,7 @@
 
 mod chain;
 mod contract;
+mod decision;
 mod manifest;
 
 pub use chain::{
@@ -23,5 +24,8 @@ pub use contract::{
     parse_payload, CanonicalRule, Capability, Contract, ContractError, Deliverable, Disclosure,
     EvidenceSlot, Identity, InputEntry, Limits, ParsedContract, PartKind, ProcessorConstraints,
     ResultRecipient, RetentionRequest, TrustClass,
+};
+pub use decision::{
+    check_binds_to, sign_decision, verify_decision, Decision, DecisionError, DecisionKind,
 };
 pub use manifest::{bind_inputs, BindError, InputPart, PartBody};

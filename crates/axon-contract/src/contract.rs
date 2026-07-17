@@ -41,11 +41,12 @@
 
 use axon_ext::schema::{self, SchemaId};
 use axon_ext::{ijson, jcs};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// An issuer-qualified identity (design §8.1): the pair that names a party.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `Serialize` too, so a decision can embed the same identity shape it verifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub issuer: String,
     pub agent: String,
