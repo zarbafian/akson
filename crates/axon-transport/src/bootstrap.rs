@@ -4,9 +4,13 @@
 //! extracts the accepter's certificate fingerprint from the completed
 //! handshake, and hands the request to `axon_pairing::http::handle_http`.
 //!
-//! The endpoint is meant to run only while an invitation is live and behind an
-//! aggressive rate limit (design §8.2); that gating is the daemon's to apply
-//! around [`serve`].
+//! The endpoint runs only while a pairing is in progress and behind an
+//! aggressive rate limit (design §8.2). The enable-only-when-pairing gate lives
+//! in `axon_pairing::http::handle_http` (a global ledger check: no live
+//! invitation and no retriable consumed record ⇒ 404, as if unmounted), so it
+//! holds for every caller of the pure logic. The rate limit is applied here
+//! around [`serve`]; a daemon may further choose not to bind the port at all
+//! when idle.
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};

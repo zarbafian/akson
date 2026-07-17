@@ -86,6 +86,13 @@ pub trait PairingLedger {
     /// Whether a live invitation exists for this verifier — a cheap pre-check
     /// so an unknown secret is rejected before any signature verification.
     fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError>;
+    /// Whether *any* pairing is currently in progress: a live (unexpired)
+    /// invitation exists, or a consumed record is still within its retry window
+    /// (`now < expires_at`). The bootstrap endpoint answers only while this is
+    /// true; otherwise it behaves as if unmounted (design §8.2: the endpoint
+    /// runs only while a pairing is live). This is a global gate, not keyed on a
+    /// secret, so it is checked before any secret is even parsed.
+    fn any_pairing_open(&self, now: i64) -> Result<bool, LedgerError>;
     /// Removes and returns the live invitation for a verifier, if present.
     fn take_active(
         &mut self,
@@ -217,6 +224,12 @@ impl PairingLedger for MemoryLedger {
 
     fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError> {
         Ok(self.active.contains_key(verifier))
+    }
+
+    fn any_pairing_open(&self, now: i64) -> Result<bool, LedgerError> {
+        let live = self.active.values().any(|inv| inv.not_after > now);
+        let retriable = self.consumed.values().any(|c| c.expires_at > now);
+        Ok(live || retriable)
     }
 
     fn take_active(

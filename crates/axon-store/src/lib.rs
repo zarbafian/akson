@@ -527,6 +527,22 @@ impl PairingLedger for Store {
         Ok(count > 0)
     }
 
+    fn any_pairing_open(&self, now: i64) -> Result<bool, LedgerError> {
+        // A live invitation (not yet expired) or a still-retriable consumed
+        // record keeps the endpoint enabled; expired rows do not (they are GC'd
+        // by `purge_expired_pairing`).
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM invitations   WHERE not_after  > ?1)
+                      + (SELECT COUNT(*) FROM pending_pairs WHERE expires_at > ?1)",
+                [now],
+                |r| r.get(0),
+            )
+            .map_err(ledger_err)?;
+        Ok(count > 0)
+    }
+
     fn take_active(
         &mut self,
         verifier: &[u8; 32],

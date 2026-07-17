@@ -57,6 +57,16 @@ pub fn handle_http(
     now_unix: i64,
     now: OffsetDateTime,
 ) -> HttpResponse {
+    // Enable-only-when-pairing (§8.2): with no live invitation and no retriable
+    // consumed record, the bootstrap endpoint behaves as if unmounted (404). The
+    // surface is inert whenever no pairing is in progress, rather than an
+    // always-open port. This 404-vs-401 does reveal *that* a pairing is ongoing,
+    // which is immaterial against a 256-bit, rate-limited, attempt-capped secret.
+    match ledger.any_pairing_open(now_unix) {
+        Ok(true) => {}
+        Ok(false) => return HttpResponse::status_only(404),
+        Err(_) => return HttpResponse::status_only(500),
+    }
     if method != "POST" {
         return HttpResponse::status_only(405);
     }
@@ -228,7 +238,10 @@ mod tests {
 
     #[test]
     fn non_post_is_405() {
+        // With a pairing enabled (invitation seeded), the method check applies:
+        // a non-POST is 405 rather than the unmounted 404.
         let mut ledger = MemoryLedger::new();
+        seed(&mut ledger);
         let r = handle_http(
             &mut ledger,
             &config(),
@@ -270,6 +283,47 @@ mod tests {
         assert_eq!(
             post(&mut ledger, Some(&auth), Some(ACCEPTER_TLS), b"not json").status,
             400
+        );
+    }
+
+    #[test]
+    fn disabled_endpoint_is_404() {
+        // No invitation seeded → no pairing in progress → the endpoint is inert
+        // for every request, regardless of a valid-looking bearer or cert.
+        let mut ledger = MemoryLedger::new();
+        let bearer = format!("Bearer {}", URL_SAFE_NO_PAD.encode([1u8; 32]));
+        assert_eq!(
+            post(&mut ledger, Some(&bearer), Some(ACCEPTER_TLS), b"{}").status,
+            404
+        );
+        // Even a non-POST is 404 (unmounted) rather than 405.
+        let r = handle_http(
+            &mut ledger,
+            &config(),
+            "GET",
+            Some(&bearer),
+            Some(ACCEPTER_TLS),
+            b"{}",
+            1_100,
+            now_dt(),
+        );
+        assert_eq!(r.status, 404);
+    }
+
+    #[test]
+    fn endpoint_reopens_for_a_retry_after_consume() {
+        // After a successful pairing consumes the invitation, the endpoint stays
+        // enabled within the retry window so an exact retry still replays.
+        let mut ledger = MemoryLedger::new();
+        let (auth, body) = seed(&mut ledger);
+        assert_eq!(
+            post(&mut ledger, Some(&auth), Some(ACCEPTER_TLS), &body).status,
+            200
+        );
+        // The invitation is now consumed, but the retry window keeps it open.
+        assert_eq!(
+            post(&mut ledger, Some(&auth), Some(ACCEPTER_TLS), &body).status,
+            200
         );
     }
 
