@@ -34,6 +34,11 @@ use std::path::Path;
 use axon_crypto::identity::PeerIdentity;
 use axon_pairing::invitation::PendingInvitation;
 use axon_pairing::state_machine::{Consumed, LedgerError, PairingLedger, PairingStore};
+
+/// The single peer-status type (design §8.2 step 7, §8.4). Persisted in the
+/// queryable `peers.status` column (not sealed), so an idle-time gate need not
+/// unseal the record; re-exported from `axon-pairing` where the lifecycle lives.
+pub use axon_pairing::lifecycle::PeerStatus;
 use delivery::CoveredValues;
 use envelope::{DataKey, Kek, SealError};
 use rand::RngCore;
@@ -128,33 +133,6 @@ pub struct StoredPeer {
     pub identity: PeerIdentity,
     /// Operator-private annotation; sensitive, sealed.
     pub local_note: String,
-}
-
-/// A pinned peer's lifecycle state (design §8.2 step 7). A freshly paired peer
-/// is [`Pending`](PeerStatus::Pending) until the operator confirms it; only an
-/// [`Active`](PeerStatus::Active) peer may exchange work. Stored as a queryable
-/// column (not sealed), so an idle-time gate need not unseal the record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerStatus {
-    Pending,
-    Active,
-}
-
-impl PeerStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            PeerStatus::Pending => "pending",
-            PeerStatus::Active => "active",
-        }
-    }
-
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "pending" => Some(PeerStatus::Pending),
-            "active" => Some(PeerStatus::Active),
-            _ => None,
-        }
-    }
 }
 
 /// The verdict of an idempotent receive (design §9.2).
@@ -342,7 +320,7 @@ impl Store {
                 id.agent_card_key.value,
                 sealed,
                 self.state_generation()? as i64,
-                status_on_insert.as_str(),
+                status_on_insert.as_column(),
             ],
         )?;
         Ok(())
@@ -360,7 +338,7 @@ impl Store {
             )
             .optional()?;
         match s {
-            Some(text) => PeerStatus::from_str(&text)
+            Some(text) => PeerStatus::from_column(&text)
                 .map(Some)
                 .ok_or_else(|| StoreError::Corrupt(format!("unknown peer status {text:?}"))),
             None => Ok(None),
