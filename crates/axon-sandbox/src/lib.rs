@@ -15,6 +15,7 @@
 //! present before any worker runs — a launch is refused, never downgraded, when
 //! isolation cannot be established.
 
+mod cgroup;
 mod landlock;
 mod launcher;
 mod mount;
@@ -22,6 +23,7 @@ mod namespace;
 mod probe;
 mod seccomp;
 
+pub use cgroup::{CgroupError, CgroupLimits, CgroupScope};
 pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
     BubblewrapLauncher, MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher,
