@@ -394,8 +394,13 @@ fails closed; worker protocol (input manifest in, bounded progress/result
 out) over the work-order descriptor (CLOEXEC, one-use); output gate: size,
 media-type, recipient, schema checks (§7.2 step 10).
 **Backend decided + backend-independent pieces done** (all unit-tested):
-**ADR-0006 accepted** — bubblewrap behind a `SandboxLauncher` trait seam (reviewed
-sandbox for v1, pure-Rust backend swappable later). `axon-worker::gate_outputs`
+**ADR-0006 accepted** — a pure-Rust native launcher behind a `SandboxLauncher`
+trait seam (bwrap weighed and rejected as a runtime dependency, kept as a possible
+test oracle; native keeps the daemon self-contained and lets seccomp+Landlock be
+validated unprivileged). `NativeLauncher::build_plan` resolves a `SandboxSpec`
+into a `SandboxPlan` (unshare set incl. net when network is off, ordered mounts,
+clear-env + declared env, drop-all-caps, no_new_privs) — the policy as data,
+unit-tested; `launch()` probes first and fails closed. `axon-worker::gate_outputs`
 (the output gate — every result held to the granted §12.1 scope: channel grant,
 recipient, artifact media type, byte budget, response/artifact count; rejection
 carries the offending index). `axon-sandbox`: fail-closed capability probe
