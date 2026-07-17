@@ -149,13 +149,20 @@ pub enum SandboxError {
 /// seam between the v1 native launcher and any alternative (e.g. a bubblewrap
 /// backend used as a test oracle).
 pub trait SandboxLauncher {
-    /// Launches `program` with `args` under `spec`. Implementations MUST run the
-    /// capability probe first and fail closed.
+    /// Launches `program` with `args` under `spec`, with the default-deny `seccomp`
+    /// filter installed (design §13.1). Implementations MUST run the capability
+    /// probe first and fail closed.
+    ///
+    /// The `seccomp` argument is mandatory by construction: there is deliberately no
+    /// un-filtered launch on this seam, so a worker without the reviewed default-deny
+    /// profile is unrepresentable (§13.1). Resource bounding is layered on top by
+    /// [`BubblewrapLauncher::launch_confined`] at daemon integration.
     fn launch(
         &self,
         spec: &SandboxSpec,
         program: &str,
         args: &[String],
+        seccomp: &crate::seccomp::SeccompPolicy,
     ) -> Result<(), SandboxError>;
 }
 
@@ -222,6 +229,7 @@ impl SandboxLauncher for NativeLauncher {
         spec: &SandboxSpec,
         _program: &str,
         _args: &[String],
+        _seccomp: &crate::seccomp::SeccompPolicy,
     ) -> Result<(), SandboxError> {
         // Fail closed: refuse to run without the required isolation (§13.1).
         ensure(&detect(), required())?;
@@ -413,21 +421,11 @@ impl SandboxLauncher for BubblewrapLauncher {
         spec: &SandboxSpec,
         program: &str,
         args: &[String],
+        seccomp: &crate::seccomp::SeccompPolicy,
     ) -> Result<(), SandboxError> {
-        // Fail closed: refuse to run without the required isolation (§13.1).
-        ensure(&detect(), required())?;
-        // (Seccomp-fd + the CLOEXEC fd-allowlist sweep are wired at daemon
-        // integration; passing None here runs bubblewrap's own default profile.)
-        let argv = Self::build_argv(spec, program, args, None);
-        let status = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()
-            .map_err(|e| SandboxError::Apply(format!("spawning bwrap: {e}")))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(SandboxError::Apply(format!("worker exited: {status}")))
-        }
+        // The seam always installs the default-deny filter (§13.1) — the
+        // fail-closed probe runs inside launch_seccomp.
+        self.launch_seccomp(spec, program, args, seccomp)
     }
 }
 
@@ -511,7 +509,12 @@ mod tests {
     fn native_launch_never_succeeds_yet() {
         // The experimental native launcher never returns Ok: without userns the
         // probe refuses; with userns the namespace/mount application is not wired.
-        assert!(NativeLauncher.launch(&spec(), "worker", &[]).is_err());
+        let seccomp = crate::seccomp::SeccompPolicy::clean_worker_baseline(
+            crate::seccomp::DenyAction::KillProcess,
+        );
+        assert!(NativeLauncher
+            .launch(&spec(), "worker", &[], &seccomp)
+            .is_err());
     }
 
     // --- BubblewrapLauncher (v1 default, ADR-0006) ---
@@ -573,8 +576,15 @@ mod tests {
             "[ \"$AXON_TASK\" = task-1 ] || exit 22\n",  // our setenv present
             ": > /scratch/ok || exit 23\n",              // scratch writable
         );
-        let result =
-            BubblewrapLauncher.launch(&spec, "/bin/sh", &["-c".to_owned(), script.to_owned()]);
+        let seccomp = crate::seccomp::SeccompPolicy::clean_worker_baseline(
+            crate::seccomp::DenyAction::KillProcess,
+        );
+        let result = BubblewrapLauncher.launch(
+            &spec,
+            "/bin/sh",
+            &["-c".to_owned(), script.to_owned()],
+            &seccomp,
+        );
         std::env::remove_var("AXON_HOST_SECRET");
         // Exit 20 = /etc reachable, 21 = env leaked, 22 = setenv missing, 23 = scratch RO.
         assert!(
