@@ -411,20 +411,29 @@ on this host userns is restricted so it correctly REFUSES); `SandboxSpec` +
 --unshare-all/no-network, --die-with-parent, --cap-drop ALL, --clearenv, private
 /proc+/dev, ro-bind digest-pinned runtime, tmpfs scratch/output, --seccomp fd,
 --chdir — unit-tested; `launch()` probes first, fails closed).
-**seccomp + Landlock done and VALIDATED unprivileged** (they need no user
-namespace, so enforcement is tested even on this restricted host): `SeccompPolicy`
-(default-deny allowlist compiled via `seccompiler` to a BPF program; `apply` sets
-`no_new_privs` + installs — a fork test proves a denied `socket()` is blocked);
-`LandlockPolicy` (read-only + read-write path confinement via `restrict_self`,
-best-effort per §13.1 — a fork test proves a write outside the granted set is
-denied, fully enforced here; CI-portable skip if the kernel lacks Landlock).
-`axon-sandbox` carries a documented crate-level `#![allow(unsafe_code)]` (it is
-the workspace OS-syscall boundary; every `unsafe` block has a `SAFETY:` note).
-**Remaining:** the namespace/mount/`pivot_root`/exec application (`nix`) — needs a
-permissive Linux env (userns unrestricted / GitHub CI); cgroup v2 limit writes;
-worker protocol (input-manifest delivery, bounded progress/result, the CLOEXEC
-one-use descriptor across the exec boundary); `axon doctor` (surfaces the probe
-report; CLI is M12).
+**Four isolation pillars implemented and VALIDATED** (locally, with userns enabled
+for the session, and by CI's `isolation` job on push):
+- **seccomp** — `SeccompPolicy` default-deny allowlist compiled via `seccompiler`;
+  `apply` sets `no_new_privs` + installs; a fork test proves a denied `socket()` is
+  blocked (needs no userns).
+- **Landlock** — `LandlockPolicy` read-only/read-write path confinement via
+  `restrict_self`, best-effort per §13.1; a fork test proves a write outside the
+  granted set is denied (needs no userns; CI-portable skip if unavailable).
+- **Namespaces** — `enter_namespaces` unshares the set and maps uid/gid to root in
+  the user namespace; a fork test proves mapped-root and no external network.
+- **Mount/`pivot_root`** — `setup_root` builds a tmpfs root with read-only runtime
+  binds (locked-flag-preserving remount) + tmpfs scratch, `pivot_root`s in, detaches
+  the old root; a fork test proves ro-bind read-but-not-write, writable scratch, and
+  the host filesystem gone. Plus the `NativeLauncher`/`SandboxPlan` policy and the
+  fail-closed probe. `axon-sandbox` carries a documented crate-level
+  `#![allow(unsafe_code)]` (it is the workspace OS-syscall boundary; every `unsafe`
+  block has a `SAFETY:` note).
+**Remaining (integration + last pieces):** the PID namespace + private `/proc`
+(double-fork so the worker is PID 1) and the full `launch()` composition that
+forks → enters namespaces → `setup_root` → drops caps → seccomp → Landlock →
+`clearenv`+`setenv` → `execve`, plus a §13.1-checklist exec test; cgroup v2 limit
+writes; worker protocol (input-manifest delivery, bounded progress/result, the
+CLOEXEC one-use descriptor across the exec boundary); `axon doctor` (CLI is M12).
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability.
