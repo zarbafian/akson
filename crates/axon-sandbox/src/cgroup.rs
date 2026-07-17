@@ -118,7 +118,7 @@ fn leaked(file: &str) -> &'static str {
 /// Finds a writable cgroup v2 directory that has the memory and pids controllers
 /// enabled for its children — the daemon's delegated subtree — by walking up from
 /// the current process's cgroup.
-fn find_delegated_parent() -> Option<PathBuf> {
+pub(crate) fn find_delegated_parent() -> Option<PathBuf> {
     let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
     // The unified (v2) entry is the `0::<path>` line.
     let rel = cgroup

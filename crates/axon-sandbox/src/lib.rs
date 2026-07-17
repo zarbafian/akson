@@ -16,6 +16,7 @@
 //! isolation cannot be established.
 
 mod cgroup;
+mod diagnostics;
 mod landlock;
 mod launcher;
 mod mount;
@@ -24,6 +25,7 @@ mod probe;
 mod seccomp;
 
 pub use cgroup::{CgroupError, CgroupLimits, CgroupScope};
+pub use diagnostics::{all_required_available, diagnose, Diagnostic};
 pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
     BubblewrapLauncher, MountOp, Namespace, NativeLauncher, SandboxError, SandboxLauncher,
