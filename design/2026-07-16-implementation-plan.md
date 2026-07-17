@@ -433,18 +433,21 @@ for the session, and by CI's `isolation` job on push):
   fail-closed probe. `axon-sandbox` carries a documented crate-level
   `#![allow(unsafe_code)]` (it is the workspace OS-syscall boundary; every `unsafe`
   block has a `SAFETY:` note).
-**`BubblewrapLauncher::launch()` validated end-to-end** (bwrap 0.11.1 + userns): a
-real worker runs under bwrap and a live test confirms the §13.1 properties from
-inside — host `/etc` gone, environment cleared (only `--setenv` survives), scratch
-tmpfs writable. So the clean-worker launch works via the reviewed backend.
-**Remaining:** seccomp-fd wiring (compile `SeccompPolicy` → BPF → memfd →
-`--seccomp <fd>`) + the CLOEXEC inherited-fd allowlist at daemon integration;
-Landlock applied at the worker entrypoint; cgroup v2 limit writes (a delegated
-subtree is available); worker protocol (input-manifest delivery, bounded
-progress/result, the one-use descriptor); `axon doctor` (CLI is M12). The
-experimental `NativeLauncher` (validated user+net entry + `pivot_root` fs
-isolation) awaits independent review + the review's structural fixes before it
-could ever be the default.
+**Clean-worker launch FUNCTIONALLY COMPLETE via the reviewed backend, validated
+end-to-end** (bwrap 0.11.1 + userns + delegated cgroup): `launch_confined` composes
+probe → bubblewrap namespace/mount/`pivot_root`/exec isolation → the seccomp filter
+(compiled to a memfd, handed via `--seccomp`; inherited-fd allowlist satisfied by
+`std`'s CLOEXEC default) → cgroup v2 confinement (a leaf cgroup under the delegated
+subtree with memory/pids/cpu limits; the worker moved in via a no-alloc `pre_exec`)
+→ the output gate. Live tests confirm each layer from inside a real worker: host
+`/etc` gone + env cleared + scratch writable; `Seccomp: 2`; a 64 MiB/16-pid cgroup
+enforced. `diagnose()` backs `axon doctor` (every capability + fail-closed gate).
+**Remaining:** Landlock applied at the worker entrypoint; the worker protocol
+(input-manifest delivery into the sandbox, bounded progress/result, the one-use
+descriptor); `axon doctor` CLI rendering (M12); daemon-integration polish
+(clone3 `CLONE_INTO_CGROUP` for race-free placement). The experimental
+`NativeLauncher` (validated user+net entry + `pivot_root` fs isolation) awaits
+independent review + the review's structural fixes before it could ever be default.
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability.
