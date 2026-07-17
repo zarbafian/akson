@@ -29,6 +29,9 @@
 //! assert!(plan.no_new_privs && plan.drop_all_caps && plan.clear_env);
 //! ```
 
+use std::path::PathBuf;
+
+use crate::landlock::LandlockPolicy;
 use crate::probe::{detect, ensure, required, MissingFeatures};
 
 /// The isolation policy for one worker (design §13.1). Axon builds this; a
@@ -80,6 +83,27 @@ impl SandboxSpec {
     pub fn setenv(mut self, key: &str, value: &str) -> Self {
         self.env.push((key.to_owned(), value.to_owned()));
         self
+    }
+
+    /// The Landlock profile the worker entrypoint applies to itself (design §13.1,
+    /// "Landlock where available"). It confines the worker to exactly this spec's
+    /// filesystem boundary: read (and execute) the read-only binds — the
+    /// digest-pinned runtime and the staged inputs — and read-write the tmpfs
+    /// mounts (scratch and output). Every other path is denied.
+    ///
+    /// This is defense-in-depth *inside* the mount namespace: the worker calls
+    /// [`LandlockPolicy::apply`] as its first action, so even a bug that let it
+    /// reach a path the mount layout exposed is still blocked. The paths are the
+    /// in-sandbox paths, which is what the worker sees once `pivot_root` has run.
+    pub fn landlock_profile(&self) -> LandlockPolicy {
+        LandlockPolicy {
+            read_only: self
+                .ro_binds
+                .iter()
+                .map(|(_, sandbox)| PathBuf::from(sandbox))
+                .collect(),
+            read_write: self.tmpfs.iter().map(PathBuf::from).collect(),
+        }
     }
 }
 
@@ -444,7 +468,7 @@ impl SandboxLauncher for BubblewrapLauncher {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -475,6 +499,90 @@ mod tests {
         assert!(plan.drop_all_caps);
         assert!(plan.no_new_privs);
         assert_eq!(plan.chdir, "/run/axon/task-1");
+    }
+
+    #[test]
+    fn landlock_profile_confines_to_the_binds_and_tmpfs() {
+        // The worker entrypoint's Landlock profile is derived straight from the
+        // spec's filesystem boundary: read the runtime binds, read-write the tmpfs.
+        let profile = spec().landlock_profile();
+        assert_eq!(profile.read_only, vec![PathBuf::from("/runtime")]);
+        assert_eq!(
+            profile.read_write,
+            vec![PathBuf::from("/scratch"), PathBuf::from("/output")]
+        );
+    }
+
+    /// Live: derive the worker Landlock profile from a spec whose in-sandbox paths
+    /// are real temp directories, apply it in a child, and confirm the full
+    /// confinement — read (not write) a bind, write the tmpfs, and no access to a
+    /// path outside the set. Landlock needs no userns, so this runs by default and
+    /// gracefully skips where the kernel lacks Landlock.
+    #[test]
+    fn live_landlock_profile_from_spec_is_enforced_in_a_child() {
+        use std::ffi::CString;
+
+        let tmp = std::env::temp_dir().join(format!("axon-llspec-{}", std::process::id()));
+        let ro = tmp.join("runtime");
+        let rw = tmp.join("scratch");
+        let outside = tmp.join("outside");
+        for d in [&ro, &rw, &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(ro.join("bin"), b"runtime").unwrap();
+        std::fs::write(outside.join("secret"), b"host").unwrap();
+
+        // A spec whose *sandbox* paths are these real dirs, so the derived profile
+        // (which uses the sandbox side) can be applied and checked on the host.
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/unused-host", ro.to_str().unwrap())
+            .tmpfs(rw.to_str().unwrap());
+        let profile = spec.landlock_profile();
+
+        let ro_read = CString::new(ro.join("bin").to_str().unwrap()).unwrap();
+        let ro_write = CString::new(ro.join("nope").to_str().unwrap()).unwrap();
+        let rw_write = CString::new(rw.join("ok").to_str().unwrap()).unwrap();
+        let outside_read = CString::new(outside.join("secret").to_str().unwrap()).unwrap();
+
+        // SAFETY: the child only builds the ruleset (fork-safe glibc malloc), opens
+        // paths, and _exits — all async-signal-safe enough for a test child.
+        let code = match unsafe { libc::fork() } {
+            -1 => panic!("fork failed"),
+            0 => {
+                let outcome = match profile.apply() {
+                    Ok(o) => o,
+                    Err(_) => unsafe { libc::_exit(98) },
+                };
+                if outcome == crate::landlock::LandlockOutcome::NotEnforced {
+                    unsafe { libc::_exit(96) };
+                }
+                let read_ok = unsafe { libc::open(ro_read.as_ptr(), libc::O_RDONLY) } >= 0;
+                let ro_write_denied =
+                    unsafe { libc::open(ro_write.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o644) }
+                        < 0;
+                let rw_write_ok =
+                    unsafe { libc::open(rw_write.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o644) }
+                        >= 0;
+                let outside_denied =
+                    unsafe { libc::open(outside_read.as_ptr(), libc::O_RDONLY) } < 0;
+                let ok = read_ok && ro_write_denied && rw_write_ok && outside_denied;
+                unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+            }
+            pid => {
+                let mut status = 0;
+                unsafe { libc::waitpid(pid, &mut status, 0) };
+                assert!(libc::WIFEXITED(status), "child should exit normally");
+                libc::WEXITSTATUS(status)
+            }
+        };
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match code {
+            96 => eprintln!("landlock not enforced on this kernel; assertions skipped"),
+            98 => panic!("landlock apply() failed in the child"),
+            0 => {}
+            other => panic!("worker landlock profile not enforced (child code {other})"),
+        }
     }
 
     #[test]
