@@ -1,7 +1,7 @@
 # Working groups: coordinating sovereign endpoints
 
-Status: **Proposal / draft** — fork #1 (authorization/trust) resolved; one fork
-(discovery scope) open. Not yet normative.
+Status: **Proposal / draft** — both forks resolved (authorization model + v1
+scope). Ready to move to schemas/ADRs. Not yet normative.
 Date: 2026-07-17
 Relates to: pairing (§8), reliable delivery (§9), task contract (§10), local
 authority (§12), risk card (§5).
@@ -115,7 +115,9 @@ settled.
 - **Delegation bounds** — the `delegate` capability (§12.1) for a coordinator that
   fans work out *on behalf of* an upstream requester: roster, depth, fan-out, cost
   budget. Keeps a coordinator from over-delegating.
-- **Discovery** — only for the public-forum mode (see the discovery fork).
+- **A group management API** (see below) — the local control surface that creates
+  and manages groups over already-paired contacts.
+- **Discovery / forums** — *future*, layered on the management API; not in v1.
 
 Actual work stays ordinary signed contracts (coordinator → member), so results,
 evidence, and idempotency flow exactly as today.
@@ -182,17 +184,42 @@ Two follow-on design points this decision creates:
    authoritative agent is a *chosen* delegate — a group coordinator or org-policy
    agent slots in here naturally.
 
-## Open fork (decide before schema)
+## Management API and v1 scope (resolves fork #2)
 
-**How much discovery** to include in v1: from **none** (invite/assign among
-existing contacts only — no forums) up to **public forums** with capability
-advertisement and self-assembly. Discovery is the biggest new surface and the
-biggest new attack surface.
+v1 has **no discovery and no forums.** Groups are created and managed explicitly
+through a **simple local management API** over parties you have already paired
+with. The API is the stable substrate; richer behavior — public forums, capability
+advertisement, automated self-assembly — becomes a *future consumer* of the same
+API, not a v1 surface or a later rewrite.
 
-## Delivery sketch (after the forks are settled)
+- The management API is a **local control-plane** surface (the admin socket,
+  §16.2), driveable by the human operator (CLI) or by a local orchestrating agent
+  — which is the path to orchestrating more complex behavior later.
+- Operations (illustrative): create / list / show a group; invite or assign an
+  already-paired contact with a role; accept / decline an invitation (adjusting the
+  default permission set on accept, per the authorization model); set a member's
+  role; raise / lower a member's standing authorization; remove a member or leave.
+- The daemon translates management operations into the existing peer transport (an
+  invite becomes a message to the contact; membership, roles, and authorizations
+  are local records). No new trust or discovery surface is introduced — members are
+  paired identities, organised into groups and roles locally.
 
-Standards-first, in likely order: a `coordination.v1` signal schema (+ golden
-vectors + xcheck); the group membership/role model and the join/invite/assign
-protocol; the `delegate` capability in `axon-authority`; then discovery/forums if
-in scope. The orchestration engine (decompose/merge) is **not** an Axon
+## Delivery sketch
+
+Both forks are settled, so this is the standards-first order:
+
+1. **`coordination.v1` signal schema** (+ golden vectors + xcheck) — the inert
+   coordination-message extension.
+2. **Group membership / role model + the management API** — local control-plane
+   operations (§16.2) and the invite / assign / accept protocol over paired peers,
+   with the role → default-permission model.
+3. **Incremental authorization** — standing per-peer authorization grants and the
+   request-for-self protocol (§12.1 vocabulary), plus the `paused /
+   awaiting-authorization` attempt state and the worker authority-request channel
+   (the fork-#1 follow-ons).
+4. **`delegate` capability** in `axon-authority` (roster / depth / fan-out /
+   budget).
+5. **Future:** discovery / forums, layered on the management API.
+
+The orchestration engine (decompose / assign / merge) is **not** an Axon
 deliverable — it lives in the harness.
