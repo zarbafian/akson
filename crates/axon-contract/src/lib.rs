@@ -12,9 +12,13 @@
 //! manifest binding, revision chain, decisions) build on the [`Contract`] and
 //! the [`digest`](ParsedContract::digest) it produces.
 
+mod chain;
 mod contract;
 mod manifest;
 
+pub use chain::{
+    accept_head, apply_revision, Head, HeadState, LockError, RevisionVerdict, StaleReason,
+};
 pub use contract::{
     parse_payload, CanonicalRule, Capability, Contract, ContractError, Deliverable, Disclosure,
     EvidenceSlot, Identity, InputEntry, Limits, ParsedContract, PartKind, ProcessorConstraints,
