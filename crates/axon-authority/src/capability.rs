@@ -138,9 +138,29 @@ pub enum VectorError {
 /// The explicit capability vector a work order carries (§12.3): the exact set of
 /// granted capabilities, at most one grant per component. Absence of a component
 /// is a denial — there is no implicit authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Deserialize` routes through [`CapabilityVector::new`], so a vector read from
+/// JSON/IPC is held to the same invariants (non-empty, one grant per component) as
+/// one built in-process — a duplicate or empty grant set cannot be synthesized past
+/// the constructor. Serialization keeps the `{ "grants": [..] }` shape so the
+/// work-order MAC bytes are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CapabilityVector {
     grants: Vec<Grant>,
+}
+
+impl<'de> Deserialize<'de> for CapabilityVector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            grants: Vec<Grant>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        CapabilityVector::new(raw.grants).map_err(serde::de::Error::custom)
+    }
 }
 
 impl CapabilityVector {
@@ -249,5 +269,34 @@ mod tests {
     fn grant_carries_only_its_component() {
         assert_eq!(respond().component(), CapabilityComponent::Respond);
         assert_eq!(processor().component(), CapabilityComponent::ProcessorUse);
+    }
+
+    #[test]
+    fn deserialize_enforces_the_constructor_invariants() {
+        // A valid vector round-trips through the {"grants":[..]} shape.
+        let v = CapabilityVector::new(vec![respond(), processor()]).unwrap();
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            json.get("grants").is_some(),
+            "shape must stay {{grants:[..]}}"
+        );
+        let back: CapabilityVector = serde_json::from_value(json).unwrap();
+        assert_eq!(v, back);
+
+        // A duplicate component in JSON is rejected at the deserialization boundary,
+        // not silently accepted (which would let grant() shadow the second grant).
+        let dup = serde_json::json!({"grants": [
+            {"component": "respond", "task_id": "t", "message_id": "m",
+             "recipient": "request-origin", "max_responses": 1, "max_bytes": 8192,
+             "deadline": "2030-01-01T00:00:00Z"},
+            {"component": "respond", "task_id": "t2", "message_id": "m2",
+             "recipient": "request-origin", "max_responses": 1, "max_bytes": 8192,
+             "deadline": "2030-01-01T00:00:00Z"}
+        ]});
+        assert!(serde_json::from_value::<CapabilityVector>(dup).is_err());
+
+        // An empty grant set is rejected too (new() forbids it).
+        let empty = serde_json::json!({"grants": []});
+        assert!(serde_json::from_value::<CapabilityVector>(empty).is_err());
     }
 }

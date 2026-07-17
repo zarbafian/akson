@@ -190,10 +190,14 @@ impl WorkOrder {
 impl IssuedWorkOrder {
     /// Verifies the digest and the MAC under `key` (constant-time). Fails closed
     /// on any mismatch — a tampered field changes the canonical bytes and breaks
-    /// both.
+    /// both. The digest is a public content-address (no secret), but it is compared
+    /// in constant time too, so no comparison in `verify` short-circuits on content.
     pub fn verify(&self, key: &WorkOrderKey) -> Result<(), WorkOrderError> {
+        use subtle::ConstantTimeEq;
         let bytes = self.order.canonical_bytes()?;
-        if hex::encode(Sha256::digest(&bytes)) != self.digest {
+        let computed = Sha256::digest(&bytes);
+        let stored = hex::decode(&self.digest).map_err(|_| WorkOrderError::DigestMismatch)?;
+        if computed.as_slice().ct_eq(stored.as_slice()).unwrap_u8() != 1 {
             return Err(WorkOrderError::DigestMismatch);
         }
         let tag = hex::decode(&self.mac).map_err(|_| WorkOrderError::BadMac)?;
