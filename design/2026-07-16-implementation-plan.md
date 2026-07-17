@@ -433,12 +433,18 @@ for the session, and by CI's `isolation` job on push):
   fail-closed probe. `axon-sandbox` carries a documented crate-level
   `#![allow(unsafe_code)]` (it is the workspace OS-syscall boundary; every `unsafe`
   block has a `SAFETY:` note).
-**Remaining (integration + last pieces):** the PID namespace + private `/proc`
-(double-fork so the worker is PID 1) and the full `launch()` composition that
-forks → enters namespaces → `setup_root` → drops caps → seccomp → Landlock →
-`clearenv`+`setenv` → `execve`, plus a §13.1-checklist exec test; cgroup v2 limit
-writes; worker protocol (input-manifest delivery, bounded progress/result, the
-CLOEXEC one-use descriptor across the exec boundary); `axon doctor` (CLI is M12).
+**`BubblewrapLauncher::launch()` validated end-to-end** (bwrap 0.11.1 + userns): a
+real worker runs under bwrap and a live test confirms the §13.1 properties from
+inside — host `/etc` gone, environment cleared (only `--setenv` survives), scratch
+tmpfs writable. So the clean-worker launch works via the reviewed backend.
+**Remaining:** seccomp-fd wiring (compile `SeccompPolicy` → BPF → memfd →
+`--seccomp <fd>`) + the CLOEXEC inherited-fd allowlist at daemon integration;
+Landlock applied at the worker entrypoint; cgroup v2 limit writes (a delegated
+subtree is available); worker protocol (input-manifest delivery, bounded
+progress/result, the one-use descriptor); `axon doctor` (CLI is M12). The
+experimental `NativeLauncher` (validated user+net entry + `pivot_root` fs
+isolation) awaits independent review + the review's structural fixes before it
+could ever be the default.
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability.
