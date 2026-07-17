@@ -70,7 +70,7 @@ pub enum CanonicalRule {
 }
 
 /// A v1 capability component (informational request, never authority §10.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     Respond,
@@ -80,7 +80,7 @@ pub enum Capability {
 }
 
 /// The bilateral ceiling on processor plaintext disclosure (design §10.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Disclosure {
     None,
@@ -89,7 +89,7 @@ pub enum Disclosure {
 }
 
 /// An acceptable trust class for an evidence slot (design §14.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrustClass {
     SelfAttested,
@@ -98,7 +98,7 @@ pub enum TrustClass {
 }
 
 /// Where the result is delivered. V1 fixes this to the request origin (§10.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResultRecipient {
     RequestOrigin,

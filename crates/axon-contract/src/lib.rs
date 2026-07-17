@@ -28,6 +28,7 @@ mod extraction;
 mod manifest;
 mod proposal;
 mod receive;
+mod risk_card;
 
 pub use chain::{
     accept_head, apply_revision, Head, HeadState, LockError, RevisionVerdict, StaleReason,
@@ -45,3 +46,7 @@ pub use extraction::{extract_proposal, ExtractError, Extracted};
 pub use manifest::{bind_inputs, BindError, InputPart, PartBody};
 pub use proposal::{check_proposal_identities, sign_proposal, verify_proposal, ProposalError};
 pub use receive::{receive_proposal, ReceiveError, ReceivedProposal};
+pub use risk_card::{
+    project_risk_card, EvidenceDestination, EvidenceSlotCard, ExposedInput, LimitsCard, RiskCard,
+    WhatLeaves, WhatRuns, Who,
+};
