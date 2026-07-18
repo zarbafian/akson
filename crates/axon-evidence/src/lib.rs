@@ -10,9 +10,11 @@
 //! Everything here is pure/crypto logic; the durable staged-then-atomic completion
 //! and the `axon evidence validate|export` CLI are wired at daemon assembly.
 
+mod outcome;
 mod result_manifest;
 mod slots;
 
+pub use outcome::{fixed_receipt, Outcome, OutcomeError, OutcomeState, Receipt};
 pub use result_manifest::{
     Disclosure, EvidenceEntry, ManifestError, ManifestHeader, Omission, OutputEntry,
     ResultManifest, SlotRecord, SlotResult,
