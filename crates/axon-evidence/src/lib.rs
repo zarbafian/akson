@@ -12,6 +12,7 @@
 
 mod outcome;
 mod result_manifest;
+mod sarif;
 mod slots;
 
 pub use outcome::{fixed_receipt, Outcome, OutcomeError, OutcomeState, Receipt};
@@ -19,4 +20,5 @@ pub use result_manifest::{
     Disclosure, EvidenceEntry, ManifestError, ManifestHeader, Omission, OutputEntry,
     ResultManifest, SlotRecord, SlotResult,
 };
+pub use sarif::{parse_sarif, SarifError, SarifFinding, SarifLevel, SarifLimits, SarifReport};
 pub use slots::{check_slots, RequiredSlot, SlotError};
