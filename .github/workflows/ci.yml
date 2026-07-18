@@ -28,6 +28,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked
       - name: Test
         run: cargo test --workspace --locked
+      # The public-processor broker path validates server certs against the
+      # Mozilla CA roots; these #[ignore] tests need outbound network, which the
+      # runner has (the local dev host may not).
+      - name: Broker CA path (network)
+        run: cargo test -p axon-transport --test ca_tls --locked -- --ignored
 
   deny:
     runs-on: ubuntu-latest

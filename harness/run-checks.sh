@@ -35,6 +35,17 @@ fi
 step "interop: pairing over mTLS (two processes, no containers)"
 run bash harness/interop/scenario-pairing.sh
 
+step "public-processor CA path (needs outbound TCP 443)"
+if timeout 8 bash -c 'exec 3<>/dev/tcp/example.com/443' 2>/dev/null; then
+  echo "outbound TLS reachable — validating the CA-validated broker transport"
+  # Network-gated (#[ignore]): the pure-Rust provider must accept a real CA chain
+  # and reject an untrusted self-signed server.
+  run cargo test -p axon-transport --test ca_tls -- --ignored
+else
+  echo "SKIPPED — no outbound TCP 443 (the pinned-processor path is covered by the"
+  echo "  default gate; the CA path validates in CI, which has network)."
+fi
+
 step "live namespace isolation (needs unprivileged user namespaces)"
 if unshare --user --map-root-user true 2>/dev/null; then
   echo "user namespaces available — running the live sandbox checklist"
