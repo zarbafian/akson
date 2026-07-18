@@ -12,6 +12,8 @@
 //! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 //! - `axon task send <spec.json>` — send a task to a performer (§10.2).
 //! - `axon processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
+//! - `axon peer list` — the paired peers (§16.4).
+//! - `axon pair accept <invitation-file>` — accept a pairing invitation (§8.2).
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
@@ -27,11 +29,44 @@ fn main() -> ExitCode {
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
+        Some("pair") => pair(&mut args),
         _ => {
-            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{…}}, peer list");
+            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{…}}, peer list, pair accept <file>");
             ExitCode::from(2)
         }
     }
+}
+
+/// Routes the `axon pair …` subcommands over the admin control socket (§8.2).
+fn pair(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("accept") => match next_arg(args) {
+            Some(file) => pair_accept(&file),
+            None => usage("axon pair accept <invitation-file>"),
+        },
+        _ => usage("axon pair accept <invitation-file>"),
+    }
+}
+
+/// Accept a pairing invitation from a file (`axon pair accept <file>`).
+fn pair_accept(invitation_file: &str) -> ExitCode {
+    let invitation = match std::fs::read_to_string(invitation_file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("axon: cannot read {invitation_file}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = match call(&ControlRequest::PairAccept { invitation }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!(
+        "paired with {} ({})",
+        result["peer"].as_str().unwrap_or("?"),
+        result["endpoint"].as_str().unwrap_or("?"),
+    );
+    ExitCode::SUCCESS
 }
 
 /// Routes the `axon peer …` subcommands over the admin control socket (§16.4).

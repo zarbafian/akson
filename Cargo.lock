@@ -322,6 +322,7 @@ dependencies = [
  "axon-crypto",
  "axon-evidence",
  "axon-ext",
+ "axon-pairing",
  "axon-proto",
  "axon-sandbox",
  "axon-store",

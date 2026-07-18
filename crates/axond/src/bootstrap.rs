@@ -44,6 +44,7 @@ use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::delivery::run_delivery;
 use crate::keys::IdentityKeys;
+use crate::pairing::run_pair_accept;
 use crate::result::submit_result;
 use crate::send::run_send;
 use crate::socket::ControlRequest;
@@ -279,6 +280,7 @@ impl DaemonState {
             // daemon state.
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => run_send(self, spec),
+            ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),
             ControlRequest::RequestProcessorCall {
                 processor_id,
                 work_order_id,

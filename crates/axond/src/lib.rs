@@ -25,6 +25,7 @@ mod delivery;
 mod issue;
 mod keys;
 mod outcome;
+mod pairing;
 mod peercred;
 mod receive;
 mod receive_http;
@@ -46,6 +47,7 @@ pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use issue::{issue_for_accepted, IssueConfig};
 pub use keys::IdentityKeys;
 pub use outcome::finalize_result;
+pub use pairing::run_pair_accept;
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };

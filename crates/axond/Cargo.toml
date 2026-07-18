@@ -27,6 +27,7 @@ axon-worker = { workspace = true }
 axon-proto = { workspace = true }
 axon-crypto = { workspace = true }
 axon-ext = { workspace = true }
+axon-pairing = { workspace = true }
 axon-transport = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

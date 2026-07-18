@@ -142,6 +142,12 @@ pub async fn accept_invitation<S: PairingStore>(
     store
         .store_pending_peer(&inviter_peer)
         .map_err(|e| AcceptError::Store(e.to_string()))?;
+    // Retain the inviter's verification keys (design §8.1), keyed by its TLS
+    // fingerprint, so a later message received from it can be verified — the
+    // mirror of what the inviter's bootstrap handler does for the accepter.
+    store
+        .persist_peer_keys(&verified.bindings, now.unix_timestamp())
+        .map_err(|e| AcceptError::Store(e.to_string()))?;
 
     Ok(inviter_peer)
 }
