@@ -35,6 +35,7 @@ use time::OffsetDateTime;
 
 use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
+use crate::keys::IdentityKeys;
 use crate::socket::ControlRequest;
 
 /// Why the daemon could not come up.
@@ -83,22 +84,28 @@ impl DaemonConfig {
     }
 }
 
-/// The running daemon's shared state: the durable store, behind a `Mutex` so the
-/// blocking control sockets and the async receive server share one connection.
+/// The running daemon's shared state: the durable store (behind a `Mutex` so the
+/// blocking control sockets and the async receive server share one connection)
+/// and this endpoint's own signing keys.
 pub struct DaemonState {
     store: Arc<Mutex<Store>>,
+    identity: IdentityKeys,
     config: DaemonConfig,
 }
 
 impl DaemonState {
-    /// Opens (creating on first run) the durable store under `config.data_dir`
-    /// and returns the shared daemon state. Fails closed on an unreadable data
-    /// directory, a malformed KEK, or a store that cannot open.
+    /// Opens (creating on first run) the durable store under `config.data_dir`,
+    /// loads this endpoint's key material, and returns the shared daemon state.
+    /// Fails closed on an unreadable data directory, a malformed secret file, or a
+    /// store that cannot open.
     pub fn bootstrap(config: &DaemonConfig) -> Result<Self, BootstrapError> {
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::set_permissions(&config.data_dir, std::fs::Permissions::from_mode(0o700))?;
 
-        let kek = load_or_init_kek(&config.data_dir)?;
+        let kek = Kek::from_bytes(load_or_init_secret(&config.data_dir.join("kek"))?);
+        let identity = IdentityKeys::from_master(load_or_init_secret(
+            &config.data_dir.join("identity.seed"),
+        )?);
         // Interim custody reports no external rollback counter (ADR-0009 / §15.5):
         // degrade (open, flag detection unavailable) rather than block.
         let checkpoint = ExternalCheckpoint {
@@ -109,14 +116,17 @@ impl DaemonState {
         let store = Store::open(&config.data_dir.join("state.db"), &kek, checkpoint)?;
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
+            identity,
             config: config.clone(),
         })
     }
 
-    /// Wraps an already-open store (tests, and the future OS-keystore path).
-    pub fn from_store(store: Store, config: DaemonConfig) -> Self {
+    /// Wraps an already-open store and key material (tests, and the future
+    /// OS-keystore path).
+    pub fn from_parts(store: Store, identity: IdentityKeys, config: DaemonConfig) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            identity,
             config,
         }
     }
@@ -125,6 +135,11 @@ impl DaemonState {
     /// and, later, the receive server.
     pub fn store(&self) -> Arc<Mutex<Store>> {
         self.store.clone()
+    }
+
+    /// This endpoint's own signing keys.
+    pub fn identity(&self) -> &IdentityKeys {
+        &self.identity
     }
 
     /// The daemon's configuration.
@@ -175,23 +190,25 @@ fn diagnose_report() -> serde_json::Value {
     })
 }
 
-/// The store's key-encryption key, from an owner-only file under `data_dir`,
-/// generating it on first run (design §15.5 interim custody; ADR-0009 seam).
+/// A 32-byte secret from an owner-only file at `path`, generating it on first run
+/// (design §15.5 interim custody; ADR-0009 seam). Backs both the store's KEK and
+/// the identity master seed.
 ///
-/// The file is created with `0600` before any bytes are written, so the key is
+/// The file is created with `0600` before any bytes are written, so the secret is
 /// never briefly world-readable; an existing file is re-tightened to `0600` on
 /// load. Custody stronger than the filesystem (OS keystore, TPM) replaces exactly
 /// this function.
-fn load_or_init_kek(data_dir: &Path) -> Result<Kek, BootstrapError> {
-    let path = data_dir.join("kek");
+fn load_or_init_secret(path: &Path) -> Result<[u8; 32], BootstrapError> {
     if path.exists() {
-        let bytes = std::fs::read(&path)?;
-        let arr: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| BootstrapError::Config("the KEK file is not exactly 32 bytes".to_owned()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(Kek::from_bytes(arr))
+        let bytes = std::fs::read(path)?;
+        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            BootstrapError::Config(format!(
+                "the secret file {} is not exactly 32 bytes",
+                path.display()
+            ))
+        })?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(arr)
     } else {
         let mut arr = [0u8; 32];
         OsRng.fill_bytes(&mut arr);
@@ -201,10 +218,10 @@ fn load_or_init_kek(data_dir: &Path) -> Result<Kek, BootstrapError> {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&path)?;
+            .open(path)?;
         file.write_all(&arr)?;
         file.flush()?;
-        Ok(Kek::from_bytes(arr))
+        Ok(arr)
     }
 }
 
@@ -387,14 +404,26 @@ mod tests {
     #[test]
     fn a_reopened_store_keeps_its_state() {
         let dir = temp_dir("reopen");
-        let task_id = {
+        let (task_id, decision_thumb) = {
             let state = DaemonState::bootstrap(&config(dir.clone())).unwrap();
+            let thumb = state
+                .identity()
+                .purpose_key(KeyPurpose::ContractDecision)
+                .thumbprint();
             let store = state.store();
             let store = store.lock().unwrap();
-            submit_one(&store)
+            (submit_one(&store), thumb)
         };
-        // Reopen from the same data dir (same file KEK) — the Task survives.
+        // Reopen from the same data dir (same file KEK and identity seed) — the
+        // Task survives and the endpoint's keys are the same ones.
         let state = DaemonState::bootstrap(&config(dir.clone())).unwrap();
+        assert_eq!(
+            state
+                .identity()
+                .purpose_key(KeyPurpose::ContractDecision)
+                .thumbprint(),
+            decision_thumb,
+        );
         let store = state.store();
         let inbox = dispatch(&store, &ControlRequest::TaskInbox).unwrap();
         assert_eq!(inbox["tasks"][0]["task_id"], task_id);

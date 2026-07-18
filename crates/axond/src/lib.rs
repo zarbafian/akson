@@ -19,6 +19,7 @@ mod control;
 mod control_dispatch;
 mod decision;
 mod issue;
+mod keys;
 mod peercred;
 mod receive;
 mod receive_http;
@@ -26,6 +27,7 @@ mod receive_server;
 mod socket;
 
 pub use bootstrap::{dispatch, BootstrapError, DaemonConfig, DaemonState};
+pub use keys::IdentityKeys;
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};
