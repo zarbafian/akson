@@ -9,6 +9,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+json-canon = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
