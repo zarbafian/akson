@@ -235,4 +235,10 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
         })
         .unwrap();
     assert_eq!(again["confirmed"], false);
+
+    // whoami reports this daemon's own identity + endpoint fingerprint (what an
+    // operator shares with a peer).
+    let who = a.dispatch(&ControlRequest::WhoAmI).unwrap();
+    assert_eq!(who["agent"], "inviter");
+    assert_eq!(who["endpoint_fingerprint"], a_fp);
 }

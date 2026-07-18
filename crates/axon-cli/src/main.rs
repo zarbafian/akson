@@ -5,6 +5,7 @@
 //!
 //! - `axon doctor` — host capability check, no daemon needed (§13.1/§17.3).
 //! - `axon status` — daemon health over the admin socket (§16.2).
+//! - `axon whoami` — this daemon's identity + endpoint fingerprint (§8.1).
 //! - `axon task inbox` — the submitted Tasks awaiting a decision (§16.4).
 //! - `axon task show <id>` — a Task's §5.2 risk card, the approval surface.
 //! - `axon task approve <id>` — accept the Task and issue its work order (§10.2/§12.3).
@@ -28,12 +29,13 @@ fn main() -> ExitCode {
     match args.next().as_deref().and_then(OsStr::to_str) {
         Some("doctor") => doctor(),
         Some("status") => status(),
+        Some("whoami") => whoami(),
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
         Some("pair") => pair(&mut args),
         _ => {
-            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{…}}, peer list, pair accept <file>");
+            eprintln!("axon: commands: doctor, status, whoami, task {{…}}, processor {{…}}, peer {{list|confirm}}, pair {{invite|accept}}");
             ExitCode::from(2)
         }
     }
@@ -521,6 +523,25 @@ fn status() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Prints this daemon's own identity and endpoint fingerprint (`axon whoami`) —
+/// what an operator shares with a peer to establish trust, and checks their own
+/// configuration against.
+fn whoami() -> ExitCode {
+    let result = match call(&ControlRequest::WhoAmI) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let s = |k: &str| result[k].as_str().unwrap_or("—").to_owned();
+    println!("axon identity");
+    println!("  agent:        {}/{}", s("issuer"), s("agent"));
+    println!("  interface:    {}", s("interface_url"));
+    println!("  receive:      {}", s("receive_addr"));
+    println!("  pairing:      {}", s("pair_addr"));
+    println!("  endpoint fp:  sha256:{}", s("endpoint_fingerprint"));
+    println!("  data dir:     {}", s("data_dir"));
+    ExitCode::SUCCESS
 }
 
 /// Renders the sandbox capability report and returns a fail-closed exit code:

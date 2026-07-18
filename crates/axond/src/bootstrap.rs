@@ -202,6 +202,15 @@ impl DaemonState {
     pub fn dispatch(&self, req: &ControlRequest) -> Result<serde_json::Value, Problem> {
         match req {
             ControlRequest::Diagnose => Ok(diagnose_report()),
+            ControlRequest::WhoAmI => Ok(serde_json::json!({
+                "issuer": self.config.local_performer.issuer,
+                "agent": self.config.local_performer.agent,
+                "interface_url": self.config.interface_url,
+                "receive_addr": self.config.receive_addr,
+                "pair_addr": self.config.pair_addr,
+                "endpoint_fingerprint": self.endpoint_cert.fingerprint.value,
+                "data_dir": self.config.data_dir.display().to_string(),
+            })),
             ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => {
                 let store = self.store.lock().map_err(|_| internal())?;
                 dispatch_control(&store, req)

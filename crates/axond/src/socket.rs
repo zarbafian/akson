@@ -48,6 +48,8 @@ pub fn worker_socket_path() -> PathBuf {
 pub enum ControlRequest {
     /// Report daemon + sandbox health (`axon doctor` / `axon status`).
     Diagnose,
+    /// Report this daemon's own identity + endpoint fingerprint (`axon whoami`).
+    WhoAmI,
     /// List the submitted Tasks awaiting a decision (`axon task inbox`).
     TaskInbox,
     /// Render a submitted Task's risk card (`axon task show`).
@@ -107,7 +109,7 @@ impl ControlRequest {
     /// The authorization unit for this request (design §16.2).
     pub fn op(&self) -> ControlOp {
         match self {
-            ControlRequest::Diagnose => ControlOp::Diagnose,
+            ControlRequest::Diagnose | ControlRequest::WhoAmI => ControlOp::Diagnose,
             ControlRequest::TaskInbox
             | ControlRequest::TaskShow { .. }
             | ControlRequest::TaskSent
