@@ -71,6 +71,12 @@ pub fn validity(contract: &Contract, now_unix: i64) -> Result<Validity, Timestam
     })
 }
 
+/// The contract's `expires_at` as unix seconds — the retention bound the store
+/// keeps a stored revision to (design §10.2).
+pub fn expires_at_unix(contract: &Contract) -> Result<i64, TimestampError> {
+    parse(&contract.expires_at, "expires_at")
+}
+
 fn parse(s: &str, field: &'static str) -> Result<i64, TimestampError> {
     OffsetDateTime::parse(s, &Rfc3339)
         .map(|dt| dt.unix_timestamp())

@@ -315,10 +315,17 @@ dependencies = [
 name = "axond"
 version = "0.0.1"
 dependencies = [
+ "axon-contract",
+ "axon-crypto",
+ "axon-ext",
+ "axon-proto",
  "axon-sandbox",
+ "axon-store",
+ "hex",
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 
