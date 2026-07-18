@@ -25,15 +25,17 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axon_contract::Identity;
+use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
+use axon_crypto::identity::Fingerprint;
+use axon_crypto::purpose::KeyPurpose;
 use axon_store::envelope::Kek;
 use axon_store::{ExternalCheckpoint, Store};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use time::OffsetDateTime;
-
-use axon_crypto::purpose::KeyPurpose;
 
 use crate::approve::{approve_and_issue, deny};
 use crate::control::Problem;
@@ -96,19 +98,20 @@ impl DaemonConfig {
 }
 
 /// The running daemon's shared state: the durable store (behind a `Mutex` so the
-/// blocking control sockets and the async receive server share one connection)
-/// and this endpoint's own signing keys.
+/// blocking control sockets and the async receive server share one connection),
+/// this endpoint's own signing keys, and its stable endpoint certificate.
 pub struct DaemonState {
     store: Arc<Mutex<Store>>,
     identity: IdentityKeys,
+    endpoint_cert: EndpointCert,
     config: DaemonConfig,
 }
 
 impl DaemonState {
     /// Opens (creating on first run) the durable store under `config.data_dir`,
-    /// loads this endpoint's key material, and returns the shared daemon state.
-    /// Fails closed on an unreadable data directory, a malformed secret file, or a
-    /// store that cannot open.
+    /// loads this endpoint's key material and its persisted endpoint certificate,
+    /// and returns the shared daemon state. Fails closed on an unreadable data
+    /// directory, a malformed secret file, or a store that cannot open.
     pub fn bootstrap(config: &DaemonConfig) -> Result<Self, BootstrapError> {
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::set_permissions(&config.data_dir, std::fs::Permissions::from_mode(0o700))?;
@@ -116,6 +119,11 @@ impl DaemonState {
         let kek = Kek::from_bytes(load_or_init_secret(&config.data_dir.join("kek"))?);
         let identity =
             IdentityKeys::from_master(load_or_init_secret(&config.data_dir.join("identity.seed"))?);
+        // The endpoint certificate is generated once and persisted: its fingerprint
+        // is what peers pin at pairing, so it MUST be stable across restarts and
+        // across every connection (self_signed_endpoint embeds timestamps, so
+        // regenerating it would move the fingerprint and break pinning).
+        let endpoint_cert = load_or_init_endpoint_cert(&config.data_dir, &identity)?;
         // Interim custody reports no external rollback counter (ADR-0009 / §15.5):
         // degrade (open, flag detection unavailable) rather than block.
         let checkpoint = ExternalCheckpoint {
@@ -127,16 +135,24 @@ impl DaemonState {
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             identity,
+            endpoint_cert,
             config: config.clone(),
         })
     }
 
-    /// Wraps an already-open store and key material (tests, and the future
-    /// OS-keystore path).
-    pub fn from_parts(store: Store, identity: IdentityKeys, config: DaemonConfig) -> Self {
+    /// Wraps an already-open store, key material, and endpoint certificate (tests,
+    /// and the future OS-keystore path). The certificate MUST be over the identity's
+    /// tls-endpoint key.
+    pub fn from_parts(
+        store: Store,
+        identity: IdentityKeys,
+        endpoint_cert: EndpointCert,
+        config: DaemonConfig,
+    ) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
             identity,
+            endpoint_cert,
             config,
         }
     }
@@ -150,6 +166,12 @@ impl DaemonState {
     /// This endpoint's own signing keys.
     pub fn identity(&self) -> &IdentityKeys {
         &self.identity
+    }
+
+    /// This endpoint's stable self-signed certificate (its fingerprint is what
+    /// peers pin at pairing).
+    pub fn endpoint_cert(&self) -> &EndpointCert {
+        &self.endpoint_cert
     }
 
     /// The daemon's configuration.
@@ -268,6 +290,39 @@ fn load_or_init_secret(path: &Path) -> Result<[u8; 32], BootstrapError> {
         file.write_all(&arr)?;
         file.flush()?;
         Ok(arr)
+    }
+}
+
+/// How long the self-issued endpoint certificate is valid.
+const ENDPOINT_CERT_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// This endpoint's stable certificate, from `data_dir/endpoint.der`, generating it
+/// on first run over the identity's tls-endpoint key (design §8.3). Persisting the
+/// DER keeps the fingerprint — what peers pin at pairing — stable across restarts;
+/// regenerating would move it and break pinning. The key is re-derived from the
+/// master, so the persisted cert and the live key always match.
+fn load_or_init_endpoint_cert(
+    data_dir: &Path,
+    identity: &IdentityKeys,
+) -> Result<EndpointCert, BootstrapError> {
+    let path = data_dir.join("endpoint.der");
+    if path.exists() {
+        let der = std::fs::read(&path)?;
+        let fingerprint = Fingerprint::cert_sha256(&der);
+        Ok(EndpointCert {
+            der,
+            pem: Vec::new(),
+            fingerprint,
+        })
+    } else {
+        let cert = self_signed_endpoint(
+            &identity.purpose_key(KeyPurpose::TlsEndpoint),
+            "axon-endpoint",
+            ENDPOINT_CERT_VALIDITY,
+        )
+        .map_err(|e| BootstrapError::Config(format!("endpoint certificate: {e}")))?;
+        std::fs::write(&path, &cert.der)?;
+        Ok(cert)
     }
 }
 

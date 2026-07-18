@@ -15,9 +15,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
-use axon_crypto::cert::self_signed_endpoint;
 use axon_crypto::purpose::KeyPurpose;
 use axon_transport::tls::bootstrap_server_config;
 use tokio::net::TcpListener;
@@ -25,10 +23,6 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::bootstrap::DaemonState;
 use crate::receive_server::{serve as serve_receive, ReceiveState, StorePeerResolver};
-
-/// How long the self-issued endpoint certificate is valid. Peers pin its
-/// fingerprint at pairing; rotation before expiry is future work.
-const ENDPOINT_CERT_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 /// Why the receive listener could not run.
 #[derive(Debug, thiserror::Error)]
@@ -44,13 +38,12 @@ pub enum ReceiveServeError {
 /// Serves the mTLS A2A receive listener on `addr` until it errors (design §9.1),
 /// running its own tokio runtime. Blocks; call it from a dedicated thread.
 pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), ReceiveServeError> {
-    // The endpoint presents a self-signed cert over its tls-endpoint key; the peer
-    // pinned this fingerprint at pairing (design §8.1/§8.3).
+    // The endpoint presents its stable self-signed cert over its tls-endpoint key;
+    // the peer pinned this fingerprint at pairing (design §8.1/§8.3).
     let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
-    let cert = self_signed_endpoint(&endpoint_key, "axon-endpoint", ENDPOINT_CERT_VALIDITY)?;
     // Accept any client cert at TLS and capture its fingerprint; the resolver pins
     // it against the store's peer records (an unknown fingerprint is a 403).
-    let server_config = bootstrap_server_config(&endpoint_key, &cert)
+    let server_config = bootstrap_server_config(&endpoint_key, state.endpoint_cert())
         .map_err(|e| ReceiveServeError::Tls(e.to_string()))?;
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 

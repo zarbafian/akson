@@ -30,8 +30,9 @@ use axon_store::SentRequest;
 use axon_store::{ExternalCheckpoint, Store};
 use axon_transport::tls::{bootstrap_server_config, client_config};
 use axond::{
-    serve_receive, ControlRequest, DaemonConfig, DaemonState, IdentityKeys, OutputKind,
-    ReceiveState, ResultOutput, ResultSubmission, StorePeerResolver,
+    serve_receive, ControlRequest, DaemonConfig, DaemonState, Deliverable, IdentityKeys,
+    OutputKind, ReceiveState, ResultOutput, ResultSubmission, StorePeerResolver, TaskInput,
+    TaskSpec,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -298,9 +299,17 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
     };
+    let identity = IdentityKeys::from_master([33u8; 32]);
+    let endpoint_cert = self_signed_endpoint(
+        &identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "axon-endpoint",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
     let state = Arc::new(DaemonState::from_parts(
         in_memory_store(),
-        IdentityKeys::from_master([33u8; 32]),
+        identity,
+        endpoint_cert,
         config,
     ));
     // Pair the peer in the daemon's own store, then serve receive over it.
@@ -577,4 +586,123 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
     let outcome = Outcome::verify(&stored, &requester_outcome_key.verifying()).unwrap();
     assert_eq!(outcome.state, OutcomeState::Accepted);
     assert_eq!(outcome.task_id, "task-1");
+}
+
+/// A minimal pinned peer record: enough for outbound send/deliver (endpoint +
+/// pinned cert); the card fingerprints are unused by those paths.
+fn stored_peer(
+    agent: &str,
+    endpoint: &str,
+    tls_cert: &axon_crypto::identity::Fingerprint,
+) -> axon_store::StoredPeer {
+    axon_store::StoredPeer {
+        identity: axon_crypto::identity::PeerIdentity {
+            issuer: Some("iss".to_owned()),
+            agent_id: agent.to_owned(),
+            workload_id: None,
+            endpoint_id: endpoint.to_owned(),
+            tls_cert: tls_cert.clone(),
+            agent_card_key: tls_cert.clone(),
+            key_bindings: vec![],
+            security_projection_digest: tls_cert.clone(),
+            full_card_digest: tls_cert.clone(),
+        },
+        local_note: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_task() {
+    // The requester A: its identity keys (endpoint + contract-proposal) all derive
+    // from one master, exactly as the live daemon's do.
+    let a_identity = IdentityKeys::from_master([10u8; 32]);
+    let a_cert = self_signed_endpoint(
+        &a_identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "requester",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    // The performer B: endpoint cert + a receive server for proposals over B's store.
+    let b_tls = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let b_cert = self_signed_endpoint(&b_tls, "performer", Duration::from_secs(3600)).unwrap();
+    let b_store = in_memory_store();
+    // B pinned A's contract-proposal key at pairing (by A's endpoint-cert fingerprint).
+    b_store
+        .put_peer_key(
+            &a_cert.fingerprint.value,
+            "contract-proposal",
+            "requester",
+            "iss",
+            &a_identity
+                .purpose_key(KeyPurpose::ContractProposal)
+                .verifying()
+                .to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    let b_store = Arc::new(Mutex::new(b_store));
+    let b_addr = spawn_receive(b_store.clone(), &b_tls, &b_cert).await;
+
+    // A's daemon, with a pinned peer record for B (its endpoint + cert).
+    let a_store = in_memory_store();
+    a_store
+        .put_peer(&stored_peer(
+            "performer",
+            &format!("https://127.0.0.1:{}/a2a", b_addr.port()),
+            &b_cert.fingerprint,
+        ))
+        .unwrap();
+    let a_config = DaemonConfig {
+        data_dir: std::env::temp_dir().join("axond-send-unused"),
+        local_performer: ident("requester"),
+        interface_url: "https://local/a2a".to_owned(),
+        receive_addr: None,
+    };
+    // A presents exactly the cert B pinned (its stable endpoint cert).
+    let a_state = Arc::new(DaemonState::from_parts(
+        a_store, a_identity, a_cert, a_config,
+    ));
+    let a_store = a_state.store();
+
+    // A sends a task. `run_send` blocks on its own runtime, so run it off the async
+    // worker; meanwhile B's receive server serves the incoming proposal.
+    let spec = TaskSpec {
+        performer: "performer".to_owned(),
+        task_type: "https://axon.invalid/task/code-review/v1".to_owned(),
+        objective: "review this file".to_owned(),
+        inputs: vec![TaskInput {
+            id: "diff".to_owned(),
+            media_type: "text/x-diff".to_owned(),
+            text: "--- a\n+++ b\n".to_owned(),
+        }],
+        deliverables: vec![Deliverable {
+            role: "review".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned(), "read_supplied_inputs".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes: 8192,
+    };
+    let a_for_send = a_state.clone();
+    let sent =
+        tokio::task::spawn_blocking(move || a_for_send.dispatch(&ControlRequest::TaskSend(spec)))
+            .await
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(sent["sent"], true);
+    let contract_digest = sent["contract_digest"].as_str().unwrap();
+
+    // The performer received it as a SUBMITTED Task…
+    let submitted = b_store.lock().unwrap().list_submitted_tasks().unwrap();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].contract_digest, contract_digest);
+    // …and the requester recorded the outstanding request, keyed by the same digest.
+    assert!(a_store
+        .lock()
+        .unwrap()
+        .get_sent_request(contract_digest)
+        .unwrap()
+        .is_some());
 }

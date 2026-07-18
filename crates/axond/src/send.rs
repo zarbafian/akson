@@ -14,10 +14,7 @@
 //! [`SendPrepared`]; the network I/O then runs lock-free, and the `sent_request` is
 //! recorded under the lock once the performer's Task id is known.
 
-use std::time::Duration;
-
 use axon_contract::{parse_payload, sign_proposal, Identity};
-use axon_crypto::cert::self_signed_endpoint;
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
 use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
@@ -34,8 +31,6 @@ use time::OffsetDateTime;
 use crate::a2a_client::post_a2a;
 use crate::bootstrap::DaemonState;
 use crate::control::Problem;
-
-const ENDPOINT_CERT_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 /// One input the requester supplies with the task (its content is worker-visible).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +91,13 @@ pub fn prepare_send(
     let peer = store
         .get_peer(&spec.performer)
         .map_err(store_problem)?
-        .ok_or_else(|| problem(409, "unknown-performer", "the performer is not a paired peer"))?;
+        .ok_or_else(|| {
+            problem(
+                409,
+                "unknown-performer",
+                "the performer is not a paired peer",
+            )
+        })?;
     let performer = Identity {
         issuer: peer.identity.issuer.clone().unwrap_or_default(),
         agent: peer.identity.agent_id.clone(),
@@ -157,8 +158,14 @@ pub fn prepare_send(
     let payload = axon_ext::jcs::canonical_bytes(&contract)
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
     // Validate the assembled contract (and take its canonical digest) before signing.
-    let parsed = parse_payload(&payload)
-        .map_err(|e| problem_detail(400, "invalid-task", "the task spec is not a valid contract", e))?;
+    let parsed = parse_payload(&payload).map_err(|e| {
+        problem_detail(
+            400,
+            "invalid-task",
+            "the task spec is not a valid contract",
+            e,
+        )
+    })?;
     let envelope = sign_proposal(&payload, proposal_key)
         .map_err(|_| problem(500, "sign-failed", "the proposal could not be signed"))?;
 
@@ -222,10 +229,11 @@ pub async fn send_prepared(
     )
     .await?;
     if status != 200 {
-        return Err(problem(
+        return Err(problem_detail(
             502,
             "send-rejected",
             "the performer did not accept the proposal",
+            format!("status {status}: {}", String::from_utf8_lossy(&body)),
         ));
     }
     let task: serde_json::Value = serde_json::from_slice(&body)
@@ -260,14 +268,15 @@ pub fn run_send(state: &DaemonState, spec: &TaskSpec) -> Result<serde_json::Valu
     };
 
     let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
-    let endpoint_cert =
-        self_signed_endpoint(&endpoint_key, "axon-endpoint", ENDPOINT_CERT_VALIDITY)
-            .map_err(|_| problem(500, "cert", "the endpoint certificate could not be built"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
-    let task_id = runtime.block_on(send_prepared(&prepared, &endpoint_key, &endpoint_cert))?;
+    let task_id = runtime.block_on(send_prepared(
+        &prepared,
+        &endpoint_key,
+        state.endpoint_cert(),
+    ))?;
 
     // Record the outstanding request so the delivered result can be matched to it.
     {
@@ -325,10 +334,12 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 fn store_problem(_e: axon_store::StoreError) -> Problem {

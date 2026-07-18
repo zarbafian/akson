@@ -10,10 +10,7 @@
 //! The store is `!Sync`, so everything the delivery needs is extracted **under the
 //! lock** into a [`DeliveryJob`] first; the network I/O then runs lock-free.
 
-use std::time::Duration;
-
 use axon_contract::{parse_payload, HeadState};
-use axon_crypto::cert::self_signed_endpoint;
 use axon_crypto::purpose::KeyPurpose;
 use axon_ext::dsse::Envelope;
 use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
@@ -23,9 +20,6 @@ use axon_store::Store;
 use crate::a2a_client::post_a2a;
 use crate::bootstrap::DaemonState;
 use crate::control::Problem;
-
-/// Endpoint-cert validity for the outbound connection (see [`crate::run_receive_listener`]).
-const ENDPOINT_CERT_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 /// Everything a delivery needs, extracted from the store under the lock so the
 /// network I/O can run without holding it.
@@ -142,14 +136,11 @@ pub fn run_delivery(state: &DaemonState, task_id: &str) -> Result<serde_json::Va
         prepare_delivery(&store, task_id)?
     };
     let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
-    let endpoint_cert =
-        self_signed_endpoint(&endpoint_key, "axon-endpoint", ENDPOINT_CERT_VALIDITY)
-            .map_err(|_| problem(500, "cert", "the endpoint certificate could not be built"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
-    runtime.block_on(deliver_job(job, &endpoint_key, &endpoint_cert))
+    runtime.block_on(deliver_job(job, &endpoint_key, state.endpoint_cert()))
 }
 
 /// The A2A `SendMessageRequest` carrying the signed result manifest as a Part,

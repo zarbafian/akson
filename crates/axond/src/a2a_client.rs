@@ -53,12 +53,22 @@ pub async fn post_a2a(
 
     let addr = tokio::net::lookup_host((host.as_str(), port))
         .await
-        .map_err(|_| problem(502, "unreachable", "the peer endpoint could not be resolved"))?
+        .map_err(|_| {
+            problem(
+                502,
+                "unreachable",
+                "the peer endpoint could not be resolved",
+            )
+        })?
         .next()
         .ok_or_else(|| problem(502, "unreachable", "the peer endpoint did not resolve"))?;
-    let tcp = TcpStream::connect(addr)
-        .await
-        .map_err(|_| problem(502, "unreachable", "the peer endpoint refused the connection"))?;
+    let tcp = TcpStream::connect(addr).await.map_err(|_| {
+        problem(
+            502,
+            "unreachable",
+            "the peer endpoint refused the connection",
+        )
+    })?;
     let server_name =
         ServerName::try_from(host).map_err(|_| problem(500, "bad-endpoint", "bad host name"))?;
     let mut tls = connector
@@ -121,7 +131,13 @@ pub fn parse_endpoint(endpoint: &str) -> Option<(String, u16, String)> {
 fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..sep]).ok()?;
-    let status = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let status = head
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
     Some((status, raw[sep + 4..].to_vec()))
 }
 

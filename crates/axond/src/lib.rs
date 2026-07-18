@@ -41,7 +41,6 @@ pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use issue::{issue_for_accepted, IssueConfig};
 pub use keys::IdentityKeys;
 pub use outcome::finalize_result;
-pub use send::{run_send, Deliverable, TaskInput, TaskSpec};
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };
@@ -52,6 +51,7 @@ pub use receive_server::{
     serve as serve_receive, PeerContext, PeerResolver, ReceiveState, StorePeerResolver,
 };
 pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
+pub use send::{run_send, Deliverable, TaskInput, TaskSpec};
 pub use socket::{
     admin_socket_path, bind_socket, handle_connection, send_request, serve, socket_dir,
     worker_socket_path, ControlRequest, ControlResponse, SocketError,
