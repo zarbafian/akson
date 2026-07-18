@@ -115,6 +115,7 @@ version = "0.0.1"
 dependencies = [
  "axon-sandbox",
  "axond",
+ "serde_json",
 ]
 
 [[package]]

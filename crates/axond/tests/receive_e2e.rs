@@ -1,21 +1,23 @@
-//! End-to-end: a paired peer POSTs a signed contract proposal over real mutual
-//! TLS, and it becomes an inert `SUBMITTED` Task in the daemon's shared store
-//! (design §9.1, §10.2).
+//! End-to-end over a real socket: a paired peer POSTs a signed contract proposal
+//! over mutual TLS, and the daemon carries it through the whole pre-execution
+//! lifecycle — inert `SUBMITTED` Task → operator inbox → risk card → accept +
+//! work order (design §9.1, §10.2, §12.3).
 //!
-//! This drives the same receive server the daemon runs: a TLS 1.3 mutual
+//! This drives the same receive server the daemon runs (a TLS 1.3 mutual
 //! handshake, the client leaf-cert fingerprint captured and resolved against the
-//! store's peer records ([`StorePeerResolver`]), then the synchronous receive
-//! handler. It proves the network face over a real socket — not a mock resolver —
-//! and that the store the receive server writes is the one the operator reads.
+//! store's peer records via [`StorePeerResolver`]) and the same
+//! [`DaemonState::dispatch`] the admin control socket serves — over a real socket,
+//! with the store shared between them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axon_contract::{sign_proposal, Identity};
-use axon_crypto::cert::self_signed_endpoint;
+use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
 use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
@@ -24,7 +26,10 @@ use axon_store::delivery::content_digest;
 use axon_store::envelope::Kek;
 use axon_store::{ExternalCheckpoint, Store};
 use axon_transport::tls::{bootstrap_server_config, client_config};
-use axond::{serve_receive, ReceiveState, StorePeerResolver};
+use axond::{
+    serve_receive, ControlRequest, DaemonConfig, DaemonState, IdentityKeys, ReceiveState,
+    StorePeerResolver,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,8 +47,8 @@ fn ident(agent: &str) -> Identity {
     }
 }
 
-/// The peer's signed A2A `SendMessageRequest` bytes (a DSSE proposal Part plus the
-/// referenced worker-input Part), signed by `proposal_key`.
+/// The peer's signed A2A `SendMessageRequest` bytes: a DSSE proposal Part plus the
+/// referenced worker-input Part, signed by `proposal_key`.
 fn send_message_body(proposal_key: &PurposeKey) -> Vec<u8> {
     let sha = hex::encode(Sha256::digest(TEXT.as_bytes()));
     let value = json!({
@@ -59,7 +64,7 @@ fn send_message_body(proposal_key: &PurposeKey) -> Vec<u8> {
             "worker_visible": true, "processor_visible": false
         }],
         "deliverables": [{"role": "r", "media_type": "text/plain"}],
-        "evidence_slots": [], "requested_capabilities": ["respond"],
+        "evidence_slots": [], "requested_capabilities": ["respond", "read_supplied_inputs"],
         "processor_constraints": {"disclosure": "none"},
         "limits": {"deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 1024},
         "result_recipient": "request-origin",
@@ -94,8 +99,66 @@ fn send_message_body(proposal_key: &PurposeKey) -> Vec<u8> {
     .unwrap()
 }
 
-/// Reads an HTTP/1.1 response to EOF (the request set `Connection: close`) and
-/// returns (status code, body bytes).
+/// Binds an mTLS receive server over `store` on an ephemeral port and returns its
+/// address. The acceptor accepts any client cert; the resolver pins it.
+async fn spawn_receive(
+    store: Arc<Mutex<Store>>,
+    server_tls_key: &PurposeKey,
+    server_cert: &EndpointCert,
+) -> SocketAddr {
+    let receive_state = Arc::new(ReceiveState::new(
+        store,
+        StorePeerResolver,
+        ident("performer"),
+        BTreeSet::new(),
+        "https://local/a2a".to_owned(),
+    ));
+    let acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(server_tls_key, server_cert).unwrap(),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve_receive(listener, acceptor, receive_state));
+    addr
+}
+
+/// Connects as the peer (presenting `peer_cert`, pinning `server_cert`), POSTs the
+/// signed proposal, and returns (HTTP status, response body).
+async fn post_proposal(
+    addr: SocketAddr,
+    peer_tls_key: &PurposeKey,
+    peer_cert: &EndpointCert,
+    server_cert: &EndpointCert,
+    proposal_key: &PurposeKey,
+) -> (u16, Vec<u8>) {
+    let client_cfg = client_config(peer_tls_key, peer_cert, &server_cert.fingerprint).unwrap();
+    let connector = TlsConnector::from(Arc::new(client_cfg));
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    // The pinned verifier checks the fingerprint, not the name.
+    let mut tls = connector
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+
+    let body = send_message_body(proposal_key);
+    let digest = content_digest(&body);
+    let request = format!(
+        "POST /a2a HTTP/1.1\r\nHost: local\r\nContent-Type: application/a2a+json\r\n\
+         a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    tls.write_all(request.as_bytes()).await.unwrap();
+    tls.write_all(&body).await.unwrap();
+    tls.flush().await.unwrap();
+
+    let mut raw = Vec::new();
+    tls.read_to_end(&mut raw).await.unwrap();
+    split_response(&raw)
+}
+
+/// Reads an HTTP/1.1 response (the request set `Connection: close`, so read to EOF)
+/// into (status code, body bytes).
 fn split_response(raw: &[u8]) -> (u16, Vec<u8>) {
     let sep = raw
         .windows(4)
@@ -111,25 +174,26 @@ fn split_response(raw: &[u8]) -> (u16, Vec<u8>) {
     (status, raw[sep + 4..].to_vec())
 }
 
-#[tokio::test]
-async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_task() {
-    // The peer's keys: an endpoint (TLS) key and a contract-proposal key.
-    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
-    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
-    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
-
-    // The daemon's endpoint key/cert and the shared store.
-    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
-    let server_cert =
-        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+fn in_memory_store() -> Store {
     let cp = ExternalCheckpoint {
         state_generation: 0,
         trusted_time: 0,
         rollback_detectable: true,
     };
-    let store = Store::open_in_memory(&Kek::from_bytes([9u8; 32]), cp).unwrap();
-    // Pair the peer: pin its proposal key by its endpoint-cert fingerprint, exactly
-    // as pairing would. StorePeerResolver resolves the handshake fingerprint to it.
+    Store::open_in_memory(&Kek::from_bytes([9u8; 32]), cp).unwrap()
+}
+
+#[tokio::test]
+async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_task() {
+    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
+    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
+    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let server_cert =
+        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+
+    let store = in_memory_store();
+    // Pair the peer: pin its proposal key by its endpoint-cert fingerprint.
     store
         .put_peer_key(
             &peer_cert.fingerprint.value,
@@ -142,116 +206,137 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
         .unwrap();
     let store = Arc::new(Mutex::new(store));
 
-    let receive_state = Arc::new(ReceiveState::new(
-        store.clone(),
-        StorePeerResolver,
-        ident("performer"),
-        BTreeSet::new(),
-        "https://local/a2a".to_owned(),
-    ));
+    let addr = spawn_receive(store.clone(), &server_tls_key, &server_cert).await;
+    let (status, body) = post_proposal(
+        addr,
+        &peer_tls_key,
+        &peer_cert,
+        &server_cert,
+        &peer_proposal_key,
+    )
+    .await;
 
-    // The server acceptor accepts any client cert (pinned at the app layer).
-    let acceptor = TlsAcceptor::from(Arc::new(
-        bootstrap_server_config(&server_tls_key, &server_cert).unwrap(),
-    ));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(serve_receive(listener, acceptor, receive_state));
-
-    // The client presents the peer cert and pins the server's cert fingerprint.
-    let client_cfg = client_config(&peer_tls_key, &peer_cert, &server_cert.fingerprint).unwrap();
-    let connector = TlsConnector::from(Arc::new(client_cfg));
-    let tcp = TcpStream::connect(addr).await.unwrap();
-    // The pinned verifier checks the fingerprint, not the name.
-    let server_name = ServerName::try_from("localhost").unwrap();
-    let mut tls = connector.connect(server_name, tcp).await.unwrap();
-
-    let body = send_message_body(&peer_proposal_key);
-    let digest = content_digest(&body);
-    let request = format!(
-        "POST /a2a HTTP/1.1\r\nHost: local\r\nContent-Type: application/a2a+json\r\n\
-         a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n",
-        body.len()
-    );
-    tls.write_all(request.as_bytes()).await.unwrap();
-    tls.write_all(&body).await.unwrap();
-    tls.flush().await.unwrap();
-
-    let mut raw = Vec::new();
-    tls.read_to_end(&mut raw).await.unwrap();
-    let (status, resp_body) = split_response(&raw);
     assert_eq!(status, 200, "receive should accept the paired peer's proposal");
-    let task: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    let task: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
     let task_id = task["id"].as_str().unwrap().to_owned();
 
     // The very same store the operator reads now holds the submitted Task.
-    let store = store.lock().unwrap();
-    let submitted = store.list_submitted_tasks().unwrap();
+    let submitted = store.lock().unwrap().list_submitted_tasks().unwrap();
     assert_eq!(submitted.len(), 1);
     assert_eq!(submitted[0].task_id, task_id);
 }
 
 #[tokio::test]
 async fn an_unpaired_peer_is_refused_403() {
-    // A stranger's endpoint cert that the store has never pinned.
     let stranger_tls = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[7u8; 32]);
     let stranger_cert =
         self_signed_endpoint(&stranger_tls, "stranger", Duration::from_secs(3600)).unwrap();
     let stranger_proposal = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[8u8; 32]);
-
     let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
     let server_cert =
         self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
-    let cp = ExternalCheckpoint {
-        state_generation: 0,
-        trusted_time: 0,
-        rollback_detectable: true,
-    };
-    let store = Store::open_in_memory(&Kek::from_bytes([9u8; 32]), cp).unwrap();
-    let store = Arc::new(Mutex::new(store)); // no peer keys pinned
 
-    let receive_state = Arc::new(ReceiveState::new(
-        store.clone(),
-        StorePeerResolver,
-        ident("performer"),
-        BTreeSet::new(),
-        "https://local/a2a".to_owned(),
-    ));
-    let acceptor = TlsAcceptor::from(Arc::new(
-        bootstrap_server_config(&server_tls_key, &server_cert).unwrap(),
-    ));
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(serve_receive(listener, acceptor, receive_state));
+    // No peer keys pinned.
+    let store = Arc::new(Mutex::new(in_memory_store()));
+    let addr = spawn_receive(store.clone(), &server_tls_key, &server_cert).await;
+    let (status, _) = post_proposal(
+        addr,
+        &stranger_tls,
+        &stranger_cert,
+        &server_cert,
+        &stranger_proposal,
+    )
+    .await;
 
-    let client_cfg =
-        client_config(&stranger_tls, &stranger_cert, &server_cert.fingerprint).unwrap();
-    let connector = TlsConnector::from(Arc::new(client_cfg));
-    let tcp = TcpStream::connect(addr).await.unwrap();
-    let mut tls = connector
-        .connect(ServerName::try_from("localhost").unwrap(), tcp)
-        .await
-        .unwrap();
-
-    let body = send_message_body(&stranger_proposal);
-    let digest = content_digest(&body);
-    let request = format!(
-        "POST /a2a HTTP/1.1\r\nHost: local\r\nContent-Type: application/a2a+json\r\n\
-         a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n",
-        body.len()
-    );
-    tls.write_all(request.as_bytes()).await.unwrap();
-    tls.write_all(&body).await.unwrap();
-    tls.flush().await.unwrap();
-
-    let mut raw = Vec::new();
-    tls.read_to_end(&mut raw).await.unwrap();
-    let (status, _) = split_response(&raw);
     assert_eq!(status, 403, "an unpinned peer must be refused before any effect");
-
-    // No Task was created.
     assert_eq!(store.lock().unwrap().list_submitted_tasks().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn the_whole_lifecycle_receive_then_inbox_show_and_approve() {
+    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
+    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
+    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let server_cert =
+        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+
+    // A real daemon state — its derived keys sign the decision and work order.
+    let config = DaemonConfig {
+        data_dir: std::env::temp_dir().join("axond-lifecycle-unused"),
+        local_performer: ident("performer"),
+        interface_url: "https://local/a2a".to_owned(),
+        receive_addr: None,
+    };
+    let state = Arc::new(DaemonState::from_parts(
+        in_memory_store(),
+        IdentityKeys::from_master([33u8; 32]),
+        config,
+    ));
+    // Pair the peer in the daemon's own store, then serve receive over it.
+    state
+        .store()
+        .lock()
+        .unwrap()
+        .put_peer_key(
+            &peer_cert.fingerprint.value,
+            "contract-proposal",
+            "requester",
+            "iss",
+            &peer_proposal_key.verifying().to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
+
+    // 1. The peer submits over mTLS.
+    let (status, body) = post_proposal(
+        addr,
+        &peer_tls_key,
+        &peer_cert,
+        &server_cert,
+        &peer_proposal_key,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let task_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // 2. It appears in the operator's inbox (same store, admin dispatch).
+    let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
+    assert_eq!(inbox["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(inbox["tasks"][0]["task_id"], task_id);
+
+    // 3. The risk card renders for review.
+    let card = state
+        .dispatch(&ControlRequest::TaskShow {
+            task_id: task_id.clone(),
+        })
+        .unwrap();
+    assert!(card["sentence"].as_str().unwrap().contains("code-review"));
+    assert_eq!(card["sections"].as_array().unwrap().len(), 5);
+
+    // 4. Approve: accept + issue the one-shot work order with the safe grants.
+    let approved = state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+        })
+        .unwrap();
+    assert_eq!(approved["approved"], true);
+    assert!(approved["work_order_id"].as_str().unwrap().starts_with("wo-"));
+    let granted: Vec<&str> = approved["granted_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(granted.contains(&"respond"));
+    assert!(granted.contains(&"read_supplied_inputs"));
+
+    // 5. The accepted Task has left the submitted inbox.
+    let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
+    assert_eq!(inbox["tasks"].as_array().unwrap().len(), 0);
 }
