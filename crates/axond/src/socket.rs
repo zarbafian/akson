@@ -69,6 +69,24 @@ pub enum ControlRequest {
         work_order_id: String,
         request: String,
     },
+    /// Configure a processor (admin only).
+    ProcessorAdd {
+        processor_id: String,
+        provider: String,
+        origin_host: String,
+        origin_port: u16,
+        #[serde(default)]
+        local: bool,
+        #[serde(default)]
+        tls_certificate_sha256: Option<String>,
+    },
+    /// List configured processors (admin only).
+    ProcessorList,
+    /// Set a processor's sealed credential (admin only).
+    ProcessorCredential {
+        processor_id: String,
+        credential: String,
+    },
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
     IssueWorkOrder { task_id: String },
 }
@@ -86,6 +104,9 @@ impl ControlRequest {
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::RequestProcessorCall { .. } => ControlOp::RequestProcessorCall,
+            ControlRequest::ProcessorAdd { .. }
+            | ControlRequest::ProcessorList
+            | ControlRequest::ProcessorCredential { .. } => ControlOp::Processor,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }
     }

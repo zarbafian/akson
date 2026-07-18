@@ -11,6 +11,7 @@
 //! - `axon task deny <id> <reason>` — sign a reject decision (§10.2).
 //! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 //! - `axon task send <spec.json>` — send a task to a performer (§10.2).
+//! - `axon processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
@@ -24,10 +25,92 @@ fn main() -> ExitCode {
         Some("doctor") => doctor(),
         Some("status") => status(),
         Some("task") => task(&mut args),
+        Some("processor") => processor(&mut args),
         _ => {
-            eprintln!("axon: commands: doctor, status, task {{inbox|show <id>|approve <id>|deny <id> <reason>}}");
+            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{add|list|credential}}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Routes the `axon processor …` subcommands over the admin control socket (§13.1).
+fn processor(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("add") => processor_add(args),
+        Some("list") => processor_list(),
+        Some("credential") => match (next_arg(args), next_arg(args)) {
+            (Some(id), Some(cred)) => processor_credential(&id, &cred),
+            _ => usage("axon processor credential <id> <credential>"),
+        },
+        _ => usage("axon processor {add <id> <provider> <host> <port> <pin-sha256>|list|credential <id> <cred>}"),
+    }
+}
+
+/// Add a pinned processor (`axon processor add <id> <provider> <host> <port> <pin>`).
+fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    let (id, provider, host, port, pin) = match (
+        next_arg(args),
+        next_arg(args),
+        next_arg(args),
+        next_arg(args).and_then(|p| p.parse::<u16>().ok()),
+        next_arg(args),
+    ) {
+        (Some(id), Some(provider), Some(host), Some(port), Some(pin)) => {
+            (id, provider, host, port, pin)
+        }
+        _ => return usage("axon processor add <id> <provider> <host> <port> <pin-sha256>"),
+    };
+    let result = match call(&ControlRequest::ProcessorAdd {
+        processor_id: id.clone(),
+        provider,
+        origin_host: host,
+        origin_port: port,
+        local: true,
+        tls_certificate_sha256: Some(pin),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!("added processor {}", result["processor_id"].as_str().unwrap_or(&id));
+    ExitCode::SUCCESS
+}
+
+/// List configured processors (`axon processor list`).
+fn processor_list() -> ExitCode {
+    let result = match call(&ControlRequest::ProcessorList) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let procs = result["processors"].as_array().cloned().unwrap_or_default();
+    if procs.is_empty() {
+        println!("no processors configured.");
+        return ExitCode::SUCCESS;
+    }
+    println!("processors ({}):", procs.len());
+    for p in &procs {
+        println!(
+            "  {}  {}  {}  [{}{}]",
+            p["processor_id"].as_str().unwrap_or("?"),
+            p["provider"].as_str().unwrap_or("?"),
+            p["origin"].as_str().unwrap_or("?"),
+            if p["local"].as_bool() == Some(true) { "local" } else { "remote" },
+            if p["pinned"].as_bool() == Some(true) { ", pinned" } else { "" },
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Set a processor's credential (`axon processor credential <id> <credential>`).
+fn processor_credential(id: &str, credential: &str) -> ExitCode {
+    match call(&ControlRequest::ProcessorCredential {
+        processor_id: id.to_owned(),
+        credential: credential.to_owned(),
+    }) {
+        Ok(_) => {
+            println!("credential set for processor {id}");
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
     }
 }
 

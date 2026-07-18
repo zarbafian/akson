@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axon_broker::{Disclosure, Origin, ProcessorConfig};
 use axon_contract::Identity;
 use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
 use axon_crypto::identity::Fingerprint;
@@ -239,6 +240,57 @@ impl DaemonState {
                 work_order_id,
                 request,
             } => run_processor_call(self, processor_id, work_order_id, request.as_bytes()),
+            ControlRequest::ProcessorAdd {
+                processor_id,
+                provider,
+                origin_host,
+                origin_port,
+                local,
+                tls_certificate_sha256,
+            } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let config = ProcessorConfig {
+                    processor_id: processor_id.clone(),
+                    provider: provider.clone(),
+                    origin: Origin::https(origin_host, *origin_port),
+                    disclosure: if *local {
+                        Disclosure::local()
+                    } else {
+                        Disclosure::remote(provider, "configured")
+                    },
+                    config: serde_json::json!({}),
+                    tls_certificate_sha256: tls_certificate_sha256.clone(),
+                };
+                store.put_processor(&config, now_unix()).map_err(|_| internal())?;
+                Ok(serde_json::json!({ "added": true, "processor_id": processor_id }))
+            }
+            ControlRequest::ProcessorList => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let procs = store.list_processors().map_err(|_| internal())?;
+                let items: Vec<_> = procs
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "processor_id": p.processor_id,
+                            "provider": p.provider,
+                            "origin": format!("https://{}:{}", p.origin.host, p.origin.port),
+                            "local": p.is_local(),
+                            "pinned": p.tls_certificate_sha256.is_some(),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "processors": items }))
+            }
+            ControlRequest::ProcessorCredential {
+                processor_id,
+                credential,
+            } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                store
+                    .put_credential(processor_id, credential.as_bytes(), now_unix())
+                    .map_err(|_| internal())?;
+                Ok(serde_json::json!({ "credential_set": true, "processor_id": processor_id }))
+            }
             ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
         }
     }
@@ -587,6 +639,57 @@ mod tests {
         // The accepted Task has left the submitted inbox.
         let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
         assert_eq!(inbox["tasks"].as_array().unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn processor_add_list_and_credential_round_trip() {
+        let dir = temp_dir("processor");
+        let state = DaemonState::bootstrap(&config(dir.clone())).unwrap();
+        // Empty first.
+        assert_eq!(
+            state.dispatch(&ControlRequest::ProcessorList).unwrap()["processors"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        // Add a pinned local processor.
+        let added = state
+            .dispatch(&ControlRequest::ProcessorAdd {
+                processor_id: "local-llm".to_owned(),
+                provider: "local".to_owned(),
+                origin_host: "127.0.0.1".to_owned(),
+                origin_port: 8443,
+                local: true,
+                tls_certificate_sha256: Some("ab".repeat(32)),
+            })
+            .unwrap();
+        assert_eq!(added["added"], true);
+        // It is listed, local + pinned.
+        let list = state.dispatch(&ControlRequest::ProcessorList).unwrap();
+        let procs = list["processors"].as_array().unwrap();
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0]["processor_id"], "local-llm");
+        assert_eq!(procs[0]["local"], true);
+        assert_eq!(procs[0]["pinned"], true);
+        // The credential is set and stored sealed.
+        let cred = state
+            .dispatch(&ControlRequest::ProcessorCredential {
+                processor_id: "local-llm".to_owned(),
+                credential: "sk-secret".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(cred["credential_set"], true);
+        assert_eq!(
+            state
+                .store()
+                .lock()
+                .unwrap()
+                .get_credential("local-llm")
+                .unwrap(),
+            Some(b"sk-secret".to_vec())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
