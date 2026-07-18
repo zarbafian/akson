@@ -9,6 +9,7 @@
 //! - `axon task show <id>` — a Task's §5.2 risk card, the approval surface.
 //! - `axon task approve <id>` — accept the Task and issue its work order (§10.2/§12.3).
 //! - `axon task deny <id> <reason>` — sign a reject decision (§10.2).
+//! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
@@ -45,7 +46,11 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             (Some(id), Some(reason)) => task_deny(&id, &reason),
             _ => usage("axon task deny <task-id> <reason>"),
         },
-        _ => usage("axon task {inbox|show <id>|approve <id>|deny <id> <reason>}"),
+        Some("deliver") => match next_arg(args) {
+            Some(id) => task_deliver(&id),
+            None => usage("axon task deliver <task-id>"),
+        },
+        _ => usage("axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>}"),
     }
 }
 
@@ -130,6 +135,28 @@ fn task_deny(task_id: &str, reason: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(code) => code,
+    }
+}
+
+/// Deliver a completed Task's result to the requester (`axon task deliver`).
+fn task_deliver(task_id: &str) -> ExitCode {
+    let result = match call(&ControlRequest::TaskDeliver {
+        task_id: task_id.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let delivered = result["delivered"].as_bool() == Some(true);
+    println!(
+        "{} {task_id} → {} (status {})",
+        if delivered { "delivered" } else { "NOT delivered" },
+        result["recipient"].as_str().unwrap_or("?"),
+        result["status"],
+    );
+    if delivered {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

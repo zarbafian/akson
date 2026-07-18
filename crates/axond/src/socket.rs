@@ -57,6 +57,8 @@ pub enum ControlRequest {
     TaskApprove { task_id: String },
     /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
     TaskDeny { task_id: String, reason: String },
+    /// Deliver a completed Task's signed result to the requester (admin only).
+    TaskDeliver { task_id: String },
     /// Submit a worker result for completion (the narrow worker surface).
     SubmitResult(crate::result::ResultSubmission),
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
@@ -72,6 +74,7 @@ impl ControlRequest {
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
+            ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }

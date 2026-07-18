@@ -38,6 +38,7 @@ use axon_crypto::purpose::KeyPurpose;
 use crate::approve::{approve_and_issue, deny};
 use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
+use crate::delivery::run_delivery;
 use crate::keys::IdentityKeys;
 use crate::result::submit_result;
 use crate::socket::ControlRequest;
@@ -205,6 +206,9 @@ impl DaemonState {
                     now_unix(),
                 )
             }
+            // Delivery manages its own store locking (it must not hold the lock
+            // across the network I/O), so it takes the daemon state, not the store.
+            ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
         }
     }

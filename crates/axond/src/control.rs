@@ -70,6 +70,8 @@ pub enum ControlOp {
     IssueWorkOrder,
     /// Sign a requester outcome.
     SignOutcome,
+    /// Deliver a completed Task's signed result to the requester.
+    DeliverResult,
     /// Export content (verification pack, evidence).
     Export,
     /// Recovery and audit operations.
@@ -156,12 +158,13 @@ mod tests {
         ControlOp::ReferenceEvidence,
     ];
 
-    const ADMIN_ONLY_OPS: [ControlOp; 10] = [
+    const ADMIN_ONLY_OPS: [ControlOp; 11] = [
         ControlOp::Pair,
         ControlOp::Policy,
         ControlOp::ApproveContract,
         ControlOp::IssueWorkOrder,
         ControlOp::SignOutcome,
+        ControlOp::DeliverResult,
         ControlOp::Export,
         ControlOp::Recovery,
         ControlOp::Processor,

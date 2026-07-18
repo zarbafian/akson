@@ -40,6 +40,7 @@ http-body-util = { workspace = true }
 bytes = { workspace = true }
 time = { workspace = true }
 sha2 = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

@@ -19,6 +19,7 @@ mod bootstrap;
 mod control;
 mod control_dispatch;
 mod decision;
+mod delivery;
 mod issue;
 mod keys;
 mod peercred;
@@ -30,6 +31,7 @@ mod result;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
+pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use keys::IdentityKeys;
 pub use receive_serve::{run_receive_listener, ReceiveServeError};
 pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
