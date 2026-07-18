@@ -58,6 +58,8 @@ pub enum ControlOp {
     SubmitResult,
     /// Reference an evidence statement produced by the worker.
     ReferenceEvidence,
+    /// Request the daemon to make a processor call on the worker's behalf.
+    RequestProcessorCall,
 
     // --- Admin surface (authority-bearing, design §16.2/§16.4) ---
     /// Pair, accept, list, or remove a peer.
@@ -99,7 +101,8 @@ impl ControlOp {
             ControlOp::SubmitTaskInput
             | ControlOp::ReportProgress
             | ControlOp::SubmitResult
-            | ControlOp::ReferenceEvidence => Surface::Worker,
+            | ControlOp::ReferenceEvidence
+            | ControlOp::RequestProcessorCall => Surface::Worker,
             _ => Surface::Admin,
         }
     }
@@ -153,11 +156,12 @@ pub fn authorize(surface: Surface, op: ControlOp) -> Result<(), Problem> {
 mod tests {
     use super::*;
 
-    const WORKER_OPS: [ControlOp; 4] = [
+    const WORKER_OPS: [ControlOp; 5] = [
         ControlOp::SubmitTaskInput,
         ControlOp::ReportProgress,
         ControlOp::SubmitResult,
         ControlOp::ReferenceEvidence,
+        ControlOp::RequestProcessorCall,
     ];
 
     const ADMIN_ONLY_OPS: [ControlOp; 12] = [

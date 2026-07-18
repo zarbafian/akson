@@ -38,6 +38,7 @@ use rand::RngCore;
 use time::OffsetDateTime;
 
 use crate::approve::{approve_and_issue, deny};
+use crate::broker::run_processor_call;
 use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::delivery::run_delivery;
@@ -228,10 +229,16 @@ impl DaemonState {
                     now_unix(),
                 )
             }
-            // Delivery and send manage their own store locking (they must not hold
-            // the lock across the network I/O), so they take the daemon state.
+            // Delivery, send, and processor calls manage their own store locking
+            // (they must not hold the lock across the network I/O), so they take the
+            // daemon state.
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => run_send(self, spec),
+            ControlRequest::RequestProcessorCall {
+                processor_id,
+                work_order_id,
+                request,
+            } => run_processor_call(self, processor_id, work_order_id, request.as_bytes()),
             ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
         }
     }

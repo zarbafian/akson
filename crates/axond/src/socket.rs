@@ -63,6 +63,12 @@ pub enum ControlRequest {
     TaskSend(crate::send::TaskSpec),
     /// Submit a worker result for completion (the narrow worker surface).
     SubmitResult(crate::result::ResultSubmission),
+    /// Request a processor call on the worker's behalf (the narrow worker surface).
+    RequestProcessorCall {
+        processor_id: String,
+        work_order_id: String,
+        request: String,
+    },
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
     IssueWorkOrder { task_id: String },
 }
@@ -79,6 +85,7 @@ impl ControlRequest {
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
+            ControlRequest::RequestProcessorCall { .. } => ControlOp::RequestProcessorCall,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }
     }

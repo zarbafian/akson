@@ -15,6 +15,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
+use axon_authority::{AttemptState, CapabilityComponent};
 use axon_broker::{
     check_origin, check_resolved_address, CallBinding, CallBudget, EgressPolicy, ProcessorCall,
     SubAttemptEvent, SubAttemptState,
@@ -22,13 +23,16 @@ use axon_broker::{
 use axon_crypto::cert::EndpointCert;
 use axon_crypto::identity::{Fingerprint, FingerprintKind};
 use axon_crypto::keypair::PurposeKey;
+use axon_crypto::purpose::KeyPurpose;
 use axon_store::{PrepareOutcome, Store};
 use axon_transport::tls::client_config;
+use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 
+use crate::bootstrap::DaemonState;
 use crate::control::Problem;
 
 /// A processor's HTTPS response.
@@ -251,6 +255,88 @@ fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     let head = std::str::from_utf8(&raw[..sep]).ok()?;
     let status = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
     Some((status, raw[sep + 4..].to_vec()))
+}
+
+/// Serves a worker's request to make a processor call (design §13.1). The worker
+/// runs with no network of its own; the daemon dispatches on its behalf, but only
+/// if the work order authorised processor use (§12.1 — which Option-2 does not
+/// auto-grant at accept). Extracts what it needs under the store lock, then runs
+/// the dispatch (which does its own two-phase locking) on a dedicated runtime.
+pub fn run_processor_call(
+    state: &DaemonState,
+    processor_id: &str,
+    work_order_id: &str,
+    request: &[u8],
+) -> Result<serde_json::Value, Problem> {
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let (binding, budget, policy) = {
+        let store = state.store();
+        let store = store.lock().map_err(|_| internal())?;
+        let issued = store
+            .get_work_order(work_order_id)
+            .map_err(store_problem)?
+            .ok_or_else(|| problem(404, "no-work-order", "no such work order"))?;
+        // The work order must grant processor use (§12.1); Option-2 holds this
+        // outward-disclosing capability for a separate confirmation.
+        if !issued
+            .order
+            .capabilities
+            .grants_component(CapabilityComponent::ProcessorUse)
+        {
+            return Err(problem(
+                403,
+                "processor-use-not-granted",
+                "the work order does not authorise processor use",
+            ));
+        }
+        // The attempt must be active — no calls before it claims or after it ends.
+        match store.attempt_state(work_order_id).map_err(store_problem)? {
+            Some(AttemptState::Claimed) | Some(AttemptState::Running) => {}
+            _ => return Err(problem(409, "attempt-not-active", "the attempt is not active")),
+        }
+        let config = store
+            .get_processor(processor_id)
+            .map_err(store_problem)?
+            .ok_or_else(|| problem(404, "no-such-processor", "no such processor"))?;
+        let binding = CallBinding {
+            work_order_id: work_order_id.to_owned(),
+            work_order_digest: issued.digest.clone(),
+            task_id: issued.order.task_id.clone(),
+        };
+        let budget = CallBudget {
+            max_cost_microusd: issued.order.budgets.max_cost_microusd,
+            deadline: issued.order.deadline.clone(),
+            max_response_bytes: issued.order.budgets.max_bytes,
+        };
+        // Allow the processor's exact origin; permit its local address only for a
+        // declared-local processor.
+        let mut policy = EgressPolicy::allowing([config.origin.clone()]);
+        if config.is_local() {
+            policy = policy.allow_local();
+        }
+        (binding, budget, policy)
+    };
+
+    let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
+    let transport = HttpsTransport {
+        endpoint_key: &endpoint_key,
+        endpoint_cert: state.endpoint_cert(),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| internal())?;
+    let store = state.store();
+    runtime.block_on(dispatch_processor_call(
+        &store,
+        processor_id,
+        request,
+        binding,
+        budget,
+        &policy,
+        &transport,
+        now,
+    ))
 }
 
 fn is_terminal(state: SubAttemptState) -> bool {
@@ -662,5 +748,121 @@ mod tests {
         ProcessorCall::prepare(&config, b"p", binding(), budget())
             .unwrap()
             .idempotency_key
+    }
+
+    // --- run_processor_call authorization gates (the worker-facing entry) ---
+
+    use crate::DaemonConfig;
+    use axon_authority::{
+        Audience, Budgets, CapabilityVector, Grant, RequestOrigin, RespondScope, WorkOrder,
+        WorkOrderKey,
+    };
+    use crate::IdentityKeys;
+
+    fn ident(agent: &str) -> axon_contract::Identity {
+        axon_contract::Identity {
+            issuer: "iss".to_owned(),
+            agent: agent.to_owned(),
+        }
+    }
+
+    fn daemon() -> DaemonState {
+        let identity = IdentityKeys::from_master([80u8; 32]);
+        let cert = self_signed_endpoint(
+            &identity.purpose_key(KeyPurpose::TlsEndpoint),
+            "daemon",
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let kek = axon_store::envelope::Kek::from_bytes([52u8; 32]);
+        let cp = ExternalCheckpoint {
+            state_generation: 0,
+            trusted_time: 0,
+            rollback_detectable: true,
+        };
+        let store = Store::open_in_memory(&kek, cp).unwrap();
+        let config = DaemonConfig {
+            data_dir: std::env::temp_dir().join("axond-broker-unused"),
+            local_performer: ident("performer"),
+            interface_url: "https://local/a2a".to_owned(),
+            receive_addr: None,
+        };
+        DaemonState::from_parts(store, identity, cert, config)
+    }
+
+    fn work_order(id: &str, grants: Vec<Grant>) -> WorkOrder {
+        WorkOrder {
+            version: 1,
+            work_order_id: id.to_owned(),
+            issuer: ident("performer"),
+            issuer_assurance: "local-human".to_owned(),
+            audience: Audience {
+                daemon: "axond".to_owned(),
+                executor: "axon-worker".to_owned(),
+            },
+            request_origin: RequestOrigin {
+                peer: ident("requester"),
+                tls_certificate_sha256: "aa".repeat(32),
+            },
+            task_id: "task-1".to_owned(),
+            context_id: "ctx-1".to_owned(),
+            message_id: "msg-1".to_owned(),
+            contract_revision: 0,
+            contract_digest: "a".repeat(64),
+            capabilities: CapabilityVector::new(grants).unwrap(),
+            input_manifest: vec!["diff".to_owned()],
+            processor_digest: None,
+            runner_digest: None,
+            sandbox_digest: None,
+            profile_digest: None,
+            budgets: Budgets {
+                max_cost_microusd: 5000,
+                max_bytes: 65536,
+                max_operations: 16,
+            },
+            evidence_slots: vec![],
+            policy_version: 1,
+            decision_id: "d-1".to_owned(),
+            not_before: "2026-01-01T00:00:00Z".to_owned(),
+            deadline: "2030-01-01T00:00:00Z".to_owned(),
+            nonce: format!("{id}-{}", "n".repeat(40)),
+            remote_cancel: None,
+        }
+    }
+
+    fn store_work_order(daemon: &DaemonState, id: &str, grants: Vec<Grant>) {
+        let order = work_order(id, grants);
+        let issued = order.issue(&WorkOrderKey::from_bytes([7u8; 32])).unwrap();
+        let store = daemon.store();
+        let store = store.lock().unwrap();
+        store.claim_attempt(&order, NOW).unwrap();
+        store.put_work_order(&issued, NOW).unwrap();
+    }
+
+    fn respond_grant() -> Grant {
+        Grant::Respond(RespondScope {
+            task_id: "task-1".to_owned(),
+            message_id: "msg-1".to_owned(),
+            recipient: "request-origin".to_owned(),
+            max_responses: 1,
+            max_bytes: 8192,
+            deadline: "2030-01-01T00:00:00Z".to_owned(),
+        })
+    }
+
+    #[test]
+    fn a_processor_call_without_a_work_order_is_404() {
+        let daemon = daemon();
+        let err = run_processor_call(&daemon, "proc", "wo-nope", b"x").unwrap_err();
+        assert_eq!(err.status, 404);
+    }
+
+    #[test]
+    fn a_processor_call_not_granted_processor_use_is_refused() {
+        let daemon = daemon();
+        // The work order grants only respond — not processor use (Option-2 holds it).
+        store_work_order(&daemon, "wo-1", vec![respond_grant()]);
+        let err = run_processor_call(&daemon, "proc", "wo-1", b"x").unwrap_err();
+        assert_eq!(err.status, 403);
     }
 }
