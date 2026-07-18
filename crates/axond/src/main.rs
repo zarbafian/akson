@@ -1,46 +1,24 @@
-//! The Axon daemon (`axond serve`): binds the two OS-protected local sockets and
-//! serves control requests (design §16.2).
+//! The Axon daemon (`axond serve`): opens the durable store and binds the two
+//! OS-protected local control sockets (design §16.2, §16.4).
 //!
 //! The admin socket carries authority-bearing operator operations; the worker
 //! socket is narrow. Both authenticate the peer's UID and authorize by surface
-//! before dispatch. This first assembly wires health (`diagnose`); the full command
-//! set and durable state layer in on the same gates.
+//! before dispatch. This assembly serves health (`diagnose`) and the store-backed
+//! operator views (`task inbox`, `task show`); the decision, work-order, and mTLS
+//! receive paths layer on the same shared store.
 
 use std::os::unix::fs::PermissionsExt;
 
 use axond::{
-    admin_socket_path, bind_socket, current_uid, serve, socket_dir, worker_socket_path,
-    ControlRequest, Problem, Surface,
+    admin_socket_path, bind_socket, current_uid, dispatch, serve, socket_dir, worker_socket_path,
+    ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
-fn dispatch(req: &ControlRequest) -> Result<serde_json::Value, Problem> {
-    match req {
-        ControlRequest::Diagnose => {
-            let report = axon_sandbox::diagnose();
-            let ready = axon_sandbox::all_required_available(&report);
-            let capabilities: Vec<_> = report
-                .iter()
-                .map(|d| {
-                    serde_json::json!({
-                        "feature": d.feature,
-                        "available": d.available,
-                        "required": d.required,
-                    })
-                })
-                .collect();
-            Ok(serde_json::json!({
-                "daemon": "axond",
-                "sandbox_ready": ready,
-                "capabilities": capabilities,
-            }))
-        }
-        // Worker operations are authorized here but not yet backed by durable state;
-        // acknowledge so the surface separation can be exercised end to end.
-        _ => Ok(serde_json::json!({ "accepted": true })),
-    }
-}
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let config = DaemonConfig::from_env();
+    let state = DaemonState::bootstrap(&config)?;
+    let store = state.store();
 
-fn run() -> std::io::Result<()> {
     // Private per-user runtime directory for the sockets (0700).
     let dir = socket_dir();
     std::fs::create_dir_all(&dir)?;
@@ -49,22 +27,34 @@ fn run() -> std::io::Result<()> {
     let uid = current_uid();
     let admin_path = admin_socket_path();
     let worker_path = worker_socket_path();
-    let admin = bind_socket(&admin_path).map_err(std::io::Error::other)?;
-    let worker = bind_socket(&worker_path).map_err(std::io::Error::other)?;
+    let admin = bind_socket(&admin_path)?;
+    let worker = bind_socket(&worker_path)?;
 
     eprintln!(
-        "axond: serving admin at {} and worker at {} (uid {uid})",
+        "axond: {}/{} serving admin at {} and worker at {} (uid {uid}); data in {}",
+        config.local_performer.issuer,
+        config.local_performer.agent,
         admin_path.display(),
-        worker_path.display()
+        worker_path.display(),
+        config.data_dir.display(),
     );
 
-    // The worker surface serves on its own thread; the admin surface on this one.
-    let worker_thread = std::thread::spawn(move || {
-        if let Err(e) = serve(&worker, Surface::Worker, uid, dispatch) {
-            eprintln!("axond: worker socket stopped: {e}");
-        }
-    });
-    serve(&admin, Surface::Admin, uid, dispatch).map_err(std::io::Error::other)?;
+    // Both surfaces share the one store; each dispatch closure holds its own
+    // handle. The worker surface serves on its own thread, the admin on this one.
+    let worker_thread = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let d = move |req: &ControlRequest| dispatch(&store, req);
+            if let Err(e) = serve(&worker, Surface::Worker, uid, d) {
+                eprintln!("axond: worker socket stopped: {e}");
+            }
+        })
+    };
+    let admin_dispatch = {
+        let store = store.clone();
+        move |req: &ControlRequest| dispatch(&store, req)
+    };
+    serve(&admin, Surface::Admin, uid, admin_dispatch)?;
     let _ = worker_thread.join();
     Ok(())
 }
