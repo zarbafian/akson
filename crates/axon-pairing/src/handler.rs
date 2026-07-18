@@ -138,7 +138,12 @@ pub fn handle_bootstrap(
         // stored peer is recoverable only by re-pairing.
         Ok(Accepted::Paired { response }) => match to_peer_identity(&verified, extended_card) {
             Ok(peer) => match ledger.store_pending_peer(&peer) {
-                Ok(()) => reply(BootstrapStatus::Ok, response),
+                // Retain the peer's verification keys so its future messages can be
+                // verified (design §8.1). A key-persistence failure fails closed.
+                Ok(()) => match ledger.persist_peer_keys(&verified.bindings, now_unix) {
+                    Ok(()) => reply(BootstrapStatus::Ok, response),
+                    Err(_) => reply(BootstrapStatus::Error, vec![]),
+                },
                 Err(_) => reply(BootstrapStatus::Error, vec![]),
             },
             Err(_) => reply(BootstrapStatus::Error, vec![]),

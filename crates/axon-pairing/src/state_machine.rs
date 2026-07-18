@@ -122,6 +122,18 @@ pub trait PairingStore: PairingLedger {
     /// Persists the peer created by a fresh pairing. In v1 this is a *pending*
     /// peer awaiting local confirmation before it becomes active (§8.2 step 7).
     fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError>;
+
+    /// Retains the peer's verified verification keys (design §8.1), keyed by TLS
+    /// fingerprint, so a later received message can be verified against them. The
+    /// key binding carries the peer's fingerprint, identity, and per-purpose keys.
+    /// Default: no-op — an in-memory ledger keeps no long-term keys.
+    fn persist_peer_keys(
+        &mut self,
+        _keys: &crate::key_binding::KeyBindingSet,
+        _now: i64,
+    ) -> Result<(), LedgerError> {
+        Ok(())
+    }
 }
 
 /// The verifier (ledger key) for a presented base64url secret, or `None` if the

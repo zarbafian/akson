@@ -867,6 +867,31 @@ impl PairingStore for Store {
         )
         .map_err(ledger_err)
     }
+
+    fn persist_peer_keys(
+        &mut self,
+        keys: &axon_pairing::key_binding::KeyBindingSet,
+        now: i64,
+    ) -> Result<(), LedgerError> {
+        // Retain each verified per-purpose public key, keyed by the peer's TLS
+        // fingerprint, so a received message can be verified against it (§8.1).
+        for (purpose, entry) in &keys.keys {
+            let vk = entry
+                .jwk
+                .to_key()
+                .map_err(|e| LedgerError(format!("peer key jwk is invalid: {e}")))?;
+            self.put_peer_key(
+                &keys.tls_certificate_sha256,
+                purpose,
+                &keys.subject.agent,
+                &keys.subject.issuer,
+                &vk.to_bytes(),
+                now,
+            )
+            .map_err(ledger_err)?;
+        }
+        Ok(())
+    }
 }
 
 /// The task-contract head and stored revisions (design §9.3, §10.2). The pure
@@ -1367,7 +1392,7 @@ impl Store {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use axon_crypto::identity::{Fingerprint, PeerIdentity};
@@ -2155,5 +2180,54 @@ mod tests {
         );
         // Idempotent: a second sweep finds nothing dispatching.
         assert_eq!(store.resolve_crashed_calls(201).unwrap(), 0);
+    }
+
+    // --- peer verification keys (M12) ---
+
+    #[test]
+    fn persist_peer_keys_retains_the_proposal_key_by_fingerprint() {
+        use axon_crypto::keypair::PurposeKey;
+        use axon_crypto::purpose::KeyPurpose;
+        use axon_pairing::key_binding::{Identity as BindingIdentity, KeyBindingSet, KeyEntry};
+        use std::collections::BTreeMap;
+
+        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let proposal = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[5u8; 32]);
+        let jwk = proposal.verifying().to_jwk();
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            "contract-proposal".to_owned(),
+            KeyEntry {
+                jwk: jwk.clone(),
+                thumbprint: jwk.thumbprint(),
+                generation: 0,
+                not_before: "2020-01-01T00:00:00Z".to_owned(),
+                not_after: "2030-01-01T00:00:00Z".to_owned(),
+            },
+        );
+        let bindings = KeyBindingSet {
+            schema_version: 1,
+            subject: BindingIdentity {
+                issuer: "local".to_owned(),
+                agent: "peer-1".to_owned(),
+            },
+            tls_certificate_sha256: "fp-abc".to_owned(),
+            keys,
+        };
+
+        store.persist_peer_keys(&bindings, 100).unwrap();
+        // The proposal key is resolvable by TLS fingerprint + purpose.
+        let pk = store
+            .peer_key("fp-abc", "contract-proposal")
+            .unwrap()
+            .expect("the proposal key should be persisted");
+        assert_eq!(pk.agent_id, "peer-1");
+        assert_eq!(pk.issuer, "local");
+        assert_eq!(pk.public_key, proposal.verifying().to_public_bytes());
+        // An unknown fingerprint resolves to nothing.
+        assert!(store
+            .peer_key("other", "contract-proposal")
+            .unwrap()
+            .is_none());
     }
 }
