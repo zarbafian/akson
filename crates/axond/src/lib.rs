@@ -14,6 +14,7 @@
 //! The socket wiring, the OpenAPI 3.1 control API, the risk-card rendering, and the
 //! operator command set build on these gates.
 
+mod a2a_client;
 mod approve;
 mod bootstrap;
 mod control;
@@ -29,6 +30,7 @@ mod receive_http;
 mod receive_serve;
 mod receive_server;
 mod result;
+mod send;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
@@ -39,6 +41,7 @@ pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use issue::{issue_for_accepted, IssueConfig};
 pub use keys::IdentityKeys;
 pub use outcome::finalize_result;
+pub use send::{run_send, Deliverable, TaskInput, TaskSpec};
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };

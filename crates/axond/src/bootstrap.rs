@@ -41,6 +41,7 @@ use crate::control_dispatch::dispatch_control;
 use crate::delivery::run_delivery;
 use crate::keys::IdentityKeys;
 use crate::result::submit_result;
+use crate::send::run_send;
 use crate::socket::ControlRequest;
 
 /// Why the daemon could not come up.
@@ -205,9 +206,10 @@ impl DaemonState {
                     now_unix(),
                 )
             }
-            // Delivery manages its own store locking (it must not hold the lock
-            // across the network I/O), so it takes the daemon state, not the store.
+            // Delivery and send manage their own store locking (they must not hold
+            // the lock across the network I/O), so they take the daemon state.
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
+            ControlRequest::TaskSend(spec) => run_send(self, spec),
             ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
         }
     }

@@ -10,12 +10,13 @@
 //! - `axon task approve <id>` — accept the Task and issue its work order (§10.2/§12.3).
 //! - `axon task deny <id> <reason>` — sign a reject decision (§10.2).
 //! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
+//! - `axon task send <spec.json>` — send a task to a performer (§10.2).
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
 use axon_sandbox::{all_required_available, diagnose, Diagnostic};
-use axond::{admin_socket_path, send_request, ControlRequest, ControlResponse};
+use axond::{admin_socket_path, send_request, ControlRequest, ControlResponse, TaskSpec};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -50,8 +51,42 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(id) => task_deliver(&id),
             None => usage("axon task deliver <task-id>"),
         },
-        _ => usage("axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>}"),
+        Some("send") => match next_arg(args) {
+            Some(path) => task_send(&path),
+            None => usage("axon task send <spec.json>"),
+        },
+        _ => usage(
+            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>|send <spec.json>}",
+        ),
     }
+}
+
+/// Send a task to a performer from a JSON spec file (`axon task send`).
+fn task_send(spec_path: &str) -> ExitCode {
+    let text = match std::fs::read_to_string(spec_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("axon: cannot read {spec_path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let spec: TaskSpec = match serde_json::from_str(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("axon: {spec_path} is not a valid task spec: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = match call(&ControlRequest::TaskSend(spec)) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!(
+        "sent to {}: task {}",
+        result["performer"].as_str().unwrap_or("?"),
+        result["task_id"].as_str().unwrap_or("?"),
+    );
+    ExitCode::SUCCESS
 }
 
 /// The submitted Tasks awaiting a decision (`axon task inbox`).

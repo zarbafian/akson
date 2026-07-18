@@ -10,30 +10,20 @@
 //! The store is `!Sync`, so everything the delivery needs is extracted **under the
 //! lock** into a [`DeliveryJob`] first; the network I/O then runs lock-free.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use axon_contract::{parse_payload, HeadState};
 use axon_crypto::cert::self_signed_endpoint;
-use axon_crypto::identity::{Fingerprint, FingerprintKind};
 use axon_crypto::purpose::KeyPurpose;
 use axon_ext::dsse::Envelope;
 use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
 use axon_proto::v1::{part::Content, Message, Part, SendMessageRequest};
-use axon_store::delivery::content_digest;
 use axon_store::Store;
-use axon_transport::tls::client_config;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::TlsConnector;
-use url::Url;
 
+use crate::a2a_client::post_a2a;
 use crate::bootstrap::DaemonState;
 use crate::control::Problem;
 
-/// Cap on the requester's acknowledgement (design §9.1).
-const MAX_ACK_BODY: usize = 64 * 1024;
 /// Endpoint-cert validity for the outbound connection (see [`crate::run_receive_listener`]).
 const ENDPOINT_CERT_VALIDITY: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -123,83 +113,14 @@ pub async fn deliver_job(
     endpoint_cert: &axon_crypto::cert::EndpointCert,
 ) -> Result<serde_json::Value, Problem> {
     let body = a2a_result_message(&job)?;
-    let digest = content_digest(&body);
-
-    let (host, port, path) = parse_endpoint(&job.recipient_endpoint).ok_or_else(|| {
-        problem(
-            500,
-            "bad-endpoint",
-            "the requester endpoint is not a usable URL",
-        )
-    })?;
-    let pinned = Fingerprint {
-        kind: FingerprintKind::CertSha256,
-        value: job.recipient_fingerprint.clone(),
-    };
-    let config = client_config(endpoint_key, endpoint_cert, &pinned)
-        .map_err(|_| problem(500, "tls", "the delivery TLS config could not be built"))?;
-    let connector = TlsConnector::from(Arc::new(config));
-
-    let addr = tokio::net::lookup_host((host.as_str(), port))
-        .await
-        .map_err(|_| {
-            problem(
-                502,
-                "unreachable",
-                "the requester endpoint could not be resolved",
-            )
-        })?
-        .next()
-        .ok_or_else(|| problem(502, "unreachable", "the requester endpoint did not resolve"))?;
-    let tcp = TcpStream::connect(addr).await.map_err(|_| {
-        problem(
-            502,
-            "unreachable",
-            "the requester endpoint refused the connection",
-        )
-    })?;
-    let server_name =
-        ServerName::try_from(host).map_err(|_| problem(500, "bad-endpoint", "bad host name"))?;
-    let mut tls = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|_| problem(502, "tls-handshake", "the requester TLS handshake failed"))?;
-
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host_hdr}\r\nContent-Type: application/a2a+json\r\n\
-         a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {len}\r\n\
-         Connection: close\r\n\r\n",
-        host_hdr = "axon",
-        len = body.len(),
-    );
-    let write = async {
-        tls.write_all(request.as_bytes()).await?;
-        tls.write_all(&body).await?;
-        tls.flush().await?;
-        // Read only until the response headers complete — the status line is all we
-        // need. Tolerate a peer that closes without a TLS close_notify.
-        let mut raw = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            match tls.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    raw.extend_from_slice(&chunk[..n]);
-                    if raw.windows(4).any(|w| w == b"\r\n\r\n") || raw.len() >= MAX_ACK_BODY {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok::<_, std::io::Error>(raw)
-    };
-    let raw = write
-        .await
-        .map_err(|e| problem_detail(502, "delivery-io", "delivering the result failed", e))?;
-    let status = response_status(&raw)
-        .ok_or_else(|| problem(502, "delivery-io", "the requester sent no HTTP status"))?;
+    let (status, _ack) = post_a2a(
+        endpoint_key,
+        endpoint_cert,
+        &job.recipient_endpoint,
+        &job.recipient_fingerprint,
+        &body,
+    )
+    .await?;
 
     Ok(serde_json::json!({
         "delivered": status == 200,
@@ -264,32 +185,6 @@ fn a2a_result_message(job: &DeliveryJob) -> Result<Vec<u8>, Problem> {
     .map_err(|_| problem(500, "internal", "the request could not be processed"))
 }
 
-/// Parses an endpoint URL into (host, port, path). Only `https` is usable.
-fn parse_endpoint(endpoint: &str) -> Option<(String, u16, String)> {
-    let url = Url::parse(endpoint).ok()?;
-    if url.scheme() != "https" {
-        return None;
-    }
-    let host = url.host_str()?.to_owned();
-    let port = url.port_or_known_default().unwrap_or(443);
-    let path = if url.path().is_empty() {
-        "/"
-    } else {
-        url.path()
-    };
-    Some((host, port, path.to_owned()))
-}
-
-/// The status code from an HTTP/1.1 response's start line.
-fn response_status(raw: &[u8]) -> Option<u16> {
-    let end = raw
-        .windows(2)
-        .position(|w| w == b"\r\n")
-        .unwrap_or(raw.len());
-    let line = std::str::from_utf8(&raw[..end]).ok()?;
-    line.split_whitespace().nth(1)?.parse().ok()
-}
-
 fn store_problem(_e: axon_store::StoreError) -> Problem {
     problem(500, "internal", "the request could not be processed")
 }
@@ -303,15 +198,6 @@ fn problem(status: u16, kind: &str, title: &str) -> Problem {
     }
 }
 
-fn problem_detail(status: u16, kind: &str, title: &str, e: impl std::fmt::Display) -> Problem {
-    Problem {
-        type_: format!("urn:axon:error:{kind}"),
-        title: title.to_owned(),
-        status,
-        detail: Some(e.to_string()),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -321,8 +207,9 @@ mod tests {
     use axon_evidence::{ManifestHeader, OutputEntry, ResultManifest};
     use axon_proto::v1::part::Content as PartContent;
     use axon_transport::tls::bootstrap_server_config;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
 
@@ -448,15 +335,5 @@ mod tests {
         let (_manifest, verified_digest) =
             ResultManifest::verify(&envelope, &task_result_key.verifying()).unwrap();
         assert_eq!(verified_digest, bundle_digest);
-    }
-
-    #[test]
-    fn parse_endpoint_requires_https() {
-        assert!(parse_endpoint("http://host/a2a").is_none());
-        let (host, port, path) = parse_endpoint("https://host:9443/a2a").unwrap();
-        assert_eq!((host.as_str(), port, path.as_str()), ("host", 9443, "/a2a"));
-        // Default HTTPS port + empty path.
-        let (_h, port, path) = parse_endpoint("https://host").unwrap();
-        assert_eq!((port, path.as_str()), (443, "/"));
     }
 }

@@ -59,6 +59,8 @@ pub enum ControlRequest {
     TaskDeny { task_id: String, reason: String },
     /// Deliver a completed Task's signed result to the requester (admin only).
     TaskDeliver { task_id: String },
+    /// Send a task to a performer (sign + POST a proposal, admin only).
+    TaskSend(crate::send::TaskSpec),
     /// Submit a worker result for completion (the narrow worker surface).
     SubmitResult(crate::result::ResultSubmission),
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
@@ -75,6 +77,7 @@ impl ControlRequest {
                 ControlOp::ApproveContract
             }
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
+            ControlRequest::TaskSend(_) => ControlOp::SendTask,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }
