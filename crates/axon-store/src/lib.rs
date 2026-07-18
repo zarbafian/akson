@@ -547,6 +547,27 @@ impl Store {
         }
     }
 
+    /// The pinned TLS leaf-cert fingerprint of the peer `issuer/agent_id` (design
+    /// §8.1) — the reverse of [`peer_key`](Self::peer_key), used when issuing a
+    /// work order to bind its request origin. A peer presents one endpoint cert
+    /// across all its purpose keys, so any row for the identity yields it. Returns
+    /// `None` for an unpaired peer.
+    pub fn peer_tls_fingerprint(
+        &self,
+        issuer: &str,
+        agent_id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT tls_fingerprint FROM peer_keys
+                 WHERE issuer = ?1 AND agent_id = ?2 LIMIT 1",
+                params![issuer, agent_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Idempotent receive (design §9.2). Stores the request's covered-value
     /// commitment, sealed body, and sealed response on first sight; on a repeat
     /// of the same (peer, Message id) it returns the saved response and Task id
@@ -2280,6 +2301,25 @@ mod tests {
         // An unknown fingerprint resolves to nothing.
         assert!(store
             .peer_key("other", "contract-proposal")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn peer_tls_fingerprint_reverse_looks_up_the_pinned_cert() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let key = [7u8; 32];
+        store
+            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, 100)
+            .unwrap();
+        // The same peer's endpoint cert is found from its identity...
+        assert_eq!(
+            store.peer_tls_fingerprint("local", "peer-1").unwrap(),
+            Some("fp-xyz".to_owned())
+        );
+        // ...and an unpaired identity yields nothing.
+        assert!(store
+            .peer_tls_fingerprint("local", "stranger")
             .unwrap()
             .is_none());
     }

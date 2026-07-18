@@ -52,6 +52,11 @@ pub enum ControlRequest {
     TaskInbox,
     /// Render a submitted Task's risk card (`axon task show`).
     TaskShow { task_id: String },
+    /// Approve a submitted Task: accept it and issue the one-shot work order
+    /// (`axon task approve`, admin only).
+    TaskApprove { task_id: String },
+    /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
+    TaskDeny { task_id: String, reason: String },
     /// Submit a bounded worker result (the narrow worker surface).
     SubmitResult { task_id: String, byte_length: u64 },
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
@@ -64,6 +69,9 @@ impl ControlRequest {
         match self {
             ControlRequest::Diagnose => ControlOp::Diagnose,
             ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => ControlOp::TaskInspect,
+            ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
+                ControlOp::ApproveContract
+            }
             ControlRequest::SubmitResult { .. } => ControlOp::SubmitResult,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }

@@ -14,6 +14,7 @@
 //! The socket wiring, the OpenAPI 3.1 control API, the risk-card rendering, and the
 //! operator command set build on these gates.
 
+mod approve;
 mod bootstrap;
 mod control;
 mod control_dispatch;
@@ -26,7 +27,7 @@ mod receive_http;
 mod receive_server;
 mod socket;
 
-pub use bootstrap::{dispatch, BootstrapError, DaemonConfig, DaemonState};
+pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
 pub use keys::IdentityKeys;
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;

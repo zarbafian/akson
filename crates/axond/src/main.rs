@@ -8,16 +8,16 @@
 //! receive paths layer on the same shared store.
 
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
 
 use axond::{
-    admin_socket_path, bind_socket, current_uid, dispatch, serve, socket_dir, worker_socket_path,
+    admin_socket_path, bind_socket, current_uid, serve, socket_dir, worker_socket_path,
     ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env();
-    let state = DaemonState::bootstrap(&config)?;
-    let store = state.store();
+    let state = Arc::new(DaemonState::bootstrap(&config)?);
 
     // Private per-user runtime directory for the sockets (0700).
     let dir = socket_dir();
@@ -39,20 +39,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.data_dir.display(),
     );
 
-    // Both surfaces share the one store; each dispatch closure holds its own
+    // Both surfaces share the one daemon state; each dispatch closure holds its own
     // handle. The worker surface serves on its own thread, the admin on this one.
     let worker_thread = {
-        let store = store.clone();
+        let state = state.clone();
         std::thread::spawn(move || {
-            let d = move |req: &ControlRequest| dispatch(&store, req);
+            let d = move |req: &ControlRequest| state.dispatch(req);
             if let Err(e) = serve(&worker, Surface::Worker, uid, d) {
                 eprintln!("axond: worker socket stopped: {e}");
             }
         })
     };
     let admin_dispatch = {
-        let store = store.clone();
-        move |req: &ControlRequest| dispatch(&store, req)
+        let state = state.clone();
+        move |req: &ControlRequest| state.dispatch(req)
     };
     serve(&admin, Surface::Admin, uid, admin_dispatch)?;
     let _ = worker_thread.join();

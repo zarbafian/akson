@@ -33,6 +33,9 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use time::OffsetDateTime;
 
+use axon_crypto::purpose::KeyPurpose;
+
+use crate::approve::{approve_and_issue, deny};
 use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::keys::IdentityKeys;
@@ -146,25 +149,50 @@ impl DaemonState {
     pub fn config(&self) -> &DaemonConfig {
         &self.config
     }
-}
 
-/// Handles one control request behind the surface-authorization gate (design
-/// §16.2, §16.4). The gate has already refused any operation not permitted on the
-/// caller's surface, so this only routes the permitted ones:
-///
-/// - `Diagnose` — daemon + sandbox health (no store needed).
-/// - `TaskInbox` / `TaskShow` — the store-backed operator views.
-/// - `SubmitResult` / `IssueWorkOrder` — acknowledged; their durable backing lands
-///   in the next assembly step, so the surface separation stays exercised.
-pub fn dispatch(store: &Mutex<Store>, req: &ControlRequest) -> Result<serde_json::Value, Problem> {
-    match req {
-        ControlRequest::Diagnose => Ok(diagnose_report()),
-        ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => {
-            let store = store.lock().map_err(|_| internal())?;
-            dispatch_control(&store, req)
-        }
-        ControlRequest::SubmitResult { .. } | ControlRequest::IssueWorkOrder { .. } => {
-            Ok(serde_json::json!({ "accepted": true }))
+    /// Handles one control request behind the surface-authorization gate (design
+    /// §16.2, §16.4). The gate has already refused any operation not permitted on
+    /// the caller's surface, so this only routes the permitted ones:
+    ///
+    /// - `Diagnose` — daemon + sandbox health.
+    /// - `TaskInbox` / `TaskShow` — the store-backed operator views.
+    /// - `TaskApprove` — accept the Task and issue its one-shot work order,
+    ///   signing with this endpoint's decision and work-order keys.
+    /// - `TaskDeny` — sign a reject decision.
+    /// - `SubmitResult` / `IssueWorkOrder` — acknowledged; their durable backing
+    ///   lands in a later assembly step.
+    pub fn dispatch(&self, req: &ControlRequest) -> Result<serde_json::Value, Problem> {
+        match req {
+            ControlRequest::Diagnose => Ok(diagnose_report()),
+            ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                dispatch_control(&store, req)
+            }
+            ControlRequest::TaskApprove { task_id } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                approve_and_issue(
+                    &store,
+                    &self.config.local_performer,
+                    &self.identity.purpose_key(KeyPurpose::ContractDecision),
+                    &self.identity.work_order_key(),
+                    task_id,
+                    now_unix(),
+                )
+            }
+            ControlRequest::TaskDeny { task_id, reason } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                deny(
+                    &store,
+                    &self.config.local_performer,
+                    &self.identity.purpose_key(KeyPurpose::ContractDecision),
+                    task_id,
+                    reason,
+                    now_unix(),
+                )
+            }
+            ControlRequest::SubmitResult { .. } | ControlRequest::IssueWorkOrder { .. } => {
+                Ok(serde_json::json!({ "accepted": true }))
+            }
         }
     }
 }
@@ -237,6 +265,12 @@ fn default_data_dir() -> PathBuf {
 
 fn env_nonempty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// The current wall-clock time. The decision path takes an explicit `now` for
+/// testability; the live daemon supplies the trusted clock here.
+fn now_unix() -> i64 {
+    OffsetDateTime::now_utc().unix_timestamp()
 }
 
 fn internal() -> Problem {
@@ -382,20 +416,17 @@ mod tests {
             let store = store.lock().unwrap();
             submit_one(&store)
         };
-        let store = state.store();
-        let inbox = dispatch(&store, &ControlRequest::TaskInbox).unwrap();
+        let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
         let tasks = inbox["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["task_id"], task_id);
 
         // The risk card renders for that task.
-        let card = dispatch(
-            &store,
-            &ControlRequest::TaskShow {
+        let card = state
+            .dispatch(&ControlRequest::TaskShow {
                 task_id: task_id.clone(),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(card["sections"].as_array().unwrap().len(), 5);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -424,8 +455,7 @@ mod tests {
                 .thumbprint(),
             decision_thumb,
         );
-        let store = state.store();
-        let inbox = dispatch(&store, &ControlRequest::TaskInbox).unwrap();
+        let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
         assert_eq!(inbox["tasks"][0]["task_id"], task_id);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -435,10 +465,44 @@ mod tests {
     fn diagnose_reports_daemon_health() {
         let dir = temp_dir("diag");
         let state = DaemonState::bootstrap(&config(dir.clone())).unwrap();
-        let store = state.store();
-        let report = dispatch(&store, &ControlRequest::Diagnose).unwrap();
+        let report = state.dispatch(&ControlRequest::Diagnose).unwrap();
         assert_eq!(report["daemon"], "axond");
         assert!(report["capabilities"].is_array());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn approve_over_dispatch_issues_a_work_order_with_the_derived_keys() {
+        let dir = temp_dir("approve");
+        let state = DaemonState::bootstrap(&config(dir.clone())).unwrap();
+        let task_id = {
+            let store = state.store();
+            let store = store.lock().unwrap();
+            // Pair the requester so the work-order origin can be bound.
+            store
+                .put_peer_key(
+                    "req-fp",
+                    "contract-proposal",
+                    "requester",
+                    "iss",
+                    &proposal_key().verifying().to_public_bytes(),
+                    NOW,
+                )
+                .unwrap();
+            submit_one(&store)
+        };
+        // Approve over the same dispatch the sockets use — the daemon supplies its
+        // derived decision and work-order keys.
+        let out = state
+            .dispatch(&ControlRequest::TaskApprove {
+                task_id: task_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(out["approved"], true);
+        assert!(out["work_order_id"].as_str().unwrap().starts_with("wo-"));
+        // The accepted Task has left the submitted inbox.
+        let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
+        assert_eq!(inbox["tasks"].as_array().unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
