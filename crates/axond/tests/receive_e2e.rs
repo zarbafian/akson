@@ -1,13 +1,12 @@
-//! End-to-end over a real socket: a paired peer POSTs a signed contract proposal
-//! over mutual TLS, and the daemon carries it through the whole pre-execution
-//! lifecycle — inert `SUBMITTED` Task → operator inbox → risk card → accept +
-//! work order (design §9.1, §10.2, §12.3).
+//! End-to-end over real mutual TLS: the whole task exchange, up to the full
+//! two-daemon round trip (design §9.1, §10.2, §12.3, §14.5).
 //!
-//! This drives the same receive server the daemon runs (a TLS 1.3 mutual
-//! handshake, the client leaf-cert fingerprint captured and resolved against the
-//! store's peer records via [`StorePeerResolver`]) and the same
-//! [`DaemonState::dispatch`] the admin control socket serves — over a real socket,
-//! with the store shared between them.
+//! These drive the same receive server and the same [`DaemonState::dispatch`] the
+//! live daemon runs — a TLS 1.3 mutual handshake, the client leaf-cert fingerprint
+//! captured and resolved against the store's peer records via [`StorePeerResolver`],
+//! over a real socket. The capstone (`two_daemons_run_the_whole_task_round_trip`)
+//! wires two independent daemons together: A sends a task → B receives, approves,
+//! completes, and delivers → A verifies the result and signs its outcome.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -705,4 +704,245 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
         .get_sent_request(contract_digest)
         .unwrap()
         .is_some());
+}
+
+/// Pins a peer: its record (endpoint + cert) plus its contract-proposal key, and
+/// optionally its task-result key (needed to verify that peer's results).
+fn seed_peer(
+    store: &Store,
+    agent: &str,
+    endpoint: &str,
+    cert: &EndpointCert,
+    proposal_pub: [u8; 32],
+    task_result_pub: Option<[u8; 32]>,
+) {
+    store
+        .put_peer(&stored_peer(agent, endpoint, &cert.fingerprint))
+        .unwrap();
+    store
+        .put_peer_key(
+            &cert.fingerprint.value,
+            "contract-proposal",
+            agent,
+            "iss",
+            &proposal_pub,
+            NOW,
+        )
+        .unwrap();
+    if let Some(tr) = task_result_pub {
+        store
+            .put_peer_key(
+                &cert.fingerprint.value,
+                "task-result",
+                agent,
+                "iss",
+                &tr,
+                NOW,
+            )
+            .unwrap();
+    }
+}
+
+/// Builds a receive server over `state`'s store, presenting `state`'s cert; if
+/// `results` it also accepts delivered results and signs its outcome.
+fn receive_state_for(
+    state: &DaemonState,
+    agent: &str,
+    results: bool,
+) -> Arc<ReceiveState<StorePeerResolver>> {
+    let base = ReceiveState::new(
+        state.store(),
+        StorePeerResolver,
+        ident(agent),
+        BTreeSet::new(),
+        "https://local/a2a".to_owned(),
+    );
+    Arc::new(if results {
+        base.accepting_results(state.identity().purpose_key(KeyPurpose::RequesterOutcome))
+    } else {
+        base
+    })
+}
+
+fn acceptor_for(state: &DaemonState) -> TlsAcceptor {
+    TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(
+            &state.identity().purpose_key(KeyPurpose::TlsEndpoint),
+            state.endpoint_cert(),
+        )
+        .unwrap(),
+    ))
+}
+
+fn task_spec(max_response_bytes: u64) -> TaskSpec {
+    TaskSpec {
+        performer: "performer".to_owned(),
+        task_type: "https://axon.invalid/task/code-review/v1".to_owned(),
+        objective: "review this file".to_owned(),
+        inputs: vec![TaskInput {
+            id: "diff".to_owned(),
+            media_type: "text/x-diff".to_owned(),
+            text: "--- a\n+++ b\n".to_owned(),
+        }],
+        deliverables: vec![Deliverable {
+            role: "review".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned(), "read_supplied_inputs".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes,
+    }
+}
+
+#[tokio::test]
+async fn two_daemons_run_the_whole_task_round_trip() {
+    // Two daemons: A the requester, B the performer, each with its own keys + cert.
+    let a_identity = IdentityKeys::from_master([10u8; 32]);
+    let a_cert = self_signed_endpoint(
+        &a_identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "requester",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let b_identity = IdentityKeys::from_master([20u8; 32]);
+    let b_cert = self_signed_endpoint(
+        &b_identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "performer",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    // Public keys each side pinned of the other at pairing.
+    let a_proposal_pub = a_identity
+        .purpose_key(KeyPurpose::ContractProposal)
+        .verifying()
+        .to_public_bytes();
+    let b_proposal_pub = b_identity
+        .purpose_key(KeyPurpose::ContractProposal)
+        .verifying()
+        .to_public_bytes();
+    let b_task_result_pub = b_identity
+        .purpose_key(KeyPurpose::TaskResult)
+        .verifying()
+        .to_public_bytes();
+
+    // Bind both receive ports first so the peer records can carry real URLs.
+    let a_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a_addr = a_listener.local_addr().unwrap();
+    let b_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b_addr = b_listener.local_addr().unwrap();
+    let a_url = format!("https://127.0.0.1:{}/a2a", a_addr.port());
+    let b_url = format!("https://127.0.0.1:{}/a2a", b_addr.port());
+
+    // Pair both directions.
+    let a_store = in_memory_store();
+    seed_peer(
+        &a_store,
+        "performer",
+        &b_url,
+        &b_cert,
+        b_proposal_pub,
+        Some(b_task_result_pub),
+    );
+    let b_store = in_memory_store();
+    seed_peer(&b_store, "requester", &a_url, &a_cert, a_proposal_pub, None);
+
+    let cfg = |dir: &str, agent: &str| DaemonConfig {
+        data_dir: std::env::temp_dir().join(dir),
+        local_performer: ident(agent),
+        interface_url: "https://local/a2a".to_owned(),
+        receive_addr: None,
+    };
+    let a_state = Arc::new(DaemonState::from_parts(
+        a_store,
+        a_identity,
+        a_cert,
+        cfg("axond-rt-a", "requester"),
+    ));
+    let b_state = Arc::new(DaemonState::from_parts(
+        b_store,
+        b_identity,
+        b_cert,
+        cfg("axond-rt-b", "performer"),
+    ));
+    let a_store = a_state.store();
+
+    // A serves results (finalizes B's delivery); B serves proposals (A's send).
+    let a_outcome_vk = a_state
+        .identity()
+        .purpose_key(KeyPurpose::RequesterOutcome)
+        .verifying();
+    tokio::spawn(serve_receive(
+        a_listener,
+        acceptor_for(&a_state),
+        receive_state_for(&a_state, "requester", true),
+    ));
+    tokio::spawn(serve_receive(
+        b_listener,
+        acceptor_for(&b_state),
+        receive_state_for(&b_state, "performer", false),
+    ));
+
+    // 1. A sends a task → B receives it as SUBMITTED (run_send blocks on its own
+    //    runtime, so run it off the async worker).
+    let a_for_send = a_state.clone();
+    let sent = tokio::task::spawn_blocking(move || {
+        a_for_send.dispatch(&ControlRequest::TaskSend(task_spec(8192)))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let task_id = sent["task_id"].as_str().unwrap().to_owned();
+    let contract_digest = sent["contract_digest"].as_str().unwrap().to_owned();
+
+    // 2. B approves (accept + issue work order).
+    let approved = b_state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+        })
+        .unwrap();
+    assert_eq!(approved["approved"], true);
+
+    // 3. B completes with a gated result.
+    let completed = b_state
+        .dispatch(&ControlRequest::SubmitResult(ResultSubmission {
+            task_id: task_id.clone(),
+            outputs: vec![ResultOutput {
+                role: "response".to_owned(),
+                artifact_id: "a-1".to_owned(),
+                kind: OutputKind::Response,
+                recipient: "request-origin".to_owned(),
+                media_type: "text/plain".to_owned(),
+                byte_length: 14,
+                sha256: "c".repeat(64),
+            }],
+            evidence: vec![],
+            slots: vec![],
+        }))
+        .unwrap();
+    assert_eq!(completed["completed"], true);
+
+    // 4. B delivers the signed result → A finalizes it into a signed outcome.
+    let b_for_deliver = b_state.clone();
+    let tid = task_id.clone();
+    let delivered = tokio::task::spawn_blocking(move || {
+        b_for_deliver.dispatch(&ControlRequest::TaskDeliver { task_id: tid })
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(delivered["delivered"], true);
+
+    // 5. The requester holds a signed, verifiable outcome that accepts the task.
+    let (_digest, env_bytes) = a_store
+        .lock()
+        .unwrap()
+        .get_outcome(&contract_digest)
+        .unwrap()
+        .unwrap();
+    let outcome_env: Envelope = serde_json::from_slice(&env_bytes).unwrap();
+    let outcome = Outcome::verify(&outcome_env, &a_outcome_vk).unwrap();
+    assert_eq!(outcome.state, OutcomeState::Accepted);
+    assert_eq!(outcome.task_id, task_id);
+    assert_eq!(outcome.contract_digest, contract_digest);
 }
