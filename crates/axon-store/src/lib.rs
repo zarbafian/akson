@@ -155,6 +155,15 @@ pub struct PeerKey {
     pub public_key: [u8; 32],
 }
 
+/// A submitted Task's open head (design §10.1) — one row of the operator inbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskHead {
+    pub task_id: String,
+    pub contract_id: String,
+    pub revision: u64,
+    pub contract_digest: String,
+}
+
 /// The verdict of an idempotent receive (design §9.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Receipt {
@@ -922,6 +931,27 @@ impl Store {
                 }
             }
         }
+    }
+
+    /// Lists the Tasks whose head is `open` — the submitted proposals awaiting a
+    /// local decision (design §10.1, `TASK_STATE_SUBMITTED`). The operator's inbox.
+    /// Ordered by task id for a stable listing.
+    pub fn list_submitted_tasks(&self) -> Result<Vec<TaskHead>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id, contract_id, revision, digest FROM contract_heads
+             WHERE status = 'open' ORDER BY task_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(TaskHead {
+                    task_id: r.get(0)?,
+                    contract_id: r.get(1)?,
+                    revision: r.get(2)?,
+                    contract_digest: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Submits a validated revision as an atomic compare-and-swap on the Task's

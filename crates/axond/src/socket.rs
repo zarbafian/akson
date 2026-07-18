@@ -48,6 +48,10 @@ pub fn worker_socket_path() -> PathBuf {
 pub enum ControlRequest {
     /// Report daemon + sandbox health (`axon doctor` / `axon status`).
     Diagnose,
+    /// List the submitted Tasks awaiting a decision (`axon task inbox`).
+    TaskInbox,
+    /// Render a submitted Task's risk card (`axon task show`).
+    TaskShow { task_id: String },
     /// Submit a bounded worker result (the narrow worker surface).
     SubmitResult { task_id: String, byte_length: u64 },
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
@@ -59,6 +63,7 @@ impl ControlRequest {
     pub fn op(&self) -> ControlOp {
         match self {
             ControlRequest::Diagnose => ControlOp::Diagnose,
+            ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => ControlOp::TaskInspect,
             ControlRequest::SubmitResult { .. } => ControlOp::SubmitResult,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }
