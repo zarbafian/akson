@@ -86,6 +86,8 @@ pub enum ControlOp {
     TaskInspect,
     /// Cancel a task.
     TaskCancel,
+    /// Run an approved task's worker in the sandbox and submit its result.
+    RunWorker,
     /// Show a peer or the policy.
     Inspect,
     /// Report daemon and sandbox health (`axon doctor`, `axon status`).
@@ -164,7 +166,7 @@ mod tests {
         ControlOp::RequestProcessorCall,
     ];
 
-    const ADMIN_ONLY_OPS: [ControlOp; 12] = [
+    const ADMIN_ONLY_OPS: [ControlOp; 13] = [
         ControlOp::Pair,
         ControlOp::Policy,
         ControlOp::ApproveContract,
@@ -176,6 +178,7 @@ mod tests {
         ControlOp::Recovery,
         ControlOp::Processor,
         ControlOp::TaskCancel,
+        ControlOp::RunWorker,
         ControlOp::Diagnose,
     ];
 

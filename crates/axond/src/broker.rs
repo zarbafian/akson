@@ -793,6 +793,7 @@ mod tests {
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
             pair_addr: None,
+            worker_command: None,
         };
         DaemonState::from_parts(store, identity, cert, config)
     }

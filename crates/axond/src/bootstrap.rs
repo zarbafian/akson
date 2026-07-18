@@ -79,6 +79,11 @@ pub struct DaemonConfig {
     /// Where to serve the mTLS pairing bootstrap endpoint (e.g. `127.0.0.1:9443`).
     /// `None` disables pairing over the network; also the invitation's endpoint URL.
     pub pair_addr: Option<String>,
+    /// The worker command to run inside the sandbox for an approved task
+    /// (`AXON_WORKER_CMD`). Run as `/bin/sh -c <cmd>` with the approved inputs
+    /// read-only at `/inputs` and a writable `/output`; the worker writes its
+    /// response to `/output/response`. `None` disables `axon task run`.
+    pub worker_command: Option<String>,
 }
 
 impl DaemonConfig {
@@ -96,12 +101,14 @@ impl DaemonConfig {
             .unwrap_or_else(|| "https://localhost/a2a".to_owned());
         let receive_addr = env_nonempty("AXON_RECEIVE_ADDR");
         let pair_addr = env_nonempty("AXON_PAIR_ADDR");
+        let worker_command = env_nonempty("AXON_WORKER_CMD");
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
             interface_url,
             receive_addr,
             pair_addr,
+            worker_command,
         }
     }
 }
@@ -300,6 +307,7 @@ impl DaemonState {
             // Delivery, send, and processor calls manage their own store locking
             // (they must not hold the lock across the network I/O), so they take the
             // daemon state.
+            ControlRequest::TaskRun { task_id } => crate::run_worker(self, task_id),
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => run_send(self, spec),
             ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),
@@ -519,6 +527,7 @@ mod tests {
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
             pair_addr: None,
+            worker_command: None,
         }
     }
 

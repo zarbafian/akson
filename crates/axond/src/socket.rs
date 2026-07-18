@@ -67,6 +67,9 @@ pub enum ControlRequest {
     TaskApprove { task_id: String },
     /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
     TaskDeny { task_id: String, reason: String },
+    /// Run an approved Task's worker in the sandbox and submit its result
+    /// (`axon task run`, admin only).
+    TaskRun { task_id: String },
     /// Deliver a completed Task's signed result to the requester (admin only).
     TaskDeliver { task_id: String },
     /// Send a task to a performer (sign + POST a proposal, admin only).
@@ -119,6 +122,7 @@ impl ControlRequest {
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
+            ControlRequest::TaskRun { .. } => ControlOp::RunWorker,
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
             ControlRequest::PairAccept { .. } | ControlRequest::PairInvite => ControlOp::Pair,

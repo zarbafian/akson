@@ -9,6 +9,7 @@
 //! - `axon task inbox` — the submitted Tasks awaiting a decision (§16.4).
 //! - `axon task show <id>` — a Task's §5.2 risk card, the approval surface.
 //! - `axon task approve <id>` — accept the Task and issue its work order (§10.2/§12.3).
+//! - `axon task run <id>` — run the approved Task's worker in the sandbox (§7.2/§13.1).
 //! - `axon task deny <id> <reason>` — sign a reject decision (§10.2).
 //! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 //! - `axon task send <spec.json>` — send a task to a performer (§10.2).
@@ -256,6 +257,10 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(id) => task_approve(&id),
             None => usage("axon task approve <task-id>"),
         },
+        Some("run") => match next_arg(args) {
+            Some(id) => task_run(&id),
+            None => usage("axon task run <task-id>"),
+        },
         Some("deny") => match (next_arg(args), next_arg(args)) {
             (Some(id), Some(reason)) => task_deny(&id, &reason),
             _ => usage("axon task deny <task-id> <reason>"),
@@ -271,7 +276,7 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         Some("sent") => task_sent(),
         Some("outcomes") => task_outcomes(),
         _ => usage(
-            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>|send <spec>|sent|outcomes}",
+            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|deliver <id>|send <spec>|sent|outcomes}",
         ),
     }
 }
@@ -419,6 +424,27 @@ fn task_approve(task_id: &str) -> ExitCode {
         } else {
             caps.join(", ")
         }
+    );
+    ExitCode::SUCCESS
+}
+
+/// Run an approved Task's worker in the sandbox and submit its result
+/// (`axon task run`).
+fn task_run(task_id: &str) -> ExitCode {
+    let result = match call(&ControlRequest::TaskRun {
+        task_id: task_id.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!("ran {task_id}");
+    println!(
+        "  response:   {} B",
+        result["response_bytes"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  bundle:     {}",
+        result["result"]["bundle_digest"].as_str().unwrap_or("?")
     );
     ExitCode::SUCCESS
 }

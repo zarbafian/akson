@@ -234,7 +234,7 @@ pub fn submit_result(
     }))
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()
