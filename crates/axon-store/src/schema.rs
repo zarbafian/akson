@@ -194,6 +194,20 @@ const V9: &str = r#"
 ALTER TABLE contract_heads ADD COLUMN context_id TEXT NOT NULL DEFAULT '';
 "#;
 
+/// Version 10 (M12): the issued work order, retained so the result gate can check
+/// the worker's outputs against the *exact* granted capability vector (design
+/// §12.3, §7.2). Keyed by work-order id (1:1 with its attempt); the full MAC'd
+/// `IssuedWorkOrder` is sealed at rest, with the digest kept plaintext for lookup.
+const V10: &str = r#"
+CREATE TABLE work_orders (
+    work_order_id  TEXT PRIMARY KEY,
+    task_id        TEXT NOT NULL,
+    digest         TEXT NOT NULL,
+    order_json     BLOB NOT NULL,
+    issued_at      INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -206,6 +220,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, V7),
     (8, V8),
     (9, V9),
+    (10, V10),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

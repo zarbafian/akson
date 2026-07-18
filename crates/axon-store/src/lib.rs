@@ -31,7 +31,7 @@ pub mod schema;
 
 use std::path::Path;
 
-use axon_authority::{next, AttemptEvent, AttemptState, TransitionError, WorkOrder};
+use axon_authority::{next, AttemptEvent, AttemptState, IssuedWorkOrder, TransitionError, WorkOrder};
 use axon_broker::{ProcessorCall, ProcessorConfig, SubAttemptEvent, SubAttemptState};
 use axon_contract::{
     accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
@@ -62,6 +62,7 @@ const INVITATION_CONTEXT: &str = "pairing.invitation";
 const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
 const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
 const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
+const WORK_ORDER_CONTEXT: &str = "work_order.issued";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -1259,6 +1260,63 @@ impl Store {
         tx.commit()?;
         Ok(ids.len())
     }
+
+    /// Persists an issued work order (design §12.3), sealed at rest. Idempotent: a
+    /// re-issue of the same work order leaves the stored one unchanged. Retained so
+    /// the result gate can check outputs against the exact granted capabilities.
+    pub fn put_work_order(&self, issued: &IssuedWorkOrder, now: i64) -> Result<(), StoreError> {
+        let json = serde_json::to_vec(issued)?;
+        let sealed = self.dek.seal(WORK_ORDER_CONTEXT, &json);
+        let tx = self.conn.unchecked_transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO work_orders (work_order_id, task_id, digest, order_json, issued_at)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(work_order_id) DO NOTHING",
+            params![
+                issued.order.work_order_id,
+                issued.order.task_id,
+                issued.digest,
+                sealed,
+                now
+            ],
+        )?;
+        if inserted == 1 {
+            audit::append(&tx, now, "work_order.issued", &issued.order.work_order_id)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Retrieves a stored issued work order by its id (design §12.3).
+    pub fn get_work_order(&self, work_order_id: &str) -> Result<Option<IssuedWorkOrder>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT order_json FROM work_orders WHERE work_order_id = ?1",
+                [work_order_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => {
+                let json = self.dek.open(WORK_ORDER_CONTEXT, &bytes)?;
+                Ok(Some(serde_json::from_slice(&json)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The work-order id of a task's attempt (design §12.3). v1 issues one work
+    /// order per accepted Task, so a task maps to at most one attempt.
+    pub fn attempt_for_task(&self, task_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT work_order_id FROM attempts WHERE task_id = ?1 LIMIT 1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
 }
 
 /// The outcome of preparing a processor call (design §13.1).
@@ -2125,6 +2183,28 @@ mod tests {
                 ClaimOutcome::AlreadyClaimed(AttemptState::Claimed)
             );
         }
+    }
+
+    #[test]
+    fn a_work_order_round_trips_and_is_found_by_task() {
+        use axon_authority::WorkOrderKey;
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let order = work_order("wo-1", &"n".repeat(43));
+        let issued = order.issue(&WorkOrderKey::from_bytes([3u8; 32])).unwrap();
+        store.claim_attempt(&order, 100).unwrap();
+        store.put_work_order(&issued, 100).unwrap();
+
+        // The stored order rehydrates identically and still verifies under its key.
+        let got = store.get_work_order("wo-1").unwrap().expect("stored order");
+        assert_eq!(got, issued);
+        got.verify(&WorkOrderKey::from_bytes([3u8; 32])).unwrap();
+        // Its task points back to the attempt.
+        assert_eq!(
+            store.attempt_for_task("task-1").unwrap(),
+            Some("wo-1".to_owned())
+        );
+        assert!(store.get_work_order("wo-nope").unwrap().is_none());
+        assert!(store.attempt_for_task("task-nope").unwrap().is_none());
     }
 
     // --- processor broker (M10) ---

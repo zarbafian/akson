@@ -165,7 +165,12 @@ pub fn issue_for_accepted(
 
     // Durably claim: one insert consumes the one-use nonce + reserves the budget.
     match store.claim_attempt(&order, now).map_err(store_problem)? {
-        ClaimOutcome::Claimed | ClaimOutcome::AlreadyClaimed(_) => Ok(issued),
+        ClaimOutcome::Claimed | ClaimOutcome::AlreadyClaimed(_) => {
+            // Retain the issued order so the result gate later checks the worker's
+            // outputs against these exact granted capabilities. Idempotent.
+            store.put_work_order(&issued, now).map_err(store_problem)?;
+            Ok(issued)
+        }
         ClaimOutcome::NonceReused => Err(problem(
             409,
             "nonce-reused",
