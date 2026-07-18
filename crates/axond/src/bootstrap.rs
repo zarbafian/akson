@@ -199,6 +199,50 @@ impl DaemonState {
                 let store = self.store.lock().map_err(|_| internal())?;
                 dispatch_control(&store, req)
             }
+            ControlRequest::PeerList => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let items: Vec<_> = store
+                    .list_peers()
+                    .map_err(|_| internal())?
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "agent_id": p.agent_id, "endpoint": p.endpoint_id, "status": p.status,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "peers": items }))
+            }
+            ControlRequest::TaskSent => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let items: Vec<_> = store
+                    .list_sent_requests()
+                    .map_err(|_| internal())?
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "task_id": s.task_id, "contract_id": s.contract_id,
+                            "performer": s.performer_agent, "contract_digest": s.contract_digest,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "sent": items }))
+            }
+            ControlRequest::TaskOutcomes => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let items: Vec<_> = store
+                    .list_outcomes()
+                    .map_err(|_| internal())?
+                    .iter()
+                    .map(|o| {
+                        serde_json::json!({
+                            "task_id": o.task_id, "state": o.state,
+                            "bundle_digest": o.bundle_digest, "outcome_digest": o.outcome_digest,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "outcomes": items }))
+            }
             ControlRequest::TaskApprove { task_id } => {
                 let store = self.store.lock().map_err(|_| internal())?;
                 approve_and_issue(

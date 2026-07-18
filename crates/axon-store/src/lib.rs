@@ -199,6 +199,24 @@ pub enum ClaimOutcome {
     NonceReused,
 }
 
+/// A paired peer's listing summary (plaintext columns; no sealed record unseal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSummary {
+    pub agent_id: String,
+    pub endpoint_id: String,
+    pub status: String,
+}
+
+/// A recorded requester outcome's listing summary (design §14.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeSummary {
+    pub task_id: String,
+    pub contract_digest: String,
+    pub bundle_digest: String,
+    pub state: String,
+    pub outcome_digest: String,
+}
+
 /// A task this daemon sent as *requester* and is awaiting a result for (design
 /// §14.5). Retained so a delivered result can be matched to an outstanding request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,6 +519,24 @@ impl Store {
             }
             None => Ok(None),
         }
+    }
+
+    /// Every paired peer's listing summary, ordered by agent id (`axon peer list`).
+    /// Reads only plaintext columns — the sealed record is not unsealed.
+    pub fn list_peers(&self) -> Result<Vec<PeerSummary>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT agent_id, endpoint_id, status FROM peers ORDER BY agent_id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PeerSummary {
+                    agent_id: r.get(0)?,
+                    endpoint_id: r.get(1)?,
+                    status: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Persists a peer's verification key for a purpose, keyed by its TLS
@@ -1557,6 +1593,51 @@ impl Store {
             }
             None => Ok(None),
         }
+    }
+
+    /// Every task this daemon sent as requester, ordered by send time (`axon task
+    /// sent`).
+    pub fn list_sent_requests(&self) -> Result<Vec<SentRequest>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT contract_digest, task_id, context_id, contract_id,
+                    performer_agent, performer_issuer, message_id
+             FROM sent_requests ORDER BY requested_at",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SentRequest {
+                    contract_digest: r.get(0)?,
+                    task_id: r.get(1)?,
+                    context_id: r.get(2)?,
+                    contract_id: r.get(3)?,
+                    performer_agent: r.get(4)?,
+                    performer_issuer: r.get(5)?,
+                    message_id: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every recorded requester outcome, ordered by record time (`axon task
+    /// outcomes`). Reads only plaintext columns — the sealed envelope is not opened.
+    pub fn list_outcomes(&self) -> Result<Vec<OutcomeSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id, contract_digest, bundle_digest, state, outcome_digest
+             FROM outcomes ORDER BY recorded_at",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(OutcomeSummary {
+                    task_id: r.get(0)?,
+                    contract_digest: r.get(1)?,
+                    bundle_digest: r.get(2)?,
+                    state: r.get(3)?,
+                    outcome_digest: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }
 
@@ -2664,6 +2745,47 @@ mod tests {
             .peer_key("other", "contract-proposal")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn list_sent_requests_peers_and_outcomes() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        assert!(store.list_peers().unwrap().is_empty());
+        assert!(store.list_sent_requests().unwrap().is_empty());
+        assert!(store.list_outcomes().unwrap().is_empty());
+
+        store
+            .put_sent_request(
+                &SentRequest {
+                    contract_digest: "a".repeat(64),
+                    task_id: "t1".to_owned(),
+                    context_id: "c".to_owned(),
+                    contract_id: "cid".to_owned(),
+                    performer_agent: "p".to_owned(),
+                    performer_issuer: "iss".to_owned(),
+                    message_id: "m".to_owned(),
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(store.list_sent_requests().unwrap().len(), 1);
+
+        store
+            .put_outcome(
+                &"a".repeat(64),
+                "t1",
+                &"b".repeat(64),
+                "od",
+                "accepted",
+                b"env",
+                "2026-07-18T00:00:00Z",
+                100,
+            )
+            .unwrap();
+        let outs = store.list_outcomes().unwrap();
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].task_id, "t1");
+        assert_eq!(outs[0].state, "accepted");
     }
 
     #[test]

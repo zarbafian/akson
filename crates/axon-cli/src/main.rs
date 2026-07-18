@@ -26,11 +26,43 @@ fn main() -> ExitCode {
         Some("status") => status(),
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
+        Some("peer") => peer(&mut args),
         _ => {
-            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{add|list|credential}}");
+            eprintln!("axon: commands: doctor, status, task {{…}}, processor {{…}}, peer list");
             ExitCode::from(2)
         }
     }
+}
+
+/// Routes the `axon peer …` subcommands over the admin control socket (§16.4).
+fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("list") => peer_list(),
+        _ => usage("axon peer list"),
+    }
+}
+
+/// The paired peers (`axon peer list`).
+fn peer_list() -> ExitCode {
+    let result = match call(&ControlRequest::PeerList) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let peers = result["peers"].as_array().cloned().unwrap_or_default();
+    if peers.is_empty() {
+        println!("no paired peers.");
+        return ExitCode::SUCCESS;
+    }
+    println!("paired peers ({}):", peers.len());
+    for p in &peers {
+        println!(
+            "  {}  {}  [{}]",
+            p["agent_id"].as_str().unwrap_or("?"),
+            p["endpoint"].as_str().unwrap_or("?"),
+            p["status"].as_str().unwrap_or("?"),
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Routes the `axon processor …` subcommands over the admin control socket (§13.1).
@@ -138,10 +170,58 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(path) => task_send(&path),
             None => usage("axon task send <spec.json>"),
         },
+        Some("sent") => task_sent(),
+        Some("outcomes") => task_outcomes(),
         _ => usage(
-            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>|send <spec.json>}",
+            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|deliver <id>|send <spec>|sent|outcomes}",
         ),
     }
+}
+
+/// Tasks this daemon sent as requester (`axon task sent`).
+fn task_sent() -> ExitCode {
+    let result = match call(&ControlRequest::TaskSent) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let sent = result["sent"].as_array().cloned().unwrap_or_default();
+    if sent.is_empty() {
+        println!("no sent tasks.");
+        return ExitCode::SUCCESS;
+    }
+    println!("sent tasks ({}):", sent.len());
+    for s in &sent {
+        println!(
+            "  {}  → {}  contract {}",
+            s["task_id"].as_str().unwrap_or("?"),
+            s["performer"].as_str().unwrap_or("?"),
+            s["contract_id"].as_str().unwrap_or("?"),
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Recorded requester outcomes (`axon task outcomes`).
+fn task_outcomes() -> ExitCode {
+    let result = match call(&ControlRequest::TaskOutcomes) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let outcomes = result["outcomes"].as_array().cloned().unwrap_or_default();
+    if outcomes.is_empty() {
+        println!("no recorded outcomes.");
+        return ExitCode::SUCCESS;
+    }
+    println!("outcomes ({}):", outcomes.len());
+    for o in &outcomes {
+        println!(
+            "  {}  [{}]  bundle {}",
+            o["task_id"].as_str().unwrap_or("?"),
+            o["state"].as_str().unwrap_or("?"),
+            o["bundle_digest"].as_str().unwrap_or("?"),
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Send a task to a performer from a JSON spec file (`axon task send`).

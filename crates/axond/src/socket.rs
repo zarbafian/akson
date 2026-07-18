@@ -52,6 +52,12 @@ pub enum ControlRequest {
     TaskInbox,
     /// Render a submitted Task's risk card (`axon task show`).
     TaskShow { task_id: String },
+    /// List paired peers (`axon peer list`).
+    PeerList,
+    /// List tasks this daemon sent as requester (`axon task sent`).
+    TaskSent,
+    /// List recorded requester outcomes (`axon task outcomes`).
+    TaskOutcomes,
     /// Approve a submitted Task: accept it and issue the one-shot work order
     /// (`axon task approve`, admin only).
     TaskApprove { task_id: String },
@@ -96,7 +102,11 @@ impl ControlRequest {
     pub fn op(&self) -> ControlOp {
         match self {
             ControlRequest::Diagnose => ControlOp::Diagnose,
-            ControlRequest::TaskInbox | ControlRequest::TaskShow { .. } => ControlOp::TaskInspect,
+            ControlRequest::TaskInbox
+            | ControlRequest::TaskShow { .. }
+            | ControlRequest::TaskSent
+            | ControlRequest::TaskOutcomes => ControlOp::TaskInspect,
+            ControlRequest::PeerList => ControlOp::Inspect,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
