@@ -100,12 +100,21 @@ dependencies = [
 [[package]]
 name = "axon-broker"
 version = "0.0.1"
+dependencies = [
+ "hex",
+ "json-canon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
 
 [[package]]
 name = "axon-cli"
 version = "0.0.1"
 dependencies = [
  "axon-sandbox",
+ "axond",
 ]
 
 [[package]]
@@ -144,6 +153,16 @@ dependencies = [
 [[package]]
 name = "axon-evidence"
 version = "0.0.1"
+dependencies = [
+ "axon-contract",
+ "axon-crypto",
+ "axon-ext",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
 
 [[package]]
 name = "axon-ext"
@@ -235,6 +254,7 @@ name = "axon-store"
 version = "0.0.1"
 dependencies = [
  "axon-authority",
+ "axon-broker",
  "axon-contract",
  "axon-crypto",
  "axon-pairing",
@@ -294,6 +314,13 @@ dependencies = [
 [[package]]
 name = "axond"
 version = "0.0.1"
+dependencies = [
+ "axon-sandbox",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "base16ct"

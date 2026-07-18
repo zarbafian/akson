@@ -41,6 +41,7 @@ axon-worker = { path = "crates/axon-worker" }
 axon-broker = { path = "crates/axon-broker" }
 axon-evidence = { path = "crates/axon-evidence" }
 axon-adapter-sdk = { path = "crates/axon-adapter-sdk" }
+axond = { path = "crates/axond" }
 
 # External (pinned minor versions; exact pins live in Cargo.lock, committed)
 serde = { version = "1.0", features = ["derive"] }

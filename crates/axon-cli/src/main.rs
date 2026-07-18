@@ -1,21 +1,57 @@
 //! The Axon operator CLI.
 //!
 //! Full command assembly (clap, the OpenAPI control client, every §16.4 command)
-//! is M12. This binary carries only `axon doctor` today — the M9 exit surface
-//! ("doctor reports every capability", design §13.1, §17.3) — over a hand-rolled
-//! argument match so no CLI-framework decision is pre-empted.
+//! is M12, layering in on the daemon's admin control socket. Today: `axon doctor`
+//! (host capability check, no daemon needed — the M9 exit surface, §13.1/§17.3) and
+//! `axon status` (queries the running daemon over the admin socket, §16.2), over a
+//! hand-rolled argument match so no CLI-framework decision is pre-empted.
 
 use std::process::ExitCode;
 
 use axon_sandbox::{all_required_available, diagnose, Diagnostic};
+use axond::{admin_socket_path, send_request, ControlRequest, ControlResponse};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
         Some("doctor") => doctor(),
+        Some("status") => status(),
         _ => {
-            eprintln!("axon: only `axon doctor` is implemented so far (see design/2026-07-16-implementation-plan.md M12)");
+            eprintln!("axon: implemented so far: `axon doctor` (host check) and `axon status` (query the daemon)");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Queries the running daemon over the admin control socket (design §16.2) and
+/// prints its health. Exits non-zero if the daemon is unreachable or not ready.
+fn status() -> ExitCode {
+    let path = admin_socket_path();
+    match send_request(&path, &ControlRequest::Diagnose) {
+        Ok(ControlResponse::Ok { result }) => {
+            let ready = result.get("sandbox_ready").and_then(|v| v.as_bool()) == Some(true);
+            println!("axon status — daemon at {}", path.display());
+            println!("  daemon:        up");
+            println!("  sandbox_ready: {}", if ready { "yes" } else { "no" });
+            if ready {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }
+        Ok(ControlResponse::Problem { problem }) => {
+            eprintln!(
+                "axon status: daemon refused the request ({})",
+                problem.title
+            );
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!(
+                "axon status: could not reach the daemon at {} ({e}). Is `axond serve` running?",
+                path.display()
+            );
+            ExitCode::from(1)
         }
     }
 }

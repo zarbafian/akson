@@ -8,11 +8,20 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "axond"
+path = "src/lib.rs"
+
 [[bin]]
 name = "axond"
 path = "src/main.rs"
 
 [dependencies]
+axon-sandbox = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+libc = "0.2.186"
 
 [lints]
 workspace = true
