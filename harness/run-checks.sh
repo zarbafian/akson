@@ -54,6 +54,9 @@ if unshare --user --map-root-user true 2>/dev/null; then
   # The clean-worker end-to-end demo (work order → sandbox → gate) also needs a
   # delegated cgroup; it skips its cgroup step gracefully if none is present.
   run cargo test -p axon-harness --test clean_worker_e2e -- --ignored --nocapture
+  # The daemon-level worker run (receive → approve → run in sandbox → manifest)
+  # also skips gracefully without a delegated cgroup.
+  run cargo test -p axond --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
 else
   restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '?')"
   cat <<EOF

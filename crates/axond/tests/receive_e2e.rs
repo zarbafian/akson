@@ -429,6 +429,130 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
     assert_eq!(verified_digest, bundle);
 }
 
+/// The daemon runs the approved Task's worker in the real sandbox and submits its
+/// result (design §7.2/§13.1) — the receive→approve→**run**→manifest spine, with a
+/// genuinely confined worker (namespaces + mount + seccomp + cgroup). Needs bwrap +
+/// unprivileged user namespaces + a delegated cgroup v2 subtree, so it is
+/// `#[ignore]`d and runs in CI's isolation job. It skips gracefully if no cgroup.
+///   cargo test -p axond --test receive_e2e worker_run -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "needs bwrap + unprivileged userns + a delegated cgroup; runs in CI's isolation job"]
+async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
+    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
+    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
+    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let server_cert =
+        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+
+    // A daemon configured with a pure-shell worker: it confirms the approved input
+    // arrived (the seccomp baseline blocks the fork/exec an external program needs)
+    // and writes a bounded response — the §4.4 dev-only stand-in.
+    let config = DaemonConfig {
+        data_dir: std::env::temp_dir().join(format!("axond-worker-run-{}", std::process::id())),
+        local_performer: ident("performer"),
+        interface_url: "https://local/a2a".to_owned(),
+        receive_addr: None,
+        pair_addr: None,
+        worker_command: Some(
+            "[ -r /inputs/diff ] || exit 40; [ -r /inputs/manifest.json ] || exit 41; \
+             printf '%s' 'reviewed: LGTM' > /output/response"
+                .to_owned(),
+        ),
+    };
+    let identity = IdentityKeys::from_master([33u8; 32]);
+    let endpoint_cert = self_signed_endpoint(
+        &identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "axon-endpoint",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let state = Arc::new(DaemonState::from_parts(
+        in_memory_store(),
+        identity,
+        endpoint_cert,
+        config,
+    ));
+    state
+        .store()
+        .lock()
+        .unwrap()
+        .put_peer_key(
+            &peer_cert.fingerprint.value,
+            "contract-proposal",
+            "requester",
+            "iss",
+            &peer_proposal_key.verifying().to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
+
+    // Receive the proposal over mTLS, then approve it (issues the work order).
+    let (status, body) = post_proposal(
+        addr,
+        &peer_tls_key,
+        &peer_cert,
+        &server_cert,
+        &peer_proposal_key,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let task_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+        })
+        .unwrap();
+
+    // Run the worker in the sandbox. If no delegated cgroup is available, the daemon
+    // fails closed (503) rather than run un-isolated — skip the demo there.
+    let run_state = state.clone();
+    let run_task = task_id.clone();
+    let ran =
+        tokio::task::spawn_blocking(move || run_state.dispatch(&ControlRequest::TaskRun { task_id: run_task }))
+            .await
+            .unwrap();
+    let ran = match ran {
+        Ok(v) => v,
+        Err(p) if p.status == 503 => {
+            eprintln!("[skip] no delegated cgroup subtree; confined worker run not exercised");
+            return;
+        }
+        Err(p) => panic!("worker run failed: {} ({})", p.title, p.status),
+    };
+    assert_eq!(ran["ran"], true);
+    assert_eq!(ran["response_bytes"], 14); // "reviewed: LGTM"
+    let bundle = ran["result"]["bundle_digest"].as_str().unwrap().to_owned();
+
+    // The signed result is durable and verifies under the daemon's task-result key.
+    let wo = state
+        .store()
+        .lock()
+        .unwrap()
+        .attempt_for_task(&task_id)
+        .unwrap()
+        .unwrap();
+    let (stored_digest, manifest_bytes) = state
+        .store()
+        .lock()
+        .unwrap()
+        .result_manifest(&wo)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_digest, bundle);
+    let envelope: Envelope = serde_json::from_slice(&manifest_bytes).unwrap();
+    let task_result_vk = state
+        .identity()
+        .purpose_key(KeyPurpose::TaskResult)
+        .verifying();
+    let (_manifest, verified_digest) = ResultManifest::verify(&envelope, &task_result_vk).unwrap();
+    assert_eq!(verified_digest, bundle);
+}
+
 /// A performer's signed result manifest for `task_id`, bound to `contract_digest`.
 fn performer_manifest(
     task_result_key: &PurposeKey,
