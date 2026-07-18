@@ -786,6 +786,7 @@ mod tests {
             local_performer: ident("performer"),
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
+            pair_addr: None,
         };
         DaemonState::from_parts(store, identity, cert, config)
     }

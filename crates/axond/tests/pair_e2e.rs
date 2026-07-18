@@ -115,6 +115,7 @@ async fn a_daemon_accepts_an_invitation_and_pins_the_inviter_with_its_keys() {
         },
         interface_url: "https://accepter/a2a".to_owned(),
         receive_addr: None,
+        pair_addr: None,
     };
     let daemon = Arc::new(DaemonState::from_parts(acc_store, acc_id, acc_cert, config));
     let daemon_store = daemon.store();
@@ -137,4 +138,86 @@ async fn a_daemon_accepts_an_invitation_and_pins_the_inviter_with_its_keys() {
         .peer_key(&inviter_fp, "contract-proposal")
         .unwrap()
         .is_some());
+}
+
+#[tokio::test]
+async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
+    use axon_transport::bootstrap::{serve as serve_bootstrap, BootstrapState};
+    use axond::{run_pair_invite, SharedStore};
+
+    // The inviter daemon A: its bootstrap endpoint serves over its own store.
+    let a_id = IdentityKeys::from_master([92u8; 32]);
+    let a_cert = self_signed_endpoint(
+        &a_id.purpose_key(KeyPurpose::TlsEndpoint),
+        "inviter",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let a_fp = a_cert.fingerprint.value.clone();
+
+    let a_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a_port = a_listener.local_addr().unwrap().port();
+    let a_store = Store::open_in_memory(&Kek::from_bytes([92u8; 32]), checkpoint()).unwrap();
+    let a_config = DaemonConfig {
+        data_dir: std::env::temp_dir().join("axond-pair-a-unused"),
+        local_performer: Identity {
+            issuer: "iss".to_owned(),
+            agent: "inviter".to_owned(),
+        },
+        interface_url: "https://inviter/a2a".to_owned(),
+        receive_addr: None,
+        pair_addr: Some(format!("127.0.0.1:{a_port}")),
+    };
+    let a = Arc::new(DaemonState::from_parts(a_store, a_id, a_cert, a_config));
+
+    // Serve A's bootstrap endpoint over A's shared store.
+    let a_material = material(a.identity(), &a_fp, "inviter");
+    let bstate = Arc::new(BootstrapState::new(SharedStore(a.store()), a_material));
+    let a_acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&a.identity().purpose_key(KeyPurpose::TlsEndpoint), a.endpoint_cert())
+            .unwrap(),
+    ));
+    tokio::spawn(serve_bootstrap(a_listener, a_acceptor, bstate));
+
+    // A mints an invitation into its shared store (run_pair_invite blocks).
+    let a_for_invite = a.clone();
+    let minted = tokio::task::spawn_blocking(move || run_pair_invite(&a_for_invite))
+        .await
+        .unwrap()
+        .unwrap();
+    let invitation_json = serde_json::to_string(&minted["invitation"]).unwrap();
+
+    // The accepter daemon B accepts it.
+    let b_id = IdentityKeys::from_master([93u8; 32]);
+    let b_cert = self_signed_endpoint(
+        &b_id.purpose_key(KeyPurpose::TlsEndpoint),
+        "accepter",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let b_store = Store::open_in_memory(&Kek::from_bytes([93u8; 32]), checkpoint()).unwrap();
+    let b_config = DaemonConfig {
+        data_dir: std::env::temp_dir().join("axond-pair-b-unused"),
+        local_performer: Identity {
+            issuer: "iss".to_owned(),
+            agent: "accepter".to_owned(),
+        },
+        interface_url: "https://accepter/a2a".to_owned(),
+        receive_addr: None,
+        pair_addr: None,
+    };
+    let b = Arc::new(DaemonState::from_parts(b_store, b_id, b_cert, b_config));
+    let b_store_handle = b.store();
+
+    let b_for_accept = b.clone();
+    let out = tokio::task::spawn_blocking(move || run_pair_accept(&b_for_accept, &invitation_json))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["paired"], true);
+    assert_eq!(out["peer"], "inviter");
+
+    // Both endpoints now hold the other as a peer, in their own durable stores.
+    assert!(b_store_handle.lock().unwrap().get_peer("inviter").unwrap().is_some());
+    assert!(a.store().lock().unwrap().get_peer("accepter").unwrap().is_some());
 }

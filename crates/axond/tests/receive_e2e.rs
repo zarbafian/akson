@@ -297,6 +297,7 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         local_performer: ident("performer"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
+        pair_addr: None,
     };
     let identity = IdentityKeys::from_master([33u8; 32]);
     let endpoint_cert = self_signed_endpoint(
@@ -657,6 +658,7 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
         local_performer: ident("requester"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
+        pair_addr: None,
     };
     // A presents exactly the cert B pinned (its stable endpoint cert).
     let a_state = Arc::new(DaemonState::from_parts(
@@ -852,6 +854,7 @@ async fn two_daemons_run_the_whole_task_round_trip() {
         local_performer: ident(agent),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
+        pair_addr: None,
     };
     let a_state = Arc::new(DaemonState::from_parts(
         a_store,

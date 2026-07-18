@@ -44,6 +44,7 @@ use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::delivery::run_delivery;
 use crate::keys::IdentityKeys;
+use crate::pair_serve::run_pair_invite;
 use crate::pairing::run_pair_accept;
 use crate::result::submit_result;
 use crate::send::run_send;
@@ -75,6 +76,9 @@ pub struct DaemonConfig {
     /// Where to serve the mTLS A2A receive listener (e.g. `127.0.0.1:8443`).
     /// `None` runs control-only, with no network listener.
     pub receive_addr: Option<String>,
+    /// Where to serve the mTLS pairing bootstrap endpoint (e.g. `127.0.0.1:9443`).
+    /// `None` disables pairing over the network; also the invitation's endpoint URL.
+    pub pair_addr: Option<String>,
 }
 
 impl DaemonConfig {
@@ -91,11 +95,13 @@ impl DaemonConfig {
         let interface_url = env_nonempty("AXON_INTERFACE_URL")
             .unwrap_or_else(|| "https://localhost/a2a".to_owned());
         let receive_addr = env_nonempty("AXON_RECEIVE_ADDR");
+        let pair_addr = env_nonempty("AXON_PAIR_ADDR");
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
             interface_url,
             receive_addr,
+            pair_addr,
         }
     }
 }
@@ -281,6 +287,7 @@ impl DaemonState {
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => run_send(self, spec),
             ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),
+            ControlRequest::PairInvite => run_pair_invite(self),
             ControlRequest::RequestProcessorCall {
                 processor_id,
                 work_order_id,
@@ -495,6 +502,7 @@ mod tests {
             },
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
+            pair_addr: None,
         }
     }
 

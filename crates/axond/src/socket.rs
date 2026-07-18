@@ -69,6 +69,8 @@ pub enum ControlRequest {
     TaskSend(crate::send::TaskSpec),
     /// Accept a pairing invitation (admin only).
     PairAccept { invitation: String },
+    /// Mint a pairing invitation (admin only).
+    PairInvite,
     /// Submit a worker result for completion (the narrow worker surface).
     SubmitResult(crate::result::ResultSubmission),
     /// Request a processor call on the worker's behalf (the narrow worker surface).
@@ -114,7 +116,7 @@ impl ControlRequest {
             }
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
-            ControlRequest::PairAccept { .. } => ControlOp::Pair,
+            ControlRequest::PairAccept { .. } | ControlRequest::PairInvite => ControlOp::Pair,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::RequestProcessorCall { .. } => ControlOp::RequestProcessorCall,
             ControlRequest::ProcessorAdd { .. }

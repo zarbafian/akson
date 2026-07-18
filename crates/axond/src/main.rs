@@ -11,8 +11,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use axond::{
-    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve, socket_dir,
-    worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
+    admin_socket_path, bind_socket, current_uid, run_pair_listener, run_receive_listener, serve,
+    socket_dir, worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,6 +48,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::spawn(move || {
             if let Err(e) = run_receive_listener(state, &addr) {
                 eprintln!("axond: receive listener stopped: {e}");
+            }
+        });
+    }
+
+    // The pairing bootstrap endpoint (if configured): its own thread + runtime,
+    // sharing the daemon's store. Inert until an invitation is minted.
+    if let Some(addr) = config.pair_addr.clone() {
+        let state = state.clone();
+        eprintln!("axond: serving pairing (mTLS) at {addr}");
+        std::thread::spawn(move || {
+            if let Err(e) = run_pair_listener(state, &addr) {
+                eprintln!("axond: pairing listener stopped: {e}");
             }
         });
     }

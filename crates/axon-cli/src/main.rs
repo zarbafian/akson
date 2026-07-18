@@ -13,6 +13,7 @@
 //! - `axon task send <spec.json>` — send a task to a performer (§10.2).
 //! - `axon processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
 //! - `axon peer list` — the paired peers (§16.4).
+//! - `axon pair invite <out-file>` — mint a pairing invitation (§8.2).
 //! - `axon pair accept <invitation-file>` — accept a pairing invitation (§8.2).
 
 use std::ffi::{OsStr, OsString};
@@ -40,12 +41,51 @@ fn main() -> ExitCode {
 /// Routes the `axon pair …` subcommands over the admin control socket (§8.2).
 fn pair(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
     match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("invite") => match next_arg(args) {
+            Some(out) => pair_invite(&out),
+            None => usage("axon pair invite <out-file>"),
+        },
         Some("accept") => match next_arg(args) {
             Some(file) => pair_accept(&file),
             None => usage("axon pair accept <invitation-file>"),
         },
-        _ => usage("axon pair accept <invitation-file>"),
+        _ => usage("axon pair {invite <out-file>|accept <invitation-file>}"),
     }
+}
+
+/// Mint a pairing invitation and write it to a file (`axon pair invite <out>`).
+fn pair_invite(out_file: &str) -> ExitCode {
+    let result = match call(&ControlRequest::PairInvite) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let invitation = match serde_json::to_string_pretty(&result["invitation"]) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("axon: the daemon returned a malformed invitation");
+            return ExitCode::from(1);
+        }
+    };
+    // The invitation carries a bearer secret — write it owner-only.
+    if let Err(e) = write_owner_only(out_file, invitation.as_bytes()) {
+        eprintln!("axon: cannot write {out_file}: {e}");
+        return ExitCode::from(2);
+    }
+    println!("invitation written to {out_file}");
+    ExitCode::SUCCESS
+}
+
+/// Writes `bytes` to `path` with `0600` permissions (an invitation is a secret).
+fn write_owner_only(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)
 }
 
 /// Accept a pairing invitation from a file (`axon pair accept <file>`).

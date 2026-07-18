@@ -23,7 +23,7 @@ use crate::control::Problem;
 /// a signed Agent Card plus its paired-purpose verification keys, so the peer can
 /// verify everything this endpoint later signs — proposals, decisions, results,
 /// evidence, outcomes.
-fn bootstrap_material(state: &DaemonState) -> Result<BootstrapMaterial, Problem> {
+pub(crate) fn bootstrap_material(state: &DaemonState) -> Result<BootstrapMaterial, Problem> {
     let identity = state.identity();
     let local = &state.config().local_performer;
 
