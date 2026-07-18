@@ -21,6 +21,7 @@ axon-sandbox = { workspace = true }
 axon-store = { workspace = true }
 axon-contract = { workspace = true }
 axon-authority = { workspace = true }
+axon-broker = { workspace = true }
 axon-evidence = { workspace = true }
 axon-worker = { workspace = true }
 axon-proto = { workspace = true }

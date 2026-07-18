@@ -252,6 +252,17 @@ CREATE TABLE outcomes (
 ) STRICT;
 "#;
 
+/// Version 13 (M12): sealed processor credentials (design §13.1, §15.2). One
+/// secret per processor (an API key), sealed at rest, injected into the request
+/// at dispatch and never persisted in the call record or disclosed to the worker.
+const V13: &str = r#"
+CREATE TABLE processor_credentials (
+    processor_id  TEXT PRIMARY KEY,
+    credential    BLOB NOT NULL,
+    updated_at    INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -267,6 +278,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (10, V10),
     (11, V11),
     (12, V12),
+    (13, V13),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

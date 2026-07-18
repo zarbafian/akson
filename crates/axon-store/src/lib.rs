@@ -67,6 +67,7 @@ const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
 const WORK_ORDER_CONTEXT: &str = "work_order.issued";
 const RESULT_MANIFEST_CONTEXT: &str = "result.manifest";
 const OUTCOME_CONTEXT: &str = "outcome.signed";
+const PROCESSOR_CREDENTIAL_CONTEXT: &str = "processor.credential";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -1633,6 +1634,45 @@ impl Store {
         Ok(out)
     }
 
+    /// Stores (or replaces) a processor's credential, sealed at rest (design
+    /// §15.2). Injected into the request at dispatch; never written to the call
+    /// record and never disclosed to the worker.
+    pub fn put_credential(
+        &self,
+        processor_id: &str,
+        credential: &[u8],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let sealed = self.dek.seal(PROCESSOR_CREDENTIAL_CONTEXT, credential);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO processor_credentials (processor_id, credential, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(processor_id) DO UPDATE SET
+                 credential = excluded.credential, updated_at = excluded.updated_at",
+            params![processor_id, sealed, now],
+        )?;
+        audit::append(&tx, now, "processor.credential_set", processor_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A processor's stored credential, unsealed, if one is configured.
+    pub fn get_credential(&self, processor_id: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT credential FROM processor_credentials WHERE processor_id = ?1",
+                [processor_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => Ok(Some(self.dek.open(PROCESSOR_CREDENTIAL_CONTEXT, &bytes)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Durably records a processor call in `prepared` *before* it is dispatched
     /// (design §13.1) — so a crash after any byte leaves is recoverable as
     /// `ambiguous`. Idempotent on the call's idempotency key: re-preparing the
@@ -2623,6 +2663,23 @@ mod tests {
             .peer_key("other", "contract-proposal")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn processor_credentials_round_trip_sealed() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store.put_credential("proc-1", b"sk-secret", 100).unwrap();
+        assert_eq!(
+            store.get_credential("proc-1").unwrap(),
+            Some(b"sk-secret".to_vec())
+        );
+        // Replaced in place.
+        store.put_credential("proc-1", b"sk-rotated", 200).unwrap();
+        assert_eq!(
+            store.get_credential("proc-1").unwrap(),
+            Some(b"sk-rotated".to_vec())
+        );
+        assert!(store.get_credential("proc-none").unwrap().is_none());
     }
 
     #[test]
