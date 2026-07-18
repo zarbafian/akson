@@ -18,6 +18,7 @@ mod control;
 mod peercred;
 mod receive;
 mod receive_http;
+mod receive_server;
 mod socket;
 
 pub use control::{authorize, ControlOp, Problem, Surface};
@@ -26,6 +27,7 @@ pub use peercred::{
 };
 pub use receive::{dispatch_proposal, DispatchOutcome, Dispatched};
 pub use receive_http::{handle_receive, HttpRequest, HttpResponse, ReceiveConfig};
+pub use receive_server::{serve as serve_receive, PeerContext, PeerResolver, ReceiveState};
 pub use socket::{
     admin_socket_path, bind_socket, handle_connection, send_request, serve, socket_dir,
     worker_socket_path, ControlRequest, ControlResponse, SocketError,

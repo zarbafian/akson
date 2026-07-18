@@ -322,12 +322,19 @@ dependencies = [
  "axon-sandbox",
  "axon-store",
  "axon-transport",
+ "bytes",
  "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
