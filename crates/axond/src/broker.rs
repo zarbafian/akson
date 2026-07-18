@@ -25,7 +25,7 @@ use axon_crypto::identity::{Fingerprint, FingerprintKind};
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
 use axon_store::{PrepareOutcome, Store};
-use axon_transport::tls::client_config;
+use axon_transport::tls::{ca_client_config, client_config};
 use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -182,16 +182,22 @@ impl CallTransport for HttpsTransport<'_> {
         request: &[u8],
         max_response_bytes: u64,
     ) -> Result<CallResponse, TransportError> {
-        // v1 dials pinned processors (typically local/self-signed). CA validation
-        // for public providers is a later addition.
-        let fp = expected_cert_sha256
-            .ok_or_else(|| TransportError::Clean("processor has no pinned certificate".to_owned()))?;
-        let pinned = Fingerprint {
-            kind: FingerprintKind::CertSha256,
-            value: fp.to_owned(),
+        // Pinned processors (typically local/self-signed) get mutual TLS pinned to
+        // their exact cert; public providers (no pinned cert) get server-auth TLS
+        // validated against the Mozilla CA roots, presenting no client cert (they
+        // authenticate the caller by the bearer credential). The choice is per
+        // processor and never a silent fallback.
+        let config = match expected_cert_sha256 {
+            Some(fp) => {
+                let pinned = Fingerprint {
+                    kind: FingerprintKind::CertSha256,
+                    value: fp.to_owned(),
+                };
+                client_config(self.endpoint_key, self.endpoint_cert, &pinned)
+                    .map_err(|e| TransportError::Clean(e.to_string()))?
+            }
+            None => ca_client_config().map_err(|e| TransportError::Clean(e.to_string()))?,
         };
-        let config = client_config(self.endpoint_key, self.endpoint_cert, &pinned)
-            .map_err(|e| TransportError::Clean(e.to_string()))?;
         let connector = TlsConnector::from(Arc::new(config));
 
         // Everything up to and including the handshake is a *clean* failure — no

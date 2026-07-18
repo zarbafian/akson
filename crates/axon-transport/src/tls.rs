@@ -314,3 +314,25 @@ pub fn client_config(
     config.enable_early_data = false;
     Ok(config)
 }
+
+/// A client config for a **public** processor endpoint (design §9.1): the server
+/// cert is validated against the Mozilla CA root bundle (`webpki-roots`, compiled
+/// in — no filesystem trust store, deterministic) using rustls' standard
+/// WebPki verifier, and no client certificate is presented (public providers
+/// authenticate the caller with a bearer credential, not mTLS). Use this only
+/// when the processor has no pinned certificate; the pinned path
+/// ([`client_config`]) is preferred and never falls back to CA trust silently —
+/// the broker chooses per processor.
+pub fn ca_client_config() -> Result<ClientConfig, TlsError> {
+    let provider = provider();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    // §9.1: no resumption/tickets, no 0-RTT — same as the pinned path.
+    config.resumption = rustls::client::Resumption::disabled();
+    config.enable_early_data = false;
+    Ok(config)
+}
