@@ -57,8 +57,8 @@ pub enum ControlRequest {
     TaskApprove { task_id: String },
     /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
     TaskDeny { task_id: String, reason: String },
-    /// Submit a bounded worker result (the narrow worker surface).
-    SubmitResult { task_id: String, byte_length: u64 },
+    /// Submit a worker result for completion (the narrow worker surface).
+    SubmitResult(crate::result::ResultSubmission),
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
     IssueWorkOrder { task_id: String },
 }
@@ -72,7 +72,7 @@ impl ControlRequest {
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
-            ControlRequest::SubmitResult { .. } => ControlOp::SubmitResult,
+            ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
         }
     }
@@ -265,10 +265,12 @@ mod tests {
     fn worker_surface_may_submit_a_result() {
         let response = round_trip(
             Surface::Worker,
-            ControlRequest::SubmitResult {
+            ControlRequest::SubmitResult(crate::result::ResultSubmission {
                 task_id: "task-1".to_owned(),
-                byte_length: 12,
-            },
+                outputs: vec![],
+                evidence: vec![],
+                slots: vec![],
+            }),
         );
         assert!(matches!(response, ControlResponse::Ok { .. }));
     }

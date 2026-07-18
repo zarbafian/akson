@@ -208,6 +208,21 @@ CREATE TABLE work_orders (
 ) STRICT;
 "#;
 
+/// Version 11 (M12): the durable result of a completed attempt (design §14.1,
+/// §9.3). One row per work order, written in the same transaction that advances
+/// the attempt to `succeeded` (staged-then-atomic). The signed result manifest is
+/// sealed at rest; the bundle digest is plaintext (it is what the requester
+/// outcome binds).
+const V11: &str = r#"
+CREATE TABLE results (
+    work_order_id  TEXT PRIMARY KEY,
+    task_id        TEXT NOT NULL,
+    bundle_digest  TEXT NOT NULL,
+    manifest       BLOB NOT NULL,
+    completed_at   INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -221,6 +236,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, V8),
     (9, V9),
     (10, V10),
+    (11, V11),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

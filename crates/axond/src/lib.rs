@@ -26,11 +26,13 @@ mod receive;
 mod receive_http;
 mod receive_serve;
 mod receive_server;
+mod result;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
 pub use keys::IdentityKeys;
 pub use receive_serve::{run_receive_listener, ReceiveServeError};
+pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};

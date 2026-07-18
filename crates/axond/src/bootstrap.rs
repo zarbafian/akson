@@ -39,6 +39,7 @@ use crate::approve::{approve_and_issue, deny};
 use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::keys::IdentityKeys;
+use crate::result::submit_result;
 use crate::socket::ControlRequest;
 
 /// Why the daemon could not come up.
@@ -195,9 +196,16 @@ impl DaemonState {
                     now_unix(),
                 )
             }
-            ControlRequest::SubmitResult { .. } | ControlRequest::IssueWorkOrder { .. } => {
-                Ok(serde_json::json!({ "accepted": true }))
+            ControlRequest::SubmitResult(submission) => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                submit_result(
+                    &store,
+                    &self.identity.purpose_key(KeyPurpose::TaskResult),
+                    submission,
+                    now_unix(),
+                )
             }
+            ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
         }
     }
 }

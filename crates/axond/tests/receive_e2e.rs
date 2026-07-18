@@ -25,10 +25,12 @@ use axon_proto::v1::{part::Content, Message, Part, SendMessageRequest};
 use axon_store::delivery::content_digest;
 use axon_store::envelope::Kek;
 use axon_store::{ExternalCheckpoint, Store};
+use axon_evidence::ResultManifest;
+use axon_ext::dsse::Envelope;
 use axon_transport::tls::{bootstrap_server_config, client_config};
 use axond::{
-    serve_receive, ControlRequest, DaemonConfig, DaemonState, IdentityKeys, ReceiveState,
-    StorePeerResolver,
+    serve_receive, ControlRequest, DaemonConfig, DaemonState, IdentityKeys, OutputKind,
+    ReceiveState, ResultOutput, ResultSubmission, StorePeerResolver,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -254,7 +256,7 @@ async fn an_unpaired_peer_is_refused_403() {
 }
 
 #[tokio::test]
-async fn the_whole_lifecycle_receive_then_inbox_show_and_approve() {
+async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
     let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
     let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
     let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
@@ -339,4 +341,50 @@ async fn the_whole_lifecycle_receive_then_inbox_show_and_approve() {
     // 5. The accepted Task has left the submitted inbox.
     let inbox = state.dispatch(&ControlRequest::TaskInbox).unwrap();
     assert_eq!(inbox["tasks"].as_array().unwrap().len(), 0);
+
+    // 6. The worker submits its result on the worker surface: it is gated against
+    //    the granted scope, the manifest is signed, and the attempt is completed.
+    let completed = state
+        .dispatch(&ControlRequest::SubmitResult(ResultSubmission {
+            task_id: task_id.clone(),
+            outputs: vec![ResultOutput {
+                role: "response".to_owned(),
+                artifact_id: "a-1".to_owned(),
+                kind: OutputKind::Response,
+                recipient: "request-origin".to_owned(),
+                media_type: "text/plain".to_owned(),
+                byte_length: 14,
+                sha256: "c".repeat(64),
+            }],
+            evidence: vec![],
+            slots: vec![],
+        }))
+        .unwrap();
+    assert_eq!(completed["completed"], true);
+    let bundle = completed["bundle_digest"].as_str().unwrap().to_owned();
+
+    // The signed result manifest is durably stored and verifies under the daemon's
+    // task-result key, binding exactly the reported bundle digest.
+    let wo = state
+        .store()
+        .lock()
+        .unwrap()
+        .attempt_for_task(&task_id)
+        .unwrap()
+        .unwrap();
+    let (stored_digest, manifest_bytes) = state
+        .store()
+        .lock()
+        .unwrap()
+        .result_manifest(&wo)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_digest, bundle);
+    let envelope: Envelope = serde_json::from_slice(&manifest_bytes).unwrap();
+    let task_result_vk = state
+        .identity()
+        .purpose_key(KeyPurpose::TaskResult)
+        .verifying();
+    let (_manifest, verified_digest) = ResultManifest::verify(&envelope, &task_result_vk).unwrap();
+    assert_eq!(verified_digest, bundle);
 }

@@ -63,6 +63,7 @@ const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
 const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
 const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
 const WORK_ORDER_CONTEXT: &str = "work_order.issued";
+const RESULT_MANIFEST_CONTEXT: &str = "result.manifest";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -192,6 +193,18 @@ pub enum ClaimOutcome {
     /// The one-use nonce belongs to a *different* work order — a replayed or
     /// forged nonce. Refused; nothing is claimed.
     NonceReused,
+}
+
+/// The result of durably completing an attempt with its result (design §14.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionOutcome {
+    /// The attempt advanced to `succeeded` and the result was staged atomically.
+    Completed,
+    /// The attempt was already completed — the committed result stands unchanged.
+    AlreadyCompleted,
+    /// The attempt cannot complete from this state (pending, or already a terminal
+    /// failure/ambiguous/cancelled). Nothing was written.
+    NotRunnable(AttemptState),
 }
 
 /// One endpoint's encrypted state database.
@@ -1316,6 +1329,92 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Durably completes an attempt with its signed result (design §14.1, §9.3):
+    /// in ONE transaction, advance the attempt to `succeeded` and stage the sealed
+    /// result manifest — staged-then-atomic, so a result is never visible without
+    /// the attempt being succeeded, nor vice versa. Idempotent: a re-submit of an
+    /// already-completed attempt is [`CompletionOutcome::AlreadyCompleted`] and
+    /// changes nothing (the committed result stands). An attempt that never claimed
+    /// or already failed/ambiguous/cancelled is [`CompletionOutcome::NotRunnable`].
+    pub fn complete_attempt_with_result(
+        &self,
+        work_order_id: &str,
+        task_id: &str,
+        bundle_digest: &str,
+        manifest_envelope: &[u8],
+        now: i64,
+    ) -> Result<CompletionOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let state = self
+            .attempt_state(work_order_id)?
+            .ok_or_else(|| StoreError::UnknownAttempt(work_order_id.to_owned()))?;
+        match state {
+            // Already done — the committed result stands; do not overwrite.
+            AttemptState::Succeeded => {
+                tx.commit()?;
+                Ok(CompletionOutcome::AlreadyCompleted)
+            }
+            // The worker submits its result at completion time, so the attempt may
+            // still be claimed (never separately started) or running.
+            AttemptState::Claimed | AttemptState::Running => {
+                // Self-contained CAS on the exact source state (serialized by
+                // IMMEDIATE); a 0-row result would mean it moved under us.
+                let changed = tx.execute(
+                    "UPDATE attempts SET state = 'succeeded'
+                     WHERE work_order_id = ?1 AND state = ?2",
+                    params![work_order_id, state.as_str()],
+                )?;
+                if changed != 1 {
+                    return Err(StoreError::Corrupt(format!(
+                        "attempt {work_order_id} changed state under completion"
+                    )));
+                }
+                let sealed = self.dek.seal(RESULT_MANIFEST_CONTEXT, manifest_envelope);
+                tx.execute(
+                    "INSERT INTO results (work_order_id, task_id, bundle_digest, manifest, completed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![work_order_id, task_id, bundle_digest, sealed, now],
+                )?;
+                audit::append(
+                    &tx,
+                    now,
+                    "attempt.transition",
+                    &format!("{work_order_id}:succeeded"),
+                )?;
+                audit::append(&tx, now, "result.completed", bundle_digest)?;
+                tx.commit()?;
+                Ok(CompletionOutcome::Completed)
+            }
+            other => {
+                tx.commit()?;
+                Ok(CompletionOutcome::NotRunnable(other))
+            }
+        }
+    }
+
+    /// The stored (bundle_digest, sealed-then-opened signed result manifest) of a
+    /// completed attempt, if any (design §14.1).
+    pub fn result_manifest(
+        &self,
+        work_order_id: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        let row: Option<(String, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT bundle_digest, manifest FROM results WHERE work_order_id = ?1",
+                [work_order_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((digest, sealed)) => {
+                let manifest = self.dek.open(RESULT_MANIFEST_CONTEXT, &sealed)?;
+                Ok(Some((digest, manifest)))
+            }
+            None => Ok(None),
+        }
     }
 }
 
