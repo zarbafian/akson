@@ -220,6 +220,13 @@ impl DaemonState {
                     .collect();
                 Ok(serde_json::json!({ "peers": items }))
             }
+            ControlRequest::PeerConfirm { agent_id } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let confirmed = store
+                    .confirm_peer(agent_id, now_unix())
+                    .map_err(|_| internal())?;
+                Ok(serde_json::json!({ "confirmed": confirmed, "agent_id": agent_id }))
+            }
             ControlRequest::TaskSent => {
                 let store = self.store.lock().map_err(|_| internal())?;
                 let items: Vec<_> = store

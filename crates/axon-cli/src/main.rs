@@ -13,6 +13,7 @@
 //! - `axon task send <spec.json>` — send a task to a performer (§10.2).
 //! - `axon processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
 //! - `axon peer list` — the paired peers (§16.4).
+//! - `axon peer confirm <agent>` — promote a pending peer to active (§8.2).
 //! - `axon pair invite <out-file>` — mint a pairing invitation (§8.2).
 //! - `axon pair accept <invitation-file>` — accept a pairing invitation (§8.2).
 
@@ -113,8 +114,28 @@ fn pair_accept(invitation_file: &str) -> ExitCode {
 fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
     match args.next().as_deref().and_then(OsStr::to_str) {
         Some("list") => peer_list(),
-        _ => usage("axon peer list"),
+        Some("confirm") => match next_arg(args) {
+            Some(agent) => peer_confirm(&agent),
+            None => usage("axon peer confirm <agent-id>"),
+        },
+        _ => usage("axon peer {list|confirm <agent-id>}"),
     }
+}
+
+/// Confirm a pending peer (`axon peer confirm <agent>`).
+fn peer_confirm(agent_id: &str) -> ExitCode {
+    let result = match call(&ControlRequest::PeerConfirm {
+        agent_id: agent_id.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    if result["confirmed"].as_bool() == Some(true) {
+        println!("confirmed peer {agent_id}");
+    } else {
+        println!("peer {agent_id} was not pending (nothing to confirm)");
+    }
+    ExitCode::SUCCESS
 }
 
 /// The paired peers (`axon peer list`).

@@ -20,7 +20,7 @@ use axon_store::envelope::Kek;
 use axon_store::{ExternalCheckpoint, Store};
 use axon_transport::bootstrap::{serve, BootstrapState};
 use axon_transport::tls::bootstrap_server_config;
-use axond::{run_pair_accept, DaemonConfig, DaemonState, IdentityKeys};
+use axond::{run_pair_accept, ControlRequest, DaemonConfig, DaemonState, IdentityKeys};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -220,4 +220,19 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
     // Both endpoints now hold the other as a peer, in their own durable stores.
     assert!(b_store_handle.lock().unwrap().get_peer("inviter").unwrap().is_some());
     assert!(a.store().lock().unwrap().get_peer("accepter").unwrap().is_some());
+
+    // The new peer is pending; the operator confirms it to activate it (§8.2 step 7).
+    let confirmed = a
+        .dispatch(&ControlRequest::PeerConfirm {
+            agent_id: "accepter".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(confirmed["confirmed"], true);
+    // A second confirm is a no-op (already active).
+    let again = a
+        .dispatch(&ControlRequest::PeerConfirm {
+            agent_id: "accepter".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(again["confirmed"], false);
 }

@@ -54,6 +54,8 @@ pub enum ControlRequest {
     TaskShow { task_id: String },
     /// List paired peers (`axon peer list`).
     PeerList,
+    /// Confirm a pending peer, promoting it to active (`axon peer confirm`, admin).
+    PeerConfirm { agent_id: String },
     /// List tasks this daemon sent as requester (`axon task sent`).
     TaskSent,
     /// List recorded requester outcomes (`axon task outcomes`).
@@ -111,6 +113,7 @@ impl ControlRequest {
             | ControlRequest::TaskSent
             | ControlRequest::TaskOutcomes => ControlOp::TaskInspect,
             ControlRequest::PeerList => ControlOp::Inspect,
+            ControlRequest::PeerConfirm { .. } => ControlOp::Pair,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
