@@ -475,7 +475,7 @@ structural fixes before it could ever be default.
 deadline/resource enforcement, probing fails closed; `axon doctor` reports
 every capability. **— all met.**
 
-**M10. Processor broker (M)** — `axon-broker`
+**M10. Processor broker (M)** — `axon-broker` — **CORE + DURABLE STATE DONE**
 Only egress path for approved plaintext. Durable sub-attempt
 (`prepared → dispatching → completed|failed|ambiguous|cancelled`), stored
 provider/origin/config digest/request digest/idempotency key/cost bound
@@ -483,6 +483,26 @@ before dispatch, no redirects or ambient proxies, DNS/address-class checks,
 credentials never leave the broker; ambiguous never auto-retries (§13.1).
 `axon processor add|list|test` with local/remote disclosure recording
 (§4.4, §15.2).
+**Done** (standards-first, all unit+doctested): `axon-broker` pure core —
+`subattempt.rs` (the state machine; `dispatching` is durable-before-effect, a crash
+or cancel while dispatching → `ambiguous` never auto-retried, same crash/cancel
+honesty as the attempt machine); `call.rs` `ProcessorCall::prepare` (the pre-dispatch
+record with provider/origin/config-digest/request-digest/work-order-binding/cost/
+deadline/limit + a deterministic idempotency key from `(work_order,config,request)`
+so an exact retry reuses it); `address.rs` the two fail-closed egress gates —
+`check_origin` (https + exact allowlist) and `check_resolved_address` (globally-
+routable unicast only; loopback/private/link-local/unique-local/multicast/ipv4-mapped-
+inward refused — anti-SSRF/rebinding; local processors opt in); `processor.rs`
+`ProcessorConfig` + `Disclosure` (local/remote, operator/region/retention/training/
+subprocessors §15.2) with `config_digest` binding the exact approved provider/origin/
+model. Durable in `axon-store` schema V7: sealed `processors` (put/get/list) +
+`processor_calls` (`prepare_call` idempotent-before-dispatch, `advance_call` self-CAS,
+`resolve_crashed_calls` → ambiguous — the kill-during-dispatch exit criterion).
+**Remaining (M12 assembly):** the live HTTPS dispatch (redirect-disabled reqwest/hyper
+client, connection-time DNS validation calling `check_resolved_address`, credential
+injection that never leaves the broker); credential storage (sealed, keyed by
+processor); the duplicate-disclosure operator prompt on `ambiguous`; and the
+`axon processor add|list|test` CLI verbs.
 *Exit:* §20.5 broker suite; kill-during-dispatch yields ambiguous with the
 duplicate-disclosure prompt path.
 
