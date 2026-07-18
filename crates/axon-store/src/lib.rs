@@ -2496,6 +2496,7 @@ mod tests {
             origin: axon_broker::Origin::https("api.example.com", 443),
             disclosure: axon_broker::Disclosure::remote("Example AI", "us-east"),
             config: serde_json::json!({"model": "review-1"}),
+            tls_certificate_sha256: None,
         }
     }
 

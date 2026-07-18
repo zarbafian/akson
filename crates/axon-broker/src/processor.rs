@@ -20,6 +20,7 @@
 //!     origin: Origin::https("api.example.com", 443),
 //!     disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
 //!     config: json!({"model": "review-1", "temperature": 0}),
+//!     tls_certificate_sha256: None,
 //! };
 //! assert!(!cfg.is_local());
 //! let _digest = cfg.config_digest().unwrap();
@@ -102,6 +103,12 @@ pub struct ProcessorConfig {
     pub disclosure: Disclosure,
     /// Opaque provider configuration (model name, parameters).
     pub config: serde_json::Value,
+    /// The processor's pinned endpoint-cert SHA-256 (design §8.1) — set for a
+    /// pinned (typically local/self-signed) processor, dialed like a peer. `None`
+    /// selects CA validation (public providers), a later addition. Not part of
+    /// `config_digest`: it is how the destination is trusted, not what is dispatched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_certificate_sha256: Option<String>,
 }
 
 /// Why a processor configuration could not be digested.
@@ -144,6 +151,7 @@ mod tests {
             origin: Origin::https("api.example.com", 443),
             disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
             config: json!({"model": "review-1", "temperature": 0}),
+            tls_certificate_sha256: None,
         }
     }
 

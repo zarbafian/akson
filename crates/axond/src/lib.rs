@@ -35,7 +35,9 @@ mod send;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
-pub use broker::{dispatch_processor_call, CallResponse, CallTransport, TransportError};
+pub use broker::{
+    dispatch_processor_call, CallResponse, CallTransport, HttpsTransport, TransportError,
+};
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};

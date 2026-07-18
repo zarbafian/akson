@@ -20,6 +20,7 @@
 //! #   processor_id: "reviewer".into(), provider: "example-ai".into(),
 //! #   origin: Origin::https("api.example.com", 443),
 //! #   disclosure: Disclosure::remote("Example AI", "us-east"), config: json!({"model": "m"}),
+//! #   tls_certificate_sha256: None,
 //! # };
 //! let call = ProcessorCall::prepare(
 //!     &config,
@@ -156,6 +157,7 @@ mod tests {
             origin: Origin::https("api.example.com", 443),
             disclosure: Disclosure::remote("Example AI", "us-east"),
             config: json!({"model": "review-1"}),
+            tls_certificate_sha256: None,
         }
     }
 

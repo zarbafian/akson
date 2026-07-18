@@ -12,14 +12,22 @@
 //! uncertain outcome (bytes may have left) is `ambiguous` and is never
 //! auto-retried.
 
-use std::net::IpAddr;
-use std::sync::Mutex;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 
 use axon_broker::{
     check_origin, check_resolved_address, CallBinding, CallBudget, EgressPolicy, ProcessorCall,
     SubAttemptEvent, SubAttemptState,
 };
+use axon_crypto::cert::EndpointCert;
+use axon_crypto::identity::{Fingerprint, FingerprintKind};
+use axon_crypto::keypair::PurposeKey;
 use axon_store::{PrepareOutcome, Store};
+use axon_transport::tls::client_config;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 
 use crate::control::Problem;
 
@@ -38,16 +46,18 @@ pub enum TransportError {
     Uncertain(String),
 }
 
-/// The raw HTTPS transport: connect to the **already-checked** address, present no
-/// client certificate (the credential authenticates), inject the credential, POST
-/// the request, and read the size-capped response. A seam so the dispatch
-/// composition is testable without a live server; the production impl uses rustls.
+/// The raw HTTPS transport: connect to the **already-checked** `addr` (with SNI
+/// `host`), trusting the processor's pinned certificate, inject the credential,
+/// POST the request, and read the size-capped response. A seam so the dispatch
+/// composition is testable without a live server.
 pub trait CallTransport {
+    #[allow(clippy::too_many_arguments)]
     fn send(
         &self,
         host: &str,
         port: u16,
         addr: IpAddr,
+        expected_cert_sha256: Option<&str>,
         credential: Option<&[u8]>,
         request: &[u8],
         max_response_bytes: u64,
@@ -70,7 +80,7 @@ pub async fn dispatch_processor_call(
 ) -> Result<serde_json::Value, Problem> {
     // Phase 1 (locked): the config, the durable pre-dispatch record, and the move
     // to `dispatching` — all before any byte leaves.
-    let (call, credential) = {
+    let (call, credential, expected_cert) = {
         let store = store.lock().map_err(|_| internal())?;
         let config = store
             .get_processor(processor_id)
@@ -93,7 +103,7 @@ pub async fn dispatch_processor_call(
         // Record `dispatching` before the first byte leaves (§13.1).
         advance(&store, &call.idempotency_key, SubAttemptEvent::Dispatch, now)?;
         let credential = store.get_credential(processor_id).map_err(store_problem)?;
-        (call, credential)
+        (call, credential, config.tls_certificate_sha256.clone())
     };
 
     // Phase 2 (unlocked): resolve, RE-CHECK the resolved address, then send.
@@ -119,6 +129,7 @@ pub async fn dispatch_processor_call(
             &call.origin.host,
             call.origin.port,
             addr,
+            expected_cert.as_deref(),
             credential.as_deref(),
             request,
             call.max_response_bytes,
@@ -144,6 +155,102 @@ pub async fn dispatch_processor_call(
             d,
         )),
     }
+}
+
+/// The production HTTPS transport (design §9.1, §13.1): mutual TLS pinned to the
+/// processor's endpoint certificate, presenting this endpoint's own cert. It dials
+/// the **already-checked** address (SNI `host`), so the anti-rebinding gate is not
+/// bypassed by a re-resolve. The credential rides an `Authorization: Bearer`
+/// header; no redirects are followed (a single POST); the response is size-capped.
+pub struct HttpsTransport<'a> {
+    pub endpoint_key: &'a PurposeKey,
+    pub endpoint_cert: &'a EndpointCert,
+}
+
+impl CallTransport for HttpsTransport<'_> {
+    async fn send(
+        &self,
+        host: &str,
+        port: u16,
+        addr: IpAddr,
+        expected_cert_sha256: Option<&str>,
+        credential: Option<&[u8]>,
+        request: &[u8],
+        max_response_bytes: u64,
+    ) -> Result<CallResponse, TransportError> {
+        // v1 dials pinned processors (typically local/self-signed). CA validation
+        // for public providers is a later addition.
+        let fp = expected_cert_sha256
+            .ok_or_else(|| TransportError::Clean("processor has no pinned certificate".to_owned()))?;
+        let pinned = Fingerprint {
+            kind: FingerprintKind::CertSha256,
+            value: fp.to_owned(),
+        };
+        let config = client_config(self.endpoint_key, self.endpoint_cert, &pinned)
+            .map_err(|e| TransportError::Clean(e.to_string()))?;
+        let connector = TlsConnector::from(Arc::new(config));
+
+        // Everything up to and including the handshake is a *clean* failure — no
+        // request byte has left the host.
+        let tcp = TcpStream::connect(SocketAddr::new(addr, port))
+            .await
+            .map_err(|e| TransportError::Clean(e.to_string()))?;
+        let server_name =
+            ServerName::try_from(host.to_owned()).map_err(|_| TransportError::Clean("bad host".to_owned()))?;
+        let mut tls = connector
+            .connect(server_name, tcp)
+            .await
+            .map_err(|e| TransportError::Clean(e.to_string()))?;
+
+        // From the first write on, a failure is *uncertain* — the request may have
+        // been transmitted and processed.
+        let auth = match credential {
+            Some(c) => format!("Authorization: Bearer {}\r\n", String::from_utf8_lossy(c)),
+            None => String::new(),
+        };
+        let head = format!(
+            "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
+             {auth}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            request.len()
+        );
+        let exchange = async {
+            tls.write_all(head.as_bytes()).await?;
+            tls.write_all(request).await?;
+            tls.flush().await?;
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match tls.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&chunk[..n]);
+                        // Header + capped body is enough; stop once the body cap is
+                        // reached (a generous headroom over the headers).
+                        if raw.len() as u64 >= max_response_bytes + 8192 {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok::<_, std::io::Error>(raw)
+        };
+        let raw = exchange
+            .await
+            .map_err(|e| TransportError::Uncertain(e.to_string()))?;
+        let (status, body) = split_response(&raw)
+            .ok_or_else(|| TransportError::Uncertain("no HTTP response".to_owned()))?;
+        Ok(CallResponse { status, body })
+    }
+}
+
+/// Splits an HTTP/1.1 response into (status code, body bytes).
+fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
+    let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&raw[..sep]).ok()?;
+    let status = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    Some((status, raw[sep + 4..].to_vec()))
 }
 
 fn is_terminal(state: SubAttemptState) -> bool {
@@ -237,8 +344,14 @@ fn problem_detail(status: u16, kind: &str, title: &str, e: impl std::fmt::Displa
 mod tests {
     use super::*;
     use axon_broker::{Origin, ProcessorConfig};
+    use axon_crypto::cert::self_signed_endpoint;
+    use axon_crypto::purpose::KeyPurpose;
     use axon_store::{ExternalCheckpoint, Store};
+    use axon_transport::tls::bootstrap_server_config;
     use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_rustls::TlsAcceptor;
 
     const NOW: i64 = 1_800_000_000;
 
@@ -261,6 +374,7 @@ mod tests {
             origin: Origin::https("127.0.0.1", 8443),
             disclosure: axon_broker::Disclosure::remote("Local", "here"),
             config: serde_json::json!({"model": "m"}),
+            tls_certificate_sha256: None,
         };
         {
             let s = store.lock().unwrap();
@@ -309,6 +423,7 @@ mod tests {
             _host: &str,
             _port: u16,
             addr: IpAddr,
+            _expected_cert: Option<&str>,
             credential: Option<&[u8]>,
             request: &[u8],
             _max: u64,
@@ -436,6 +551,109 @@ mod tests {
             store.lock().unwrap().call_state(&key).unwrap().unwrap(),
             SubAttemptState::Ambiguous
         );
+    }
+
+    /// A processor server: accepts one mTLS connection, reads the POST (headers +
+    /// Content-Length body), captures the raw request, and answers with a canned
+    /// JSON body.
+    async fn capture_processor(
+        listener: TcpListener,
+        acceptor: TlsAcceptor,
+        captured: Arc<StdMutex<Vec<u8>>>,
+    ) {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let (header_end, content_length) = loop {
+            let n = tls.read(&mut chunk).await.unwrap();
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
+                let len = headers
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                break (pos + 4, len);
+            }
+        };
+        while buf.len() < header_end + content_length {
+            let n = tls.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        *captured.lock().unwrap() = buf.clone();
+        let body = b"{\"answer\":42}";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        tls.write_all(resp.as_bytes()).await.unwrap();
+        tls.write_all(body).await.unwrap();
+        tls.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_https_transport_pins_the_processor_and_injects_the_credential() {
+        // The processor's server cert (the daemon pins it); the daemon's own cert.
+        let proc_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[71u8; 32]);
+        let proc_cert = self_signed_endpoint(&proc_key, "processor", Duration::from_secs(3600)).unwrap();
+        let daemon_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[72u8; 32]);
+        let daemon_cert = self_signed_endpoint(&daemon_key, "daemon", Duration::from_secs(3600)).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let acceptor = TlsAcceptor::from(Arc::new(
+            bootstrap_server_config(&proc_key, &proc_cert).unwrap(),
+        ));
+        let captured = Arc::new(StdMutex::new(Vec::new()));
+        let server = tokio::spawn(capture_processor(listener, acceptor, captured.clone()));
+
+        // The pinned processor + its sealed credential.
+        let store = store();
+        let config = ProcessorConfig {
+            processor_id: "local-llm".to_owned(),
+            provider: "local".to_owned(),
+            origin: Origin::https("127.0.0.1", port),
+            disclosure: axon_broker::Disclosure::remote("Local", "here"),
+            config: serde_json::json!({"model": "m"}),
+            tls_certificate_sha256: Some(proc_cert.fingerprint.value.clone()),
+        };
+        {
+            let s = store.lock().unwrap();
+            s.put_processor(&config, NOW).unwrap();
+            s.put_credential("local-llm", b"secret-key", NOW).unwrap();
+        }
+        let policy = EgressPolicy::allowing([config.origin.clone()]).allow_local();
+
+        let transport = HttpsTransport {
+            endpoint_key: &daemon_key,
+            endpoint_cert: &daemon_cert,
+        };
+        let out = dispatch_processor_call(
+            &store,
+            "local-llm",
+            b"{\"prompt\":\"hi\"}",
+            binding(),
+            budget(),
+            &policy,
+            &transport,
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["state"], "completed");
+        assert_eq!(out["status"], 200);
+        assert_eq!(out["response"], "{\"answer\":42}");
+        server.await.unwrap();
+
+        // The processor received the POST with the injected credential + the request.
+        let raw = String::from_utf8_lossy(&captured.lock().unwrap()).to_string();
+        assert!(raw.contains("Authorization: Bearer secret-key"));
+        assert!(raw.contains("{\"prompt\":\"hi\"}"));
     }
 
     /// The single prepared call's idempotency key (there is exactly one per test).
