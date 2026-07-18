@@ -11,8 +11,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use axond::{
-    admin_socket_path, bind_socket, current_uid, serve, socket_dir, worker_socket_path,
-    ControlRequest, DaemonConfig, DaemonState, Surface,
+    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve, socket_dir,
+    worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,6 +38,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         worker_path.display(),
         config.data_dir.display(),
     );
+
+    // The A2A receive listener (if configured) runs on its own thread with its own
+    // tokio runtime, sharing the daemon's store — a received Task shows up in the
+    // operator's inbox at once. A listener failure is logged, not fatal to control.
+    if let Some(addr) = config.receive_addr.clone() {
+        let state = state.clone();
+        eprintln!("axond: serving A2A receive (mTLS) at {addr}");
+        std::thread::spawn(move || {
+            if let Err(e) = run_receive_listener(state, &addr) {
+                eprintln!("axond: receive listener stopped: {e}");
+            }
+        });
+    }
 
     // Both surfaces share the one daemon state; each dispatch closure holds its own
     // handle. The worker surface serves on its own thread, the admin on this one.

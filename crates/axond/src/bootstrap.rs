@@ -64,6 +64,9 @@ pub struct DaemonConfig {
     /// The A2A interface URL this endpoint advertises (an idempotency covered
     /// value; the receiver checks the contract targets it).
     pub interface_url: String,
+    /// Where to serve the mTLS A2A receive listener (e.g. `127.0.0.1:8443`).
+    /// `None` runs control-only, with no network listener.
+    pub receive_addr: Option<String>,
 }
 
 impl DaemonConfig {
@@ -79,10 +82,12 @@ impl DaemonConfig {
         let agent = env_nonempty("AXON_AGENT").unwrap_or_else(|| "axon-local".to_owned());
         let interface_url = env_nonempty("AXON_INTERFACE_URL")
             .unwrap_or_else(|| "https://localhost/a2a".to_owned());
+        let receive_addr = env_nonempty("AXON_RECEIVE_ADDR");
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
             interface_url,
+            receive_addr,
         }
     }
 }
@@ -316,6 +321,7 @@ mod tests {
                 agent: "performer".to_owned(),
             },
             interface_url: "https://local/a2a".to_owned(),
+            receive_addr: None,
         }
     }
 

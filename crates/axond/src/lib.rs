@@ -24,11 +24,13 @@ mod keys;
 mod peercred;
 mod receive;
 mod receive_http;
+mod receive_serve;
 mod receive_server;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
 pub use keys::IdentityKeys;
+pub use receive_serve::{run_receive_listener, ReceiveServeError};
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};

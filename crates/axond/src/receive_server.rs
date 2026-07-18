@@ -85,9 +85,11 @@ impl PeerResolver for StorePeerResolver {
     }
 }
 
-/// The receive server's shared state.
+/// The receive server's shared state. The store is the *same* `Arc<Mutex<Store>>`
+/// the control sockets hold, so a received Task is immediately visible to the
+/// operator's inbox.
 pub struct ReceiveState<R: PeerResolver> {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     resolver: R,
     local_performer: Identity,
     required_extensions: BTreeSet<String>,
@@ -96,14 +98,14 @@ pub struct ReceiveState<R: PeerResolver> {
 
 impl<R: PeerResolver> ReceiveState<R> {
     pub fn new(
-        store: Store,
+        store: Arc<Mutex<Store>>,
         resolver: R,
         local_performer: Identity,
         required_extensions: BTreeSet<String>,
         interface_url: String,
     ) -> Self {
         Self {
-            store: Mutex::new(store),
+            store,
             resolver,
             local_performer,
             required_extensions,
@@ -330,7 +332,7 @@ mod tests {
         };
         let store = Store::open_in_memory(&kek, cp).unwrap();
         ReceiveState::new(
-            store,
+            Arc::new(Mutex::new(store)),
             OnevPeer,
             ident("performer"),
             BTreeSet::new(),
