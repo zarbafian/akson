@@ -31,7 +31,9 @@ pub mod schema;
 
 use std::path::Path;
 
-use axon_authority::{next, AttemptEvent, AttemptState, IssuedWorkOrder, TransitionError, WorkOrder};
+use axon_authority::{
+    next, AttemptEvent, AttemptState, IssuedWorkOrder, TransitionError, WorkOrder,
+};
 use axon_broker::{ProcessorCall, ProcessorConfig, SubAttemptEvent, SubAttemptState};
 use axon_contract::{
     accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
@@ -1314,7 +1316,10 @@ impl Store {
     }
 
     /// Retrieves a stored issued work order by its id (design §12.3).
-    pub fn get_work_order(&self, work_order_id: &str) -> Result<Option<IssuedWorkOrder>, StoreError> {
+    pub fn get_work_order(
+        &self,
+        work_order_id: &str,
+    ) -> Result<Option<IssuedWorkOrder>, StoreError> {
         let sealed: Option<Vec<u8>> = self
             .conn
             .query_row(

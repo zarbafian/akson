@@ -59,6 +59,10 @@ pub trait PeerResolver: Send + Sync + 'static {
 /// `KeyPurpose::ContractProposal`'s kebab-case form).
 const PROPOSAL_KEY_PURPOSE: &str = "contract-proposal";
 
+/// The store name for a peer's task-result verification key (matches
+/// `KeyPurpose::TaskResult`'s kebab-case form) — used to verify delivered results.
+const TASK_RESULT_KEY_PURPOSE: &str = "task-result";
+
 /// The production [`PeerResolver`]: looks up the connecting peer's contract-proposal
 /// key from the store by the handshake's leaf-cert fingerprint (design §10.2). An
 /// unknown fingerprint or a key that no longer parses resolves to `None`.
@@ -94,6 +98,9 @@ pub struct ReceiveState<R: PeerResolver> {
     local_performer: Identity,
     required_extensions: BTreeSet<String>,
     interface_url: String,
+    /// This endpoint's requester-outcome key. `Some` iff the endpoint accepts
+    /// delivered results (acts as a requester); `None` accepts only proposals.
+    outcome_key: Option<axon_crypto::keypair::PurposeKey>,
 }
 
 impl<R: PeerResolver> ReceiveState<R> {
@@ -110,7 +117,15 @@ impl<R: PeerResolver> ReceiveState<R> {
             local_performer,
             required_extensions,
             interface_url,
+            outcome_key: None,
         }
+    }
+
+    /// Also accept delivered results, signing this endpoint's requester outcome
+    /// with `outcome_key` (design §14.5).
+    pub fn accepting_results(mut self, outcome_key: axon_crypto::keypair::PurposeKey) -> Self {
+        self.outcome_key = Some(outcome_key);
+        self
     }
 
     /// Resolves the peer, then runs the receive handler — the synchronous core the
@@ -133,16 +148,33 @@ impl<R: PeerResolver> ReceiveState<R> {
             Ok(s) => s,
             Err(_) => return problem_500(),
         };
-        let Some(peer) = peer_fp.and_then(|fp| self.resolver.resolve(&store, fp)) else {
+        let Some(fp) = peer_fp else {
+            return problem_403();
+        };
+        let Some(peer) = self.resolver.resolve(&store, fp) else {
             // Unknown or absent client certificate — refuse, revealing nothing.
             return problem_403();
         };
+        // If this endpoint accepts results, resolve the sending peer's task-result
+        // key so a delivered result manifest can be verified.
+        let task_result_key = self.outcome_key.as_ref().and_then(|_| {
+            store
+                .peer_key(fp, TASK_RESULT_KEY_PURPOSE)
+                .ok()
+                .flatten()
+                .and_then(|pk| {
+                    PurposeVerifyingKey::from_public_bytes(KeyPurpose::TaskResult, &pk.public_key)
+                        .ok()
+                })
+        });
         let config = ReceiveConfig {
             local_performer: &self.local_performer,
             requester_origin: &peer.requester_origin,
             proposal_key: &peer.proposal_key,
             required_extensions: &self.required_extensions,
             interface_url: &self.interface_url,
+            outcome_key: self.outcome_key.as_ref(),
+            performer_task_result_key: task_result_key.as_ref(),
         };
         let req = HttpRequest {
             method,

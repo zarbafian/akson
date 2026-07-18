@@ -32,23 +32,23 @@ mod result;
 mod socket;
 
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
-pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
-pub use keys::IdentityKeys;
-pub use outcome::finalize_result;
-pub use receive_serve::{run_receive_listener, ReceiveServeError};
-pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};
+pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use issue::{issue_for_accepted, IssueConfig};
+pub use keys::IdentityKeys;
+pub use outcome::finalize_result;
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };
 pub use receive::{dispatch_proposal, DispatchOutcome, Dispatched};
 pub use receive_http::{handle_receive, HttpRequest, HttpResponse, ReceiveConfig};
+pub use receive_serve::{run_receive_listener, ReceiveServeError};
 pub use receive_server::{
     serve as serve_receive, PeerContext, PeerResolver, ReceiveState, StorePeerResolver,
 };
+pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 pub use socket::{
     admin_socket_path, bind_socket, handle_connection, send_request, serve, socket_dir,
     worker_socket_path, ControlRequest, ControlResponse, SocketError,

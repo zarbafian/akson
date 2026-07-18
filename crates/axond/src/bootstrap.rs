@@ -113,9 +113,8 @@ impl DaemonState {
         std::fs::set_permissions(&config.data_dir, std::fs::Permissions::from_mode(0o700))?;
 
         let kek = Kek::from_bytes(load_or_init_secret(&config.data_dir.join("kek"))?);
-        let identity = IdentityKeys::from_master(load_or_init_secret(
-            &config.data_dir.join("identity.seed"),
-        )?);
+        let identity =
+            IdentityKeys::from_master(load_or_init_secret(&config.data_dir.join("identity.seed"))?);
         // Interim custody reports no external rollback counter (ADR-0009 / §15.5):
         // degrade (open, flag detection unavailable) rather than block.
         let checkpoint = ExternalCheckpoint {
@@ -425,7 +424,10 @@ mod tests {
         // The data dir is owner-only, and the KEK file exists at 0600.
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
-        let kek_mode = std::fs::metadata(dir.join("kek")).unwrap().permissions().mode();
+        let kek_mode = std::fs::metadata(dir.join("kek"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(kek_mode & 0o777, 0o600);
 
         // A submitted proposal is visible through the live dispatch.

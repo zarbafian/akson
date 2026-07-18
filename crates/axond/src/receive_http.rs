@@ -15,12 +15,18 @@
 use std::collections::BTreeSet;
 
 use axon_contract::Identity;
-use axon_crypto::keypair::PurposeVerifyingKey;
-use axon_proto::v1::SendMessageRequest;
+use axon_crypto::keypair::{PurposeKey, PurposeVerifyingKey};
+use axon_ext::dsse::Envelope;
+use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
+use axon_ext::schema::SchemaId;
+use axon_proto::v1::{part::Content, Part, SendMessageRequest};
 use axon_store::{Store, StoreError};
 use axon_transport::ingress::{admit, Admit, Ingress, Reject};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::control::Problem;
+use crate::outcome::finalize_result;
 use crate::receive::{dispatch_proposal, DispatchOutcome};
 
 const A2A_MEDIA_TYPE: &str = "application/a2a+json";
@@ -29,7 +35,8 @@ const PROBLEM_MEDIA_TYPE: &str = "application/problem+json";
 /// The pinned-peer context a received Message is dispatched under (design §10.2).
 /// Resolved from the peer's TLS fingerprint before the handler runs.
 pub struct ReceiveConfig<'a> {
-    /// This endpoint's identity — the contract's `performer` must equal it.
+    /// This endpoint's identity — the contract's `performer` (for a proposal) or
+    /// the `requester` (for a delivered result) must equal it.
     pub local_performer: &'a Identity,
     /// The pinned peer's identity — the contract's `requester` must equal it.
     pub requester_origin: &'a Identity,
@@ -39,6 +46,12 @@ pub struct ReceiveConfig<'a> {
     pub required_extensions: &'a BTreeSet<String>,
     /// This endpoint's A2A interface URL (a covered value).
     pub interface_url: &'a str,
+    /// This endpoint's requester-outcome signing key. `Some` iff the endpoint
+    /// accepts delivered results (i.e. it is acting as a requester).
+    pub outcome_key: Option<&'a PurposeKey>,
+    /// The sending peer's task-result verifying key, resolved by TLS fingerprint —
+    /// used to verify a delivered result manifest.
+    pub performer_task_result_key: Option<&'a PurposeVerifyingKey>,
 }
 
 /// The received request's metadata (headers + the peer id the mTLS layer pinned)
@@ -89,6 +102,12 @@ pub fn handle_receive(
         }
     };
 
+    // A delivered result carries a result-manifest envelope, not a proposal —
+    // route it to the requester-outcome path (design §14.5).
+    if let Some(envelope) = result_manifest_envelope(&message.parts) {
+        return Ok(handle_result(store, config, &envelope, trusted_now_unix));
+    }
+
     // Ingress gates + idempotency peek (§9.2).
     let ingress = Ingress {
         peer: req.peer,
@@ -133,6 +152,75 @@ pub fn handle_receive(
                 body: dispatched.response,
             })
         }
+    }
+}
+
+/// Handles a delivered result (design §14.5): verify it under the sender's
+/// task-result key and sign this endpoint's requester outcome. Requires the
+/// endpoint to be acting as a requester (an outcome key) and the sender to have a
+/// pinned task-result key; otherwise the result is not accepted here.
+fn handle_result(
+    store: &Store,
+    config: &ReceiveConfig,
+    envelope: &Envelope,
+    trusted_now_unix: i64,
+) -> HttpResponse {
+    let (Some(outcome_key), Some(task_result_key)) =
+        (config.outcome_key, config.performer_task_result_key)
+    else {
+        return problem(
+            415,
+            "results-not-accepted",
+            "this endpoint does not accept delivered results",
+        );
+    };
+    let signed_at = match OffsetDateTime::from_unix_timestamp(trusted_now_unix)
+        .ok()
+        .and_then(|t| t.format(&Rfc3339).ok())
+    {
+        Some(s) => s,
+        None => return problem(500, "internal", "the request could not be processed"),
+    };
+    match finalize_result(
+        store,
+        config.local_performer,
+        outcome_key,
+        task_result_key,
+        envelope,
+        &signed_at,
+        trusted_now_unix,
+    ) {
+        Ok(value) => a2a_ok(serde_json::to_vec(&value).unwrap_or_default()),
+        Err(p) => HttpResponse {
+            status: p.status,
+            content_type: PROBLEM_MEDIA_TYPE.to_owned(),
+            body: serde_json::to_vec(&p).unwrap_or_default(),
+        },
+    }
+}
+
+/// The result-manifest DSSE envelope in a message's parts, if the message is a
+/// delivered result. Returns `None` for a proposal (a contract envelope) or a
+/// message with no DSSE envelope part.
+fn result_manifest_envelope(parts: &[Part]) -> Option<Envelope> {
+    let result_type = SchemaId::ResultManifestV1.payload_media_type();
+    parts
+        .iter()
+        .filter_map(part_envelope)
+        .find(|env| env.payload_type == result_type)
+}
+
+/// Parses a Part's DSSE envelope (its media type marks it), if present.
+fn part_envelope(part: &Part) -> Option<Envelope> {
+    if part.media_type != DSSE_ENVELOPE_MEDIA_TYPE {
+        return None;
+    }
+    match part.content.as_ref()? {
+        Content::Data(data) => {
+            let value = serde_json::to_value(data).ok()?;
+            serde_json::from_value(value).ok()
+        }
+        _ => None,
     }
 }
 
@@ -284,6 +372,8 @@ mod tests {
             proposal_key: key,
             required_extensions: exts,
             interface_url: "https://local/a2a",
+            outcome_key: None,
+            performer_task_result_key: None,
         }
     }
 

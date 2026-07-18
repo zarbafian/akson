@@ -56,7 +56,11 @@ pub fn approve_and_issue(
     let head = match store.contract_head(task_id).map_err(store_problem)? {
         HeadState::Open(head) => head,
         HeadState::Locked(_) => {
-            return Err(problem(409, "already-decided", "this task is already accepted"))
+            return Err(problem(
+                409,
+                "already-decided",
+                "this task is already accepted",
+            ))
         }
         HeadState::Empty => return Err(problem(404, "no-such-task", "no such task")),
     };
@@ -65,7 +69,13 @@ pub fn approve_and_issue(
         .map_err(store_problem)?
         .ok_or_else(|| problem(404, "no-such-task", "no such task"))?;
     let contract = parse_payload(&payload)
-        .map_err(|_| problem(500, "corrupt-contract", "the stored contract could not be parsed"))?
+        .map_err(|_| {
+            problem(
+                500,
+                "corrupt-contract",
+                "the stored contract could not be parsed",
+            )
+        })?
         .contract;
 
     // The requester must be a paired peer — its pinned TLS fingerprint binds the
@@ -127,7 +137,10 @@ pub fn approve_and_issue(
 
     let granted: Vec<&str> = [
         (CapabilityComponent::Respond, "respond"),
-        (CapabilityComponent::ReadSuppliedInputs, "read_supplied_inputs"),
+        (
+            CapabilityComponent::ReadSuppliedInputs,
+            "read_supplied_inputs",
+        ),
         (CapabilityComponent::ProcessorUse, "processor_use"),
         (CapabilityComponent::ArtifactExport, "artifact_export"),
     ]
@@ -201,10 +214,12 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 fn store_problem(_e: axon_store::StoreError) -> Problem {

@@ -54,13 +54,18 @@ pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), R
         .map_err(|e| ReceiveServeError::Tls(e.to_string()))?;
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    let receive_state = Arc::new(ReceiveState::new(
-        state.store(),
-        StorePeerResolver,
-        state.config().local_performer.clone(),
-        BTreeSet::new(),
-        state.config().interface_url.clone(),
-    ));
+    // The daemon acts as both performer (receives proposals) and requester
+    // (accepts delivered results and signs its outcome), so it accepts results too.
+    let receive_state = Arc::new(
+        ReceiveState::new(
+            state.store(),
+            StorePeerResolver,
+            state.config().local_performer.clone(),
+            BTreeSet::new(),
+            state.config().interface_url.clone(),
+        )
+        .accepting_results(state.identity().purpose_key(KeyPurpose::RequesterOutcome)),
+    );
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

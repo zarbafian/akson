@@ -40,8 +40,13 @@ pub fn finalize_result(
 ) -> Result<serde_json::Value, Problem> {
     // 1. Verify the manifest under the performer's task-result key.
     let (manifest, bundle_digest) =
-        ResultManifest::verify(manifest_envelope, performer_task_result_key)
-            .map_err(|_| problem(422, "manifest-invalid", "the result manifest did not verify"))?;
+        ResultManifest::verify(manifest_envelope, performer_task_result_key).map_err(|_| {
+            problem(
+                422,
+                "manifest-invalid",
+                "the result manifest did not verify",
+            )
+        })?;
 
     // 2. Match an outstanding request — refuse an unsolicited result.
     let sent = store
@@ -70,9 +75,13 @@ pub fn finalize_result(
         signed_at.to_owned(),
     )
     .map_err(|_| problem(500, "outcome", "the outcome could not be built"))?;
-    outcome
-        .check_binds_to(&manifest)
-        .map_err(|_| problem(500, "outcome-binding", "the outcome does not bind the result"))?;
+    outcome.check_binds_to(&manifest).map_err(|_| {
+        problem(
+            500,
+            "outcome-binding",
+            "the outcome does not bind the result",
+        )
+    })?;
     let envelope = outcome
         .sign(outcome_key)
         .map_err(|_| problem(500, "sign-failed", "the outcome could not be signed"))?;
@@ -127,7 +136,8 @@ mod tests {
     use axon_store::{ExternalCheckpoint, SentRequest, Store};
 
     const NOW: i64 = 1_800_000_000;
-    const CONTRACT_DIGEST: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const CONTRACT_DIGEST: &str =
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
     const SIGNED_AT: &str = "2026-07-18T00:00:00Z";
 
     fn store() -> Store {
@@ -225,7 +235,10 @@ mod tests {
         let outcome = Outcome::verify(&stored_env, &outcome_key().verifying()).unwrap();
         assert_eq!(outcome.state, OutcomeState::Accepted);
         assert_eq!(outcome.task_id, "task-1");
-        assert_eq!(outcome.result_manifest_digest, out["bundle_digest"].as_str().unwrap());
+        assert_eq!(
+            outcome.result_manifest_digest,
+            out["bundle_digest"].as_str().unwrap()
+        );
     }
 
     #[test]

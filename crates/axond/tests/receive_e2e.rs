@@ -20,13 +20,14 @@ use axon_contract::{sign_proposal, Identity};
 use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
 use axon_crypto::keypair::PurposeKey;
 use axon_crypto::purpose::KeyPurpose;
+use axon_evidence::{ManifestHeader, Outcome, OutcomeState, OutputEntry, ResultManifest};
+use axon_ext::dsse::Envelope;
 use axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE;
 use axon_proto::v1::{part::Content, Message, Part, SendMessageRequest};
 use axon_store::delivery::content_digest;
 use axon_store::envelope::Kek;
+use axon_store::SentRequest;
 use axon_store::{ExternalCheckpoint, Store};
-use axon_evidence::ResultManifest;
-use axon_ext::dsse::Envelope;
 use axon_transport::tls::{bootstrap_server_config, client_config};
 use axond::{
     serve_receive, ControlRequest, DaemonConfig, DaemonState, IdentityKeys, OutputKind,
@@ -133,6 +134,24 @@ async fn post_proposal(
     server_cert: &EndpointCert,
     proposal_key: &PurposeKey,
 ) -> (u16, Vec<u8>) {
+    post_body(
+        addr,
+        peer_tls_key,
+        peer_cert,
+        server_cert,
+        send_message_body(proposal_key),
+    )
+    .await
+}
+
+/// POSTs an arbitrary A2A body over a fresh pinned mTLS connection.
+async fn post_body(
+    addr: SocketAddr,
+    peer_tls_key: &PurposeKey,
+    peer_cert: &EndpointCert,
+    server_cert: &EndpointCert,
+    body: Vec<u8>,
+) -> (u16, Vec<u8>) {
     let client_cfg = client_config(peer_tls_key, peer_cert, &server_cert.fingerprint).unwrap();
     let connector = TlsConnector::from(Arc::new(client_cfg));
     let tcp = TcpStream::connect(addr).await.unwrap();
@@ -142,7 +161,6 @@ async fn post_proposal(
         .await
         .unwrap();
 
-    let body = send_message_body(proposal_key);
     let digest = content_digest(&body);
     let request = format!(
         "POST /a2a HTTP/1.1\r\nHost: local\r\nContent-Type: application/a2a+json\r\n\
@@ -218,7 +236,10 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
     )
     .await;
 
-    assert_eq!(status, 200, "receive should accept the paired peer's proposal");
+    assert_eq!(
+        status, 200,
+        "receive should accept the paired peer's proposal"
+    );
     let task: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
     let task_id = task["id"].as_str().unwrap().to_owned();
@@ -251,8 +272,14 @@ async fn an_unpaired_peer_is_refused_403() {
     )
     .await;
 
-    assert_eq!(status, 403, "an unpinned peer must be refused before any effect");
-    assert_eq!(store.lock().unwrap().list_submitted_tasks().unwrap().len(), 0);
+    assert_eq!(
+        status, 403,
+        "an unpinned peer must be refused before any effect"
+    );
+    assert_eq!(
+        store.lock().unwrap().list_submitted_tasks().unwrap().len(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -328,7 +355,10 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         })
         .unwrap();
     assert_eq!(approved["approved"], true);
-    assert!(approved["work_order_id"].as_str().unwrap().starts_with("wo-"));
+    assert!(approved["work_order_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("wo-"));
     let granted: Vec<&str> = approved["granted_capabilities"]
         .as_array()
         .unwrap()
@@ -387,4 +417,164 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         .verifying();
     let (_manifest, verified_digest) = ResultManifest::verify(&envelope, &task_result_vk).unwrap();
     assert_eq!(verified_digest, bundle);
+}
+
+/// A performer's signed result manifest for `task_id`, bound to `contract_digest`.
+fn performer_manifest(
+    task_result_key: &PurposeKey,
+    task_id: &str,
+    contract_digest: &str,
+) -> Envelope {
+    let manifest = ResultManifest::assemble(
+        ManifestHeader {
+            task_id: task_id.to_owned(),
+            context_id: "ctx-1".to_owned(),
+            contract_id: "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718".to_owned(),
+            contract_revision: 0,
+            contract_digest: contract_digest.to_owned(),
+            attempt_digest: "b".repeat(64),
+            work_order_receipt_digest: "c".repeat(64),
+        },
+        vec![OutputEntry {
+            role: "response".to_owned(),
+            artifact_id: "a-1".to_owned(),
+            part_index: 0,
+            media_type: "text/plain".to_owned(),
+            byte_length: 14,
+            sha256: "d".repeat(64),
+        }],
+        vec![],
+        vec![],
+        vec![],
+    );
+    manifest.sign(task_result_key).unwrap()
+}
+
+/// An A2A `SendMessageRequest` carrying a result manifest envelope as a Part.
+fn result_message_body(manifest_envelope: &Envelope) -> Vec<u8> {
+    let data = serde_json::from_value(serde_json::to_value(manifest_envelope).unwrap()).unwrap();
+    let part = Part {
+        metadata: None,
+        filename: String::new(),
+        media_type: axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE.to_owned(),
+        content: Some(Content::Data(data)),
+    };
+    let message = Message {
+        message_id: "result-1".to_owned(),
+        context_id: "ctx-1".to_owned(),
+        parts: vec![part],
+        ..Default::default()
+    };
+    serde_json::to_vec(&SendMessageRequest {
+        message: Some(message),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
+    // The performer: its endpoint cert and its task-result signing key.
+    let performer_tls = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let performer_cert =
+        self_signed_endpoint(&performer_tls, "performer", Duration::from_secs(3600)).unwrap();
+    let performer_task_result = PurposeKey::from_seed(KeyPurpose::TaskResult, &[4u8; 32]);
+
+    // The requester: its endpoint cert and its requester-outcome signing key.
+    let requester_tls = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let requester_cert =
+        self_signed_endpoint(&requester_tls, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+    let requester_outcome_key = PurposeKey::from_seed(KeyPurpose::RequesterOutcome, &[7u8; 32]);
+
+    let contract_digest = "a".repeat(64);
+    let store = in_memory_store();
+    // The requester recorded the request it sent, and pinned the performer's keys
+    // at pairing (a contract-proposal key so the peer resolves, and the task-result
+    // key so the delivered result verifies).
+    store
+        .put_sent_request(
+            &SentRequest {
+                contract_digest: contract_digest.clone(),
+                task_id: "task-1".to_owned(),
+                context_id: "ctx-1".to_owned(),
+                contract_id: "cid".to_owned(),
+                performer_agent: "performer".to_owned(),
+                performer_issuer: "iss".to_owned(),
+                message_id: "msg-1".to_owned(),
+            },
+            NOW,
+        )
+        .unwrap();
+    store
+        .put_peer_key(
+            &performer_cert.fingerprint.value,
+            "contract-proposal",
+            "performer",
+            "iss",
+            &PurposeKey::from_seed(KeyPurpose::ContractProposal, &[3u8; 32])
+                .verifying()
+                .to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    store
+        .put_peer_key(
+            &performer_cert.fingerprint.value,
+            "task-result",
+            "performer",
+            "iss",
+            &performer_task_result.verifying().to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    let store = Arc::new(Mutex::new(store));
+
+    // The requester's receive server accepts results and signs its outcome.
+    let receive_state = Arc::new(
+        ReceiveState::new(
+            store.clone(),
+            StorePeerResolver,
+            ident("requester"),
+            BTreeSet::new(),
+            "https://local/a2a".to_owned(),
+        )
+        .accepting_results(PurposeKey::from_seed(
+            KeyPurpose::RequesterOutcome,
+            &[7u8; 32],
+        )),
+    );
+    let acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&requester_tls, &requester_cert).unwrap(),
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve_receive(listener, acceptor, receive_state));
+
+    // The performer delivers its signed result to the requester's endpoint.
+    let envelope = performer_manifest(&performer_task_result, "task-1", &contract_digest);
+    let (status, body) = post_body(
+        addr,
+        &performer_tls,
+        &performer_cert,
+        &requester_cert,
+        result_message_body(&envelope),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let ack: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(ack["finalized"], true);
+    assert_eq!(ack["state"], "accepted");
+
+    // The requester durably recorded its signed outcome; it verifies under the
+    // requester-outcome key and accepts the task.
+    let (_digest, env_bytes) = store
+        .lock()
+        .unwrap()
+        .get_outcome(&contract_digest)
+        .unwrap()
+        .unwrap();
+    let stored: Envelope = serde_json::from_slice(&env_bytes).unwrap();
+    let outcome = Outcome::verify(&stored, &requester_outcome_key.verifying()).unwrap();
+    assert_eq!(outcome.state, OutcomeState::Accepted);
+    assert_eq!(outcome.task_id, "task-1");
 }

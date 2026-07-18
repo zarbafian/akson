@@ -126,7 +126,8 @@ mod tests {
     fn the_endpoint_key_produces_a_self_signed_cert() {
         let keys = IdentityKeys::from_master([4u8; 32]);
         let endpoint = keys.purpose_key(KeyPurpose::TlsEndpoint);
-        let cert = self_signed_endpoint(&endpoint, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+        let cert =
+            self_signed_endpoint(&endpoint, "axon-endpoint", Duration::from_secs(3600)).unwrap();
         assert!(cert.pem.starts_with(b"-----BEGIN CERTIFICATE-----"));
     }
 }

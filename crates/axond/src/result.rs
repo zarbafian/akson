@@ -18,8 +18,8 @@
 use axon_contract::{parse_payload, HeadState};
 use axon_crypto::keypair::PurposeKey;
 use axon_evidence::{
-    check_slots, EvidenceEntry, ManifestHeader, Omission, OutputEntry, RequiredSlot, ResultManifest,
-    SlotRecord, SlotResult,
+    check_slots, EvidenceEntry, ManifestHeader, Omission, OutputEntry, RequiredSlot,
+    ResultManifest, SlotRecord, SlotResult,
 };
 use axon_store::{CompletionOutcome, Store};
 use axon_worker::{gate_outputs, OutputChannel, ProposedOutput};
@@ -85,7 +85,11 @@ pub fn submit_result(
     let head = match store.contract_head(task_id).map_err(store_problem)? {
         HeadState::Locked(head) => head,
         HeadState::Open(_) => {
-            return Err(problem(409, "not-accepted", "this task has not been accepted"))
+            return Err(problem(
+                409,
+                "not-accepted",
+                "this task has not been accepted",
+            ))
         }
         HeadState::Empty => return Err(problem(404, "no-such-task", "no such task")),
     };
@@ -94,7 +98,13 @@ pub fn submit_result(
         .map_err(store_problem)?
         .ok_or_else(|| problem(404, "no-such-task", "no such task"))?;
     let contract = parse_payload(&payload)
-        .map_err(|_| problem(500, "corrupt-contract", "the stored contract could not be parsed"))?
+        .map_err(|_| {
+            problem(
+                500,
+                "corrupt-contract",
+                "the stored contract could not be parsed",
+            )
+        })?
         .contract;
     let context_id = store
         .task_context(task_id)
@@ -181,18 +191,28 @@ pub fn submit_result(
     );
     // bundle_digest validates the manifest (schema + canonical order); a manifest
     // the provided outputs cannot form is the worker's error, not ours.
-    let bundle_digest = manifest
-        .bundle_digest()
-        .map_err(|e| problem_detail(422, "manifest-invalid", "the result manifest is invalid", e))?;
-    let envelope = manifest
-        .sign(task_result_key)
-        .map_err(|_| problem(500, "sign-failed", "the result manifest could not be signed"))?;
+    let bundle_digest = manifest.bundle_digest().map_err(|e| {
+        problem_detail(422, "manifest-invalid", "the result manifest is invalid", e)
+    })?;
+    let envelope = manifest.sign(task_result_key).map_err(|_| {
+        problem(
+            500,
+            "sign-failed",
+            "the result manifest could not be signed",
+        )
+    })?;
     let envelope_bytes = serde_json::to_vec(&envelope)
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
 
     // 6. Durably complete (staged-then-atomic).
     match store
-        .complete_attempt_with_result(&work_order_id, task_id, &bundle_digest, &envelope_bytes, now)
+        .complete_attempt_with_result(
+            &work_order_id,
+            task_id,
+            &bundle_digest,
+            &envelope_bytes,
+            now,
+        )
         .map_err(store_problem)?
     {
         CompletionOutcome::Completed | CompletionOutcome::AlreadyCompleted => {}
@@ -216,10 +236,12 @@ pub fn submit_result(
 
 fn hex_sha256(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    Sha256::digest(bytes).iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 fn store_problem(_e: axon_store::StoreError) -> Problem {

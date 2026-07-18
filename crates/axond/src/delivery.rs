@@ -55,7 +55,11 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
     let head = match store.contract_head(task_id).map_err(store_problem)? {
         HeadState::Locked(head) => head,
         HeadState::Open(_) => {
-            return Err(problem(409, "not-accepted", "this task has not been accepted"))
+            return Err(problem(
+                409,
+                "not-accepted",
+                "this task has not been accepted",
+            ))
         }
         HeadState::Empty => return Err(problem(404, "no-such-task", "no such task")),
     };
@@ -64,7 +68,13 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
         .map_err(store_problem)?
         .ok_or_else(|| problem(404, "no-such-task", "no such task"))?;
     let contract = parse_payload(&payload)
-        .map_err(|_| problem(500, "corrupt-contract", "the stored contract could not be parsed"))?
+        .map_err(|_| {
+            problem(
+                500,
+                "corrupt-contract",
+                "the stored contract could not be parsed",
+            )
+        })?
         .contract;
 
     let work_order_id = store
@@ -80,7 +90,13 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
     let peer = store
         .get_peer(&contract.requester.agent)
         .map_err(store_problem)?
-        .ok_or_else(|| problem(409, "requester-unknown", "the requester is not a known peer"))?;
+        .ok_or_else(|| {
+            problem(
+                409,
+                "requester-unknown",
+                "the requester is not a known peer",
+            )
+        })?;
 
     let context_id = store
         .task_context(task_id)
@@ -109,8 +125,13 @@ pub async fn deliver_job(
     let body = a2a_result_message(&job)?;
     let digest = content_digest(&body);
 
-    let (host, port, path) = parse_endpoint(&job.recipient_endpoint)
-        .ok_or_else(|| problem(500, "bad-endpoint", "the requester endpoint is not a usable URL"))?;
+    let (host, port, path) = parse_endpoint(&job.recipient_endpoint).ok_or_else(|| {
+        problem(
+            500,
+            "bad-endpoint",
+            "the requester endpoint is not a usable URL",
+        )
+    })?;
     let pinned = Fingerprint {
         kind: FingerprintKind::CertSha256,
         value: job.recipient_fingerprint.clone(),
@@ -121,12 +142,22 @@ pub async fn deliver_job(
 
     let addr = tokio::net::lookup_host((host.as_str(), port))
         .await
-        .map_err(|_| problem(502, "unreachable", "the requester endpoint could not be resolved"))?
+        .map_err(|_| {
+            problem(
+                502,
+                "unreachable",
+                "the requester endpoint could not be resolved",
+            )
+        })?
         .next()
         .ok_or_else(|| problem(502, "unreachable", "the requester endpoint did not resolve"))?;
-    let tcp = TcpStream::connect(addr)
-        .await
-        .map_err(|_| problem(502, "unreachable", "the requester endpoint refused the connection"))?;
+    let tcp = TcpStream::connect(addr).await.map_err(|_| {
+        problem(
+            502,
+            "unreachable",
+            "the requester endpoint refused the connection",
+        )
+    })?;
     let server_name =
         ServerName::try_from(host).map_err(|_| problem(500, "bad-endpoint", "bad host name"))?;
     let mut tls = connector
@@ -190,8 +221,9 @@ pub fn run_delivery(state: &DaemonState, task_id: &str) -> Result<serde_json::Va
         prepare_delivery(&store, task_id)?
     };
     let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
-    let endpoint_cert = self_signed_endpoint(&endpoint_key, "axon-endpoint", ENDPOINT_CERT_VALIDITY)
-        .map_err(|_| problem(500, "cert", "the endpoint certificate could not be built"))?;
+    let endpoint_cert =
+        self_signed_endpoint(&endpoint_key, "axon-endpoint", ENDPOINT_CERT_VALIDITY)
+            .map_err(|_| problem(500, "cert", "the endpoint certificate could not be built"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -202,8 +234,13 @@ pub fn run_delivery(state: &DaemonState, task_id: &str) -> Result<serde_json::Va
 /// The A2A `SendMessageRequest` carrying the signed result manifest as a Part,
 /// referencing the Task's context (design §14.1).
 fn a2a_result_message(job: &DeliveryJob) -> Result<Vec<u8>, Problem> {
-    let envelope: Envelope = serde_json::from_slice(&job.manifest_envelope)
-        .map_err(|_| problem(500, "corrupt-result", "the stored result manifest is corrupt"))?;
+    let envelope: Envelope = serde_json::from_slice(&job.manifest_envelope).map_err(|_| {
+        problem(
+            500,
+            "corrupt-result",
+            "the stored result manifest is corrupt",
+        )
+    })?;
     let data = serde_json::to_value(&envelope)
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -235,13 +272,20 @@ fn parse_endpoint(endpoint: &str) -> Option<(String, u16, String)> {
     }
     let host = url.host_str()?.to_owned();
     let port = url.port_or_known_default().unwrap_or(443);
-    let path = if url.path().is_empty() { "/" } else { url.path() };
+    let path = if url.path().is_empty() {
+        "/"
+    } else {
+        url.path()
+    };
     Some((host, port, path.to_owned()))
 }
 
 /// The status code from an HTTP/1.1 response's start line.
 fn response_status(raw: &[u8]) -> Option<u16> {
-    let end = raw.windows(2).position(|w| w == b"\r\n").unwrap_or(raw.len());
+    let end = raw
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap_or(raw.len());
     let line = std::str::from_utf8(&raw[..end]).ok()?;
     line.split_whitespace().nth(1)?.parse().ok()
 }

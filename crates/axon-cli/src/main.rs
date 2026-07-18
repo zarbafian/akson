@@ -112,7 +112,10 @@ fn task_approve(task_id: &str) -> ExitCode {
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
     println!("approved {task_id}");
-    println!("  work order: {}", result["work_order_id"].as_str().unwrap_or("?"));
+    println!(
+        "  work order: {}",
+        result["work_order_id"].as_str().unwrap_or("?")
+    );
     println!(
         "  granted:    {}",
         if caps.is_empty() {
@@ -149,7 +152,11 @@ fn task_deliver(task_id: &str) -> ExitCode {
     let delivered = result["delivered"].as_bool() == Some(true);
     println!(
         "{} {task_id} → {} (status {})",
-        if delivered { "delivered" } else { "NOT delivered" },
+        if delivered {
+            "delivered"
+        } else {
+            "NOT delivered"
+        },
         result["recipient"].as_str().unwrap_or("?"),
         result["status"],
     );
