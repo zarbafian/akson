@@ -580,6 +580,16 @@ anchored here so they are not lost:
 
 ### Tracer bullet checkpoint (after M7 + a minimal M8)
 
+**Execution half DONE** (`harness/runner/tests/clean_worker_e2e.rs`, 2026-07-18):
+the M8→M9 spine is proven end-to-end — a locally-issued, MAC-verified work order →
+stage exactly the approved inputs → launch a fully-confined worker (namespaces +
+mount + seccomp + cgroup, via the only public seam) that reads them and writes a
+bounded result → gate that result against the work order's respond grant (and reject
+an over-budget one). The worker is a dev-only pure-shell echo (non-shippable, §4.4).
+Runs in CI's isolation job. **Remaining (receive half, M12):** the proposal →
+contract → decision → work-order-issue path over the live HTTP dispatch, and exposing
+it as the `axon demo review` CLI verb behind a `dev-insecure-worker` feature.
+
 As soon as contract + authority exist, wire `axon demo review` end-to-end on
 localhost using the real schemas, real signing, real store — with a dev-only
 subprocess worker (clearly non-shippable, behind a `dev-insecure-worker`
