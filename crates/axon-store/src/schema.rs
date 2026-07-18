@@ -187,6 +187,13 @@ CREATE TABLE peer_keys (
 ) STRICT;
 "#;
 
+/// Version 9 (M12): the A2A Context id of a submitted Task. It is Message-level,
+/// not a contract property, so it is recorded on the head separately from the
+/// contract revision (design §10.2) — the decision that accepts the Task needs it.
+const V9: &str = r#"
+ALTER TABLE contract_heads ADD COLUMN context_id TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -198,6 +205,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, V6),
     (7, V7),
     (8, V8),
+    (9, V9),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

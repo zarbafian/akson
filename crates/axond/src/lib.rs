@@ -16,6 +16,7 @@
 
 mod control;
 mod control_dispatch;
+mod decision;
 mod peercred;
 mod receive;
 mod receive_http;
@@ -24,6 +25,7 @@ mod socket;
 
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
+pub use decision::{decide, DecisionRecord};
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };

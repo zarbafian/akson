@@ -933,6 +933,29 @@ impl Store {
         }
     }
 
+    /// Records the A2A Context id of a Task (design §10.2). Message-level, kept on
+    /// the head so the accepting decision can reference it. Idempotent.
+    pub fn set_task_context(&self, task_id: &str, context_id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE contract_heads SET context_id = ?1 WHERE task_id = ?2",
+            params![context_id, task_id],
+        )?;
+        Ok(())
+    }
+
+    /// The A2A Context id recorded for a Task, if any (empty is treated as absent).
+    pub fn task_context(&self, task_id: &str) -> Result<Option<String>, StoreError> {
+        let ctx: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT context_id FROM contract_heads WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(ctx.filter(|c| !c.is_empty()))
+    }
+
     /// Lists the Tasks whose head is `open` — the submitted proposals awaiting a
     /// local decision (design §10.1, `TASK_STATE_SUBMITTED`). The operator's inbox.
     /// Ordered by task id for a stable listing.
