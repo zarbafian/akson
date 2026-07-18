@@ -10,15 +10,16 @@
 //!    window. A rejection never creates a Task.
 //! 3. **Persistence** (§9.3) — the validated inert proposal is stored as the open
 //!    head (revision zero, compare-and-swap) under a receiver-assigned Task id.
-//! 4. **Commit** (§9.2) — the idempotency record is written durable-before-response,
-//!    carrying the submitted Task id.
+//! 4. **Commit** (§9.2) — the A2A Task response is written durable-before-response,
+//!    so an exact replay returns the identical bytes.
 //!
 //! It performs no model, tool, or network effect — the proposal arrives inert
-//! (`TASK_STATE_SUBMITTED`) and waits for a local decision.
+//! (`TASK_STATE_SUBMITTED`) and waits for a local decision. The returned bytes are
+//! the A2A response the peer receives.
 
 use axon_contract::{expires_at_unix, receive_proposal, Identity};
 use axon_crypto::keypair::PurposeVerifyingKey;
-use axon_proto::v1::Part;
+use axon_proto::v1::{Part, Task, TaskState, TaskStatus};
 use axon_store::delivery::CoveredValues;
 use axon_store::{Receipt, Store, StoreError};
 
@@ -35,10 +36,19 @@ pub enum DispatchOutcome {
     Rejected { reason: String },
 }
 
+/// A dispatch result: the outcome and the exact A2A response bytes the peer
+/// receives (identical on a fresh submit and its later replay).
+#[derive(Debug, Clone)]
+pub struct Dispatched {
+    pub outcome: DispatchOutcome,
+    pub response: Vec<u8>,
+}
+
 /// Dispatches a received contract-proposal Message (design §10.2). `covered` is the
 /// admitted request's covered-value tuple (from ingress); `parts` are the A2A
-/// Message Parts; `body` is the exact request body (sealed for the idempotency
-/// record). `trusted_now_unix` MUST be the §8.5 trusted time.
+/// Message Parts; `context_id` is the Message's A2A Context; `body` is the exact
+/// request body (sealed for the idempotency record). `trusted_now_unix` MUST be the
+/// §8.5 trusted time.
 ///
 /// The only mutations are on a *fresh* valid proposal: the durable head write and
 /// the idempotency commit. A duplicate, conflict, or rejection makes no head write.
@@ -47,16 +57,27 @@ pub fn dispatch_proposal(
     store: &Store,
     covered: &CoveredValues,
     parts: &[Part],
+    context_id: &str,
     proposal_key: &PurposeVerifyingKey,
     requester_origin: &Identity,
     local_performer: &Identity,
     body: &[u8],
     trusted_now_unix: i64,
-) -> Result<DispatchOutcome, StoreError> {
+) -> Result<Dispatched, StoreError> {
     // 1. Idempotency: replay or refuse before any effect (§9.2).
     match store.peek(covered)? {
-        Receipt::Duplicate { task_id, .. } => return Ok(DispatchOutcome::Duplicate { task_id }),
-        Receipt::Conflict => return Ok(DispatchOutcome::Conflict),
+        Receipt::Duplicate { task_id, response } => {
+            return Ok(Dispatched {
+                outcome: DispatchOutcome::Duplicate { task_id },
+                response,
+            })
+        }
+        Receipt::Conflict => {
+            return Ok(Dispatched {
+                outcome: DispatchOutcome::Conflict,
+                response: conflict_json(),
+            })
+        }
         Receipt::Fresh => {}
     }
 
@@ -82,9 +103,9 @@ pub fn dispatch_proposal(
     };
     store.submit_revision(&task_id, &received.proposal, expires, trusted_now_unix)?;
 
-    // 4. Commit the idempotency record with the submitted Task id (durable-before-
-    //    response, §9.2).
-    let response = submitted_json(&task_id);
+    // 4. Commit the A2A Task response (durable-before-response, §9.2), so an exact
+    //    replay returns these identical bytes.
+    let response = submitted_task_json(&task_id, context_id);
     store.receive_request(
         covered,
         body,
@@ -93,7 +114,10 @@ pub fn dispatch_proposal(
         "task",
         trusted_now_unix,
     )?;
-    Ok(DispatchOutcome::Submitted { task_id })
+    Ok(Dispatched {
+        outcome: DispatchOutcome::Submitted { task_id },
+        response,
+    })
 }
 
 /// Records a rejection for idempotency consistency (a replay of the same bad
@@ -104,20 +128,40 @@ fn reject(
     body: &[u8],
     now: i64,
     reason: String,
-) -> Result<DispatchOutcome, StoreError> {
+) -> Result<Dispatched, StoreError> {
     let response = reject_json(&reason);
     store.receive_request(covered, body, &response, None, "rejected", now)?;
-    Ok(DispatchOutcome::Rejected { reason })
+    Ok(Dispatched {
+        outcome: DispatchOutcome::Rejected { reason },
+        response,
+    })
 }
 
-fn submitted_json(task_id: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({"task_id": task_id, "state": "submitted"}))
-        .unwrap_or_default()
+/// The A2A Task the peer receives for a submitted proposal: inert, in
+/// `TASK_STATE_SUBMITTED`, with no history or artifacts yet.
+fn submitted_task_json(task_id: &str, context_id: &str) -> Vec<u8> {
+    let task = Task {
+        id: task_id.to_owned(),
+        context_id: context_id.to_owned(),
+        status: Some(TaskStatus {
+            state: TaskState::Submitted as i32,
+            message: None,
+            timestamp: None,
+        }),
+        artifacts: Vec::new(),
+        history: Vec::new(),
+        metadata: None,
+    };
+    serde_json::to_vec(&task).unwrap_or_default()
 }
 
 fn reject_json(reason: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"state": "rejected", "reason": reason}))
         .unwrap_or_default()
+}
+
+fn conflict_json() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"state": "conflict"})).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -197,17 +241,18 @@ mod tests {
         }
     }
 
-    fn message() -> Vec<Part> {
-        let env = axon_contract::sign_proposal(&contract_payload(), &proposal_key()).unwrap();
-        vec![
-            envelope_part(&env),
-            Part {
-                metadata: None,
-                filename: String::new(),
-                media_type: "text/plain".to_owned(),
-                content: Some(Content::Text(TEXT.to_owned())),
-            },
-        ]
+    fn text_part() -> Part {
+        Part {
+            metadata: None,
+            filename: String::new(),
+            media_type: "text/plain".to_owned(),
+            content: Some(Content::Text(TEXT.to_owned())),
+        }
+    }
+
+    fn message(key: &PurposeKey) -> Vec<Part> {
+        let env = axon_contract::sign_proposal(&contract_payload(), key).unwrap();
+        vec![envelope_part(&env), text_part()]
     }
 
     fn covered(message_id: &str) -> CoveredValues {
@@ -224,11 +269,12 @@ mod tests {
         }
     }
 
-    fn dispatch(store: &Store, cov: &CoveredValues, parts: &[Part]) -> DispatchOutcome {
+    fn dispatch(store: &Store, cov: &CoveredValues, parts: &[Part]) -> Dispatched {
         dispatch_proposal(
             store,
             cov,
             parts,
+            "ctx-1",
             &proposal_key().verifying(),
             &ident("requester"),
             &ident("performer"),
@@ -241,8 +287,8 @@ mod tests {
     #[test]
     fn a_valid_proposal_becomes_a_submitted_task_and_is_persisted() {
         let store = store();
-        let outcome = dispatch(&store, &covered("msg-1"), &message());
-        let task_id = match outcome {
+        let result = dispatch(&store, &covered("msg-1"), &message(&proposal_key()));
+        let task_id = match result.outcome {
             DispatchOutcome::Submitted { task_id } => task_id,
             other => panic!("expected Submitted, got {other:?}"),
         };
@@ -251,32 +297,37 @@ mod tests {
             store.contract_head(&task_id).unwrap(),
             axon_contract::HeadState::Open(_)
         ));
+        // The response is an A2A Task in TASK_STATE_SUBMITTED.
+        let task: serde_json::Value = serde_json::from_slice(&result.response).unwrap();
+        assert_eq!(task["id"], task_id);
+        assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
     }
 
     #[test]
-    fn an_exact_replay_is_a_duplicate_with_the_same_task_id() {
+    fn an_exact_replay_returns_the_identical_response() {
         let store = store();
-        let first = dispatch(&store, &covered("msg-1"), &message());
-        let task_id = match first {
-            DispatchOutcome::Submitted { task_id } => task_id,
+        let first = dispatch(&store, &covered("msg-1"), &message(&proposal_key()));
+        let task_id = match &first.outcome {
+            DispatchOutcome::Submitted { task_id } => task_id.clone(),
             other => panic!("expected Submitted, got {other:?}"),
         };
-        // Re-dispatching the same Message id replays — no second head write.
-        match dispatch(&store, &covered("msg-1"), &message()) {
+        // Re-dispatching the same Message id replays — same task id, identical bytes.
+        let replay = dispatch(&store, &covered("msg-1"), &message(&proposal_key()));
+        match replay.outcome {
             DispatchOutcome::Duplicate { task_id: Some(id) } => assert_eq!(id, task_id),
             other => panic!("expected Duplicate, got {other:?}"),
         }
+        assert_eq!(replay.response, first.response);
     }
 
     #[test]
     fn a_changed_covered_value_is_a_conflict() {
         let store = store();
-        dispatch(&store, &covered("msg-1"), &message());
-        // Same Message id, different body digest → conflict, nothing overwritten.
+        dispatch(&store, &covered("msg-1"), &message(&proposal_key()));
         let mut changed = covered("msg-1");
         changed.body_digest = "BB".repeat(32);
         assert_eq!(
-            dispatch(&store, &changed, &message()),
+            dispatch(&store, &changed, &message(&proposal_key())).outcome,
             DispatchOutcome::Conflict
         );
     }
@@ -284,19 +335,9 @@ mod tests {
     #[test]
     fn an_invalid_proposal_is_rejected_with_no_task() {
         let store = store();
-        // A proposal signed by the WRONG key fails verification → rejected.
+        // Signed by the WRONG key → verification fails → rejected, no Task.
         let wrong = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[9u8; 32]);
-        let env = axon_contract::sign_proposal(&contract_payload(), &wrong).unwrap();
-        let parts = vec![
-            envelope_part(&env),
-            Part {
-                metadata: None,
-                filename: String::new(),
-                media_type: "text/plain".to_owned(),
-                content: Some(Content::Text(TEXT.to_owned())),
-            },
-        ];
-        match dispatch(&store, &covered("msg-1"), &parts) {
+        match dispatch(&store, &covered("msg-1"), &message(&wrong)).outcome {
             DispatchOutcome::Rejected { .. } => {}
             other => panic!("expected Rejected, got {other:?}"),
         }

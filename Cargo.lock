@@ -321,6 +321,7 @@ dependencies = [
  "axon-proto",
  "axon-sandbox",
  "axon-store",
+ "axon-transport",
  "hex",
  "libc",
  "serde",

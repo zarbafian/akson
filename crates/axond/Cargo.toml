@@ -22,6 +22,7 @@ axon-store = { workspace = true }
 axon-contract = { workspace = true }
 axon-proto = { workspace = true }
 axon-crypto = { workspace = true }
+axon-transport = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
