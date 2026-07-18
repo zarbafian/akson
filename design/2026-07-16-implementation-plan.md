@@ -557,13 +557,20 @@ respond), the `serve` loop, and the `send_request` client (newline-delimited JSO
 queries the daemon over the admin socket (`axon doctor` stays a daemon-free host
 check). Validated LIVE: status → sandbox_ready/exit 0, fail-closed with no daemon,
 sockets 0600, worker-surface admin op → 403.
+The **A2A receive-dispatch logic is done**: `axond::dispatch_proposal` composes the
+deferred M5/M7 receive path (idempotency peek → `receive_proposal` validation →
+durable rev-0 open head → durable-before-response idempotency commit) into
+`DispatchOutcome {Submitted|Duplicate|Conflict|Rejected}` — a rejection never creates
+a Task. Tested in-memory (valid→Submitted+persisted, replay→Duplicate, changed-covered
+→Conflict, wrong-key→Rejected). Added `axon_contract::expires_at_unix`.
 **Remaining (the bulk of assembly, on these gates):** the OpenAPI 3.1 description +
-generated clients; the full §16.4 command set wired to durable state (the deferred
-receive dispatcher M5/M7, broker live HTTPS dispatch M10, `axon processor`/`evidence`/
-`pair`/`task`/`outcome` verbs, durable staged-then-atomic completion M11); risk-card
-rendering (over M7 `project_risk_card`); quiet arrival (bounded inbox, local
-block/rate-limit §5.3); personal vs isolated profile wiring; and the full
-`axon demo review` receive half.
+generated clients; the HTTP/mTLS **receive server** that parses the A2A SendMessage +
+runs `ingress::admit` + feeds `dispatch_proposal` + builds the A2A Task response
+(follows the `axon-transport::bootstrap::serve` pattern); the broker live HTTPS
+dispatch (M10); `axon processor`/`evidence`/`pair`/`task`/`outcome` verbs; durable
+staged-then-atomic completion (M11); risk-card rendering (over M7 `project_risk_card`);
+quiet arrival (bounded inbox, local block/rate-limit §5.3); personal vs isolated
+profile wiring; and the full `axon demo review` receive half.
 *Exit:* full loop driveable by CLI alone on one host; doctor output reviewed
 against §17.3 list.
 
