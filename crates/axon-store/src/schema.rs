@@ -170,6 +170,23 @@ CREATE TABLE processor_calls (
 ) STRICT;
 "#;
 
+/// Version 8 (M12): a peer's verification keys, retained at pairing so a received
+/// message can be verified (design §8.1, §10.2). Keyed by the peer's TLS
+/// fingerprint and key purpose; the public key is not secret, so it is stored in
+/// the clear. The receive server resolves a connecting peer's contract-proposal key
+/// from here by the handshake's leaf-cert fingerprint.
+const V8: &str = r#"
+CREATE TABLE peer_keys (
+    tls_fingerprint TEXT NOT NULL,
+    purpose         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    issuer          TEXT NOT NULL,
+    public_key      BLOB NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (tls_fingerprint, purpose)
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -180,6 +197,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, V5),
     (6, V6),
     (7, V7),
+    (8, V8),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

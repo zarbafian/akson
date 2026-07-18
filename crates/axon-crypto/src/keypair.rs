@@ -32,6 +32,8 @@ pub enum KeyError {
         actual: KeyPurpose,
         requested: KeyPurpose,
     },
+    #[error("public key bytes are not a valid Ed25519 point")]
+    MalformedKey,
 }
 
 /// A secret Ed25519 key bound to one purpose.
@@ -122,6 +124,19 @@ pub struct PurposeVerifyingKey {
 impl PurposeVerifyingKey {
     pub fn new(purpose: KeyPurpose, verifying: VerifyingKey) -> Self {
         Self { purpose, verifying }
+    }
+
+    /// Builds a purpose-bound verifying key from a raw 32-byte Ed25519 public key —
+    /// e.g. a peer's verification key rehydrated from the store. Fails closed if the
+    /// bytes are not a valid point.
+    pub fn from_public_bytes(purpose: KeyPurpose, bytes: &[u8; 32]) -> Result<Self, KeyError> {
+        let verifying = VerifyingKey::from_bytes(bytes).map_err(|_| KeyError::MalformedKey)?;
+        Ok(Self { purpose, verifying })
+    }
+
+    /// The raw 32-byte Ed25519 public key — for persistence.
+    pub fn to_public_bytes(&self) -> [u8; 32] {
+        self.verifying.to_bytes()
     }
 
     pub fn purpose(&self) -> KeyPurpose {

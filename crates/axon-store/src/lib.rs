@@ -146,6 +146,15 @@ pub struct StoredPeer {
     pub local_note: String,
 }
 
+/// A peer's persisted verification key (design §8.1): its identity and the raw
+/// 32-byte Ed25519 public key, resolved by TLS fingerprint for the receive path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerKey {
+    pub agent_id: String,
+    pub issuer: String,
+    pub public_key: [u8; 32],
+}
+
 /// The verdict of an idempotent receive (design §9.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Receipt {
@@ -449,6 +458,81 @@ impl Store {
             Some(bytes) => {
                 let json = self.dek.open(PEER_RECORD_CONTEXT, &bytes)?;
                 Ok(Some(serde_json::from_slice(&json)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persists a peer's verification key for a purpose, keyed by its TLS
+    /// fingerprint (design §8.1) — retained at pairing so a received message can be
+    /// verified. The public key is not secret; it is stored in the clear. A re-pair
+    /// (same fingerprint, new key) replaces it.
+    pub fn put_peer_key(
+        &self,
+        tls_fingerprint: &str,
+        purpose: &str,
+        agent_id: &str,
+        issuer: &str,
+        public_key: &[u8; 32],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO peer_keys
+                 (tls_fingerprint, purpose, agent_id, issuer, public_key, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(tls_fingerprint, purpose) DO UPDATE SET
+                 agent_id = excluded.agent_id,
+                 issuer = excluded.issuer,
+                 public_key = excluded.public_key,
+                 updated_at = excluded.updated_at",
+            params![
+                tls_fingerprint,
+                purpose,
+                agent_id,
+                issuer,
+                public_key.as_slice(),
+                now
+            ],
+        )?;
+        audit::append(
+            &tx,
+            now,
+            "peer.key_persisted",
+            &format!("{agent_id}:{purpose}"),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Resolves a peer's verification key for `purpose` from the TLS leaf-cert
+    /// fingerprint the handshake presented (design §10.2) — the receive server's
+    /// peer lookup.
+    pub fn peer_key(
+        &self,
+        tls_fingerprint: &str,
+        purpose: &str,
+    ) -> Result<Option<PeerKey>, StoreError> {
+        let row: Option<(String, String, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT agent_id, issuer, public_key FROM peer_keys
+                 WHERE tls_fingerprint = ?1 AND purpose = ?2",
+                params![tls_fingerprint, purpose],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        match row {
+            Some((agent_id, issuer, key)) => {
+                let public_key: [u8; 32] = key
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| StoreError::Corrupt("peer key is not 32 bytes".to_owned()))?;
+                Ok(Some(PeerKey {
+                    agent_id,
+                    issuer,
+                    public_key,
+                }))
             }
             None => Ok(None),
         }

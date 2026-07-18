@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use axon_contract::Identity;
 use axon_crypto::identity::Fingerprint;
 use axon_crypto::keypair::PurposeVerifyingKey;
+use axon_crypto::purpose::KeyPurpose;
 use axon_store::{Store, StoreError};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
@@ -48,9 +49,40 @@ pub struct PeerContext {
 }
 
 /// Resolves a peer from its TLS leaf-cert fingerprint (the pinned peer record).
-/// Returns `None` for an unknown fingerprint — the connection is refused.
+/// Returns `None` for an unknown fingerprint — the connection is refused. Given the
+/// already-locked store so a store-backed resolver needs no second connection.
 pub trait PeerResolver: Send + Sync + 'static {
-    fn resolve(&self, tls_fingerprint: &str) -> Option<PeerContext>;
+    fn resolve(&self, store: &Store, tls_fingerprint: &str) -> Option<PeerContext>;
+}
+
+/// The store name for a peer's contract-proposal verification key (matches
+/// `KeyPurpose::ContractProposal`'s kebab-case form).
+const PROPOSAL_KEY_PURPOSE: &str = "contract-proposal";
+
+/// The production [`PeerResolver`]: looks up the connecting peer's contract-proposal
+/// key from the store by the handshake's leaf-cert fingerprint (design §10.2). An
+/// unknown fingerprint or a key that no longer parses resolves to `None`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StorePeerResolver;
+
+impl PeerResolver for StorePeerResolver {
+    fn resolve(&self, store: &Store, tls_fingerprint: &str) -> Option<PeerContext> {
+        let pk = store
+            .peer_key(tls_fingerprint, PROPOSAL_KEY_PURPOSE)
+            .ok()
+            .flatten()?;
+        let proposal_key =
+            PurposeVerifyingKey::from_public_bytes(KeyPurpose::ContractProposal, &pk.public_key)
+                .ok()?;
+        Some(PeerContext {
+            requester_origin: Identity {
+                issuer: pk.issuer,
+                agent: pk.agent_id.clone(),
+            },
+            proposal_key,
+            peer_id: pk.agent_id,
+        })
+    }
 }
 
 /// The receive server's shared state.
@@ -95,13 +127,13 @@ impl<R: PeerResolver> ReceiveState<R> {
         body: &[u8],
         trusted_now_unix: i64,
     ) -> (u16, String, Vec<u8>) {
-        let Some(peer) = peer_fp.and_then(|fp| self.resolver.resolve(fp)) else {
-            // Unknown or absent client certificate — refuse, revealing nothing.
-            return problem_403();
-        };
         let store = match self.store.lock() {
             Ok(s) => s,
             Err(_) => return problem_500(),
+        };
+        let Some(peer) = peer_fp.and_then(|fp| self.resolver.resolve(&store, fp)) else {
+            // Unknown or absent client certificate — refuse, revealing nothing.
+            return problem_403();
         };
         let config = ReceiveConfig {
             local_performer: &self.local_performer,
@@ -251,7 +283,7 @@ fn problem(status: u16, kind: &str, title: &str) -> (u16, String, Vec<u8>) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use axon_crypto::keypair::PurposeKey;
@@ -280,7 +312,7 @@ mod tests {
     /// A resolver that maps exactly one fingerprint to the test peer.
     struct OnevPeer;
     impl PeerResolver for OnevPeer {
-        fn resolve(&self, fp: &str) -> Option<PeerContext> {
+        fn resolve(&self, _store: &Store, fp: &str) -> Option<PeerContext> {
             (fp == "known-fp").then(|| PeerContext {
                 requester_origin: ident("requester"),
                 proposal_key: proposal_key().verifying(),
@@ -406,5 +438,39 @@ mod tests {
             NOW,
         );
         assert_eq!(code, 403);
+    }
+
+    #[test]
+    fn store_resolver_finds_a_persisted_peer_key() {
+        let kek = axon_store::envelope::Kek::from_bytes([8u8; 32]);
+        let cp = ExternalCheckpoint {
+            state_generation: 0,
+            trusted_time: 0,
+            rollback_detectable: true,
+        };
+        let store = Store::open_in_memory(&kek, cp).unwrap();
+        let vk = proposal_key().verifying();
+        store
+            .put_peer_key(
+                "fp-1",
+                "contract-proposal",
+                "requester",
+                "iss",
+                &vk.to_public_bytes(),
+                100,
+            )
+            .unwrap();
+
+        let resolver = StorePeerResolver;
+        let ctx = resolver
+            .resolve(&store, "fp-1")
+            .expect("known fingerprint resolves");
+        assert_eq!(ctx.peer_id, "requester");
+        assert_eq!(ctx.requester_origin.agent, "requester");
+        assert_eq!(ctx.requester_origin.issuer, "iss");
+        // The rehydrated key equals the peer's original proposal key.
+        assert_eq!(ctx.proposal_key.to_public_bytes(), vk.to_public_bytes());
+        // An unknown fingerprint resolves to nothing.
+        assert!(resolver.resolve(&store, "stranger").is_none());
     }
 }
