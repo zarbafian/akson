@@ -83,12 +83,28 @@ impl SeccompPolicy {
                 libc::SYS_writev,
                 libc::SYS_pread64,
                 libc::SYS_pwrite64,
+                // Vectored positional I/O — the same read/write authority as the
+                // scalar variants above; the Rust std I/O layer uses them.
+                libc::SYS_preadv,
+                libc::SYS_pwritev,
+                // Zero-copy move between two already-open fds — no new authority
+                // (the worker can already read/write those fds); tools like `cat`
+                // use it to copy input to output efficiently.
+                libc::SYS_splice,
                 libc::SYS_lseek,
                 libc::SYS_close,
+                // Close a range of file descriptors — how modern glibc/Rust closes
+                // inherited fds at startup; only closes, never opens.
+                libc::SYS_close_range,
                 libc::SYS_openat,
                 libc::SYS_open,
                 libc::SYS_fstat,
                 libc::SYS_newfstatat,
+                // Read-only filesystem statistics (block size, free space) on a
+                // path/fd the worker can already reach — no isolation impact; real
+                // tools (e.g. uutils `cat`) call it to size their I/O buffers.
+                libc::SYS_statfs,
+                libc::SYS_fstatfs,
                 libc::SYS_statx,
                 libc::SYS_lstat,
                 libc::SYS_stat,
@@ -114,6 +130,7 @@ impl SeccompPolicy {
                 libc::SYS_dup,
                 libc::SYS_dup2,
                 libc::SYS_dup3,
+                libc::SYS_pipe,
                 libc::SYS_pipe2,
                 libc::SYS_poll,
                 libc::SYS_ppoll,
@@ -123,6 +140,11 @@ impl SeccompPolicy {
                 libc::SYS_wait4,
                 libc::SYS_clone,
                 libc::SYS_clone3,
+                // `vfork` is how a shell (dash) spawns a child before `execve`; a
+                // worker that shells out to a tool needs it. The child inherits
+                // this same seccomp filter, the namespaces, and the cgroup, so it
+                // is no less confined than a `clone`-spawned one (already allowed).
+                libc::SYS_vfork,
                 libc::SYS_futex,
                 libc::SYS_getpid,
                 libc::SYS_getppid,
@@ -132,6 +154,11 @@ impl SeccompPolicy {
                 libc::SYS_geteuid,
                 libc::SYS_getegid,
                 libc::SYS_arch_prctl,
+                // Process-control operations a runtime uses (e.g. PR_SET_NAME); the
+                // security-relevant ones (PR_SET_SECCOMP, PR_SET_NO_NEW_PRIVS) are
+                // gated by the already-applied no_new_privs + filter, so they cannot
+                // widen this worker's authority.
+                libc::SYS_prctl,
                 libc::SYS_set_tid_address,
                 libc::SYS_set_robust_list,
                 libc::SYS_rseq,
@@ -271,6 +298,29 @@ mod tests {
         );
         let program = policy.compile().unwrap();
         assert!(!program.is_empty());
+    }
+
+    #[test]
+    fn baseline_allows_a_shell_worker_to_run_external_tools_but_not_the_network() {
+        let policy = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
+        // The syscalls a shell needs to spawn an external tool that copies a file
+        // (validated live against uutils `cat`): without these it is SIGSYS-killed.
+        for needed in [
+            libc::SYS_vfork,
+            libc::SYS_statfs,
+            libc::SYS_prctl,
+            libc::SYS_splice,
+            libc::SYS_pipe,
+        ] {
+            assert!(policy.allow.contains(&needed), "baseline must allow {needed}");
+        }
+        // But the network stays sealed: no socket-family syscall is on the list.
+        for denied in [libc::SYS_socket, libc::SYS_connect, libc::SYS_ptrace] {
+            assert!(
+                !policy.allow.contains(&denied),
+                "baseline must NOT allow {denied}"
+            );
+        }
     }
 
     /// Enforcement, validated unprivileged: a child installs a filter that denies

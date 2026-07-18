@@ -8,7 +8,7 @@
 //! wires two independent daemons together: A sends a task → B receives, approves,
 //! completes, and delivers → A verifies the result and signs its outcome.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
