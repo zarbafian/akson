@@ -165,11 +165,15 @@ dependencies = [
 name = "axon-harness"
 version = "0.0.1"
 dependencies = [
+ "axon-authority",
+ "axon-contract",
  "axon-crypto",
  "axon-pairing",
  "axon-proto",
+ "axon-sandbox",
  "axon-store",
  "axon-transport",
+ "axon-worker",
  "serde_json",
  "time",
  "tokio",

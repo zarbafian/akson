@@ -42,6 +42,10 @@ use crate::probe::{detect, ensure, required, MissingFeatures};
 pub struct SandboxSpec {
     /// Read-only binds `(host_path, sandbox_path)` — the digest-pinned runtime.
     pub ro_binds: Vec<(String, String)>,
+    /// Read-write binds `(host_path, sandbox_path)` — where the worker's outputs
+    /// land so the daemon can collect and gate them (a tmpfs would vanish with the
+    /// mount namespace). Scoped to exactly the output directory.
+    pub rw_binds: Vec<(String, String)>,
     /// tmpfs mounts inside the sandbox (scratch and output).
     pub tmpfs: Vec<String>,
     /// The working directory inside the sandbox.
@@ -60,6 +64,7 @@ impl SandboxSpec {
     pub fn clean_worker(workdir: &str) -> Self {
         Self {
             ro_binds: Vec::new(),
+            rw_binds: Vec::new(),
             tmpfs: Vec::new(),
             chdir: workdir.to_owned(),
             env: Vec::new(),
@@ -70,6 +75,13 @@ impl SandboxSpec {
     /// Adds a read-only bind of a host path to a sandbox path (builder).
     pub fn ro_bind(mut self, host: &str, sandbox: &str) -> Self {
         self.ro_binds.push((host.to_owned(), sandbox.to_owned()));
+        self
+    }
+
+    /// Adds a read-write bind of a host path to a sandbox path (builder) — the
+    /// worker's output directory. Keep this scoped to exactly the collection dir.
+    pub fn rw_bind(mut self, host: &str, sandbox: &str) -> Self {
+        self.rw_binds.push((host.to_owned(), sandbox.to_owned()));
         self
     }
 
@@ -96,13 +108,22 @@ impl SandboxSpec {
     /// reach a path the mount layout exposed is still blocked. The paths are the
     /// in-sandbox paths, which is what the worker sees once `pivot_root` has run.
     pub fn landlock_profile(&self) -> LandlockPolicy {
+        let rw_binds = self
+            .rw_binds
+            .iter()
+            .map(|(_, sandbox)| PathBuf::from(sandbox));
         LandlockPolicy {
             read_only: self
                 .ro_binds
                 .iter()
                 .map(|(_, sandbox)| PathBuf::from(sandbox))
                 .collect(),
-            read_write: self.tmpfs.iter().map(PathBuf::from).collect(),
+            read_write: self
+                .tmpfs
+                .iter()
+                .map(PathBuf::from)
+                .chain(rw_binds)
+                .collect(),
         }
     }
 }
@@ -128,6 +149,8 @@ pub enum MountOp {
     Dev,
     /// A read-only bind of a host path to a sandbox path.
     RoBind { host: String, sandbox: String },
+    /// A read-write bind of a host path to a sandbox path (the output directory).
+    RwBind { host: String, sandbox: String },
     /// A writable tmpfs at a sandbox path.
     Tmpfs { path: String },
 }
@@ -226,11 +249,17 @@ impl NativeLauncher {
             unshare.push(Namespace::Net);
         }
 
-        // Mounts, in order: a private /proc and /dev, then the read-only
-        // digest-pinned runtime binds, then writable tmpfs scratch/output.
+        // Mounts, in order: a private /proc and /dev, the read-only digest-pinned
+        // runtime binds, the read-write output binds, then writable tmpfs scratch.
         let mut mounts = vec![MountOp::Proc, MountOp::Dev];
         for (host, sandbox) in &spec.ro_binds {
             mounts.push(MountOp::RoBind {
+                host: host.clone(),
+                sandbox: sandbox.clone(),
+            });
+        }
+        for (host, sandbox) in &spec.rw_binds {
+            mounts.push(MountOp::RwBind {
                 host: host.clone(),
                 sandbox: sandbox.clone(),
             });
@@ -322,6 +351,11 @@ impl BubblewrapLauncher {
         argv.push("/dev".to_owned());
         for (host, sandbox) in &spec.ro_binds {
             argv.push("--ro-bind".to_owned());
+            argv.push(host.clone());
+            argv.push(sandbox.clone());
+        }
+        for (host, sandbox) in &spec.rw_binds {
+            argv.push("--bind".to_owned());
             argv.push(host.clone());
             argv.push(sandbox.clone());
         }
@@ -511,6 +545,26 @@ mod tests {
             profile.read_write,
             vec![PathBuf::from("/scratch"), PathBuf::from("/output")]
         );
+    }
+
+    #[test]
+    fn rw_bind_appears_as_bind_and_is_landlock_writable() {
+        let spec = SandboxSpec::clean_worker("/")
+            .ro_bind("/host/inputs", "/inputs")
+            .rw_bind("/host/out", "/output");
+        // The bwrap argv gets a writable --bind (distinct from --ro-bind).
+        let argv = BubblewrapLauncher::build_argv(&spec, "w", &[], None);
+        let i = argv
+            .iter()
+            .position(|a| a == "--bind")
+            .expect("--bind present");
+        assert_eq!(argv[i + 1], "/host/out");
+        assert_eq!(argv[i + 2], "/output");
+        assert!(!argv[..i].contains(&"--bind".to_owned())); // only the rw bind
+                                                            // The Landlock profile makes the output writable and the inputs read-only.
+        let ll = spec.landlock_profile();
+        assert_eq!(ll.read_only, vec![PathBuf::from("/inputs")]);
+        assert_eq!(ll.read_write, vec![PathBuf::from("/output")]);
     }
 
     /// Live: derive the worker Landlock profile from a spec whose in-sandbox paths

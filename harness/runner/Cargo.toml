@@ -23,5 +23,13 @@ tokio-rustls = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 
+# The clean-worker end-to-end demo (tests/clean_worker_e2e.rs) composes the M8
+# authority + M9 sandbox/worker pipeline. Test-only, never shipped.
+[dev-dependencies]
+axon-authority = { workspace = true }
+axon-contract = { workspace = true }
+axon-sandbox = { workspace = true }
+axon-worker = { workspace = true }
+
 [lints]
 workspace = true

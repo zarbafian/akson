@@ -40,6 +40,9 @@ if unshare --user --map-root-user true 2>/dev/null; then
   echo "user namespaces available — running the live sandbox checklist"
   # Live namespace/mount/exec tests are marked #[ignore]; run them explicitly.
   run cargo test -p axon-sandbox -- --ignored
+  # The clean-worker end-to-end demo (work order → sandbox → gate) also needs a
+  # delegated cgroup; it skips its cgroup step gracefully if none is present.
+  run cargo test -p axon-harness --test clean_worker_e2e -- --ignored --nocapture
 else
   restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '?')"
   cat <<EOF

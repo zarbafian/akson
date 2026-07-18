@@ -70,5 +70,7 @@ jobs:
         run: cargo test -p axon-sandbox --locked
       - name: live namespace/mount checklist (#[ignore] tests)
         run: cargo test -p axon-sandbox --locked -- --ignored
+      - name: clean-worker end-to-end (work order → sandbox → gate)
+        run: cargo test -p axon-harness --locked --test clean_worker_e2e -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh
