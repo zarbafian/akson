@@ -539,12 +539,31 @@ bundle without the producer's database (design §4.3).
 
 ### Track 4 — product surface
 
-**M12. CLI and daemon assembly (L)** — `axond`, `axon-cli`
+**M12. CLI and daemon assembly (L)** — `axond`, `axon-cli` — **CONTROL-PLANE SPINE DONE**
 Local admin socket vs worker socket separation with peer-credential checks
 (§16.2); OpenAPI 3.1 control API + RFC 9457; every §16.4 command; risk card
 rendering (concrete approval sentence, expandable detail); quiet arrival
 (no foregrounding, bounded inbox, local block/rate-limit §5.3); `axon
 doctor` (§17.3); personal vs isolated profile wiring.
+**Done** (the §16.2 security spine, all unit+integration-tested): `axond` is now a
+lib+bin. `control.rs` — the two surfaces + `authorize`; every op declares its minimum
+surface so the worker surface can never pair/policy/approve/issue/sign/export (the
+exact §16.2 prohibitions); refusals are structure-free RFC 9457 `Problem`s.
+`peercred.rs` — `SO_PEERCRED` auth, a peer is refused unless its UID is the daemon's
+(scoped `unsafe`, socketpair-tested). `socket.rs` — `bind_socket` (0600),
+`handle_connection` (authenticate → read → authorize-by-surface → dispatch →
+respond), the `serve` loop, and the `send_request` client (newline-delimited JSON).
+`axond serve` binds admin+worker sockets on a 0700 runtime dir; `axon status`
+queries the daemon over the admin socket (`axon doctor` stays a daemon-free host
+check). Validated LIVE: status → sandbox_ready/exit 0, fail-closed with no daemon,
+sockets 0600, worker-surface admin op → 403.
+**Remaining (the bulk of assembly, on these gates):** the OpenAPI 3.1 description +
+generated clients; the full §16.4 command set wired to durable state (the deferred
+receive dispatcher M5/M7, broker live HTTPS dispatch M10, `axon processor`/`evidence`/
+`pair`/`task`/`outcome` verbs, durable staged-then-atomic completion M11); risk-card
+rendering (over M7 `project_risk_card`); quiet arrival (bounded inbox, local
+block/rate-limit §5.3); personal vs isolated profile wiring; and the full
+`axon demo review` receive half.
 *Exit:* full loop driveable by CLI alone on one host; doctor output reviewed
 against §17.3 list.
 
