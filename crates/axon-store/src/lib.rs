@@ -32,6 +32,7 @@ pub mod schema;
 use std::path::Path;
 
 use axon_authority::{next, AttemptEvent, AttemptState, TransitionError, WorkOrder};
+use axon_broker::{ProcessorCall, ProcessorConfig, SubAttemptEvent, SubAttemptState};
 use axon_contract::{
     accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
 };
@@ -60,6 +61,7 @@ const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
 const INVITATION_CONTEXT: &str = "pairing.invitation";
 const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
 const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
+const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -75,6 +77,8 @@ pub enum StoreError {
     Corrupt(String),
     #[error("unknown work-order attempt {0:?}")]
     UnknownAttempt(String),
+    #[error("unknown processor call {0:?}")]
+    UnknownProcessorCall(String),
 }
 
 /// State held outside the database and its backups (the OS keystore/TPM, per
@@ -1074,6 +1078,210 @@ impl Store {
     }
 }
 
+/// The outcome of preparing a processor call (design §13.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareOutcome {
+    /// A fresh pre-dispatch record was stored in `prepared`.
+    Prepared,
+    /// The identical call (same idempotency key) was already prepared — its current
+    /// sub-attempt state is returned. Re-preparing never creates a second record.
+    AlreadyPrepared(SubAttemptState),
+}
+
+/// The processor broker's durable state (design §13.1, §15.2): configured
+/// processors and the sub-attempt of every call. The pure logic (state machine,
+/// bindings, egress checks) lives in `axon-broker`; this makes it durable.
+impl Store {
+    /// Stores (or updates) a processor configuration (design §15.2). The config is
+    /// sealed under the DEK; `location` is kept in the clear so a listing needs no
+    /// unseal. Audited as a configuration change.
+    pub fn put_processor(&self, config: &ProcessorConfig, now: i64) -> Result<(), StoreError> {
+        let json = serde_json::to_vec(config)?;
+        let sealed = self.dek.seal(PROCESSOR_CONFIG_CONTEXT, &json);
+        let location = if config.is_local() { "local" } else { "remote" };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO processors (processor_id, provider, location, config, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(processor_id) DO UPDATE SET
+                 provider = excluded.provider,
+                 location = excluded.location,
+                 config = excluded.config",
+            params![config.processor_id, config.provider, location, sealed, now],
+        )?;
+        audit::append(&tx, now, "processor.configured", &config.processor_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A configured processor by id, if present.
+    pub fn get_processor(&self, processor_id: &str) -> Result<Option<ProcessorConfig>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT config FROM processors WHERE processor_id = ?1",
+                [processor_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => {
+                let json = self.dek.open(PROCESSOR_CONFIG_CONTEXT, &bytes)?;
+                Ok(Some(serde_json::from_slice(&json)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Every configured processor, ordered by id (backs `axon processor list`).
+    pub fn list_processors(&self) -> Result<Vec<ProcessorConfig>, StoreError> {
+        let sealeds: Vec<Vec<u8>> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT config FROM processors ORDER BY processor_id")?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut out = Vec::with_capacity(sealeds.len());
+        for bytes in sealeds {
+            let json = self.dek.open(PROCESSOR_CONFIG_CONTEXT, &bytes)?;
+            out.push(serde_json::from_slice(&json)?);
+        }
+        Ok(out)
+    }
+
+    /// Durably records a processor call in `prepared` *before* it is dispatched
+    /// (design §13.1) — so a crash after any byte leaves is recoverable as
+    /// `ambiguous`. Idempotent on the call's idempotency key: re-preparing the
+    /// identical call returns its existing sub-attempt state, never a second record.
+    pub fn prepare_call(
+        &self,
+        call: &ProcessorCall,
+        now: i64,
+    ) -> Result<PrepareOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(state) = self.call_state(&call.idempotency_key)? {
+            tx.commit()?;
+            return Ok(PrepareOutcome::AlreadyPrepared(state));
+        }
+        let origin = serde_json::to_string(&call.origin)?;
+        tx.execute(
+            "INSERT INTO processor_calls
+                 (idempotency_key, work_order_id, task_id, processor_id, provider,
+                  config_digest, request_digest, origin, state,
+                  max_cost_microusd, max_response_bytes, deadline, prepared_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'prepared', ?9, ?10, ?11, ?12)",
+            params![
+                call.idempotency_key,
+                call.work_order_id,
+                call.task_id,
+                call.processor_id,
+                call.provider,
+                call.config_digest,
+                call.request_digest,
+                origin,
+                call.max_cost_microusd as i64,
+                call.max_response_bytes as i64,
+                call.deadline,
+                now,
+            ],
+        )?;
+        audit::append(&tx, now, "processor.prepared", &call.idempotency_key)?;
+        tx.commit()?;
+        Ok(PrepareOutcome::Prepared)
+    }
+
+    /// The current sub-attempt state of a prepared call, if it exists.
+    pub fn call_state(&self, idempotency_key: &str) -> Result<Option<SubAttemptState>, StoreError> {
+        let s: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT state FROM processor_calls WHERE idempotency_key = ?1",
+                [idempotency_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match s {
+            None => Ok(None),
+            Some(text) => SubAttemptState::from_str(&text)
+                .map(Some)
+                .ok_or_else(|| StoreError::Corrupt(format!("unknown sub-attempt state {text:?}"))),
+        }
+    }
+
+    /// Drives a call's sub-attempt through the state machine (design §13.1). The
+    /// pure `next` decides; a valid transition is persisted with a self-contained
+    /// CAS (the UPDATE re-asserts the prior state) and audited. Returns the inner
+    /// [`axon_broker::TransitionError`] without failing the call; an unknown call is
+    /// a [`StoreError::UnknownProcessorCall`].
+    pub fn advance_call(
+        &self,
+        idempotency_key: &str,
+        event: SubAttemptEvent,
+        now: i64,
+    ) -> Result<Result<SubAttemptState, axon_broker::TransitionError>, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let state = self
+            .call_state(idempotency_key)?
+            .ok_or_else(|| StoreError::UnknownProcessorCall(idempotency_key.to_owned()))?;
+        match axon_broker::next(state, event) {
+            Ok(new_state) => {
+                let changed = tx.execute(
+                    "UPDATE processor_calls SET state = ?1
+                     WHERE idempotency_key = ?2 AND state = ?3",
+                    params![new_state.as_str(), idempotency_key, state.as_str()],
+                )?;
+                if changed != 1 {
+                    return Err(StoreError::Corrupt(format!(
+                        "processor call {idempotency_key} changed state concurrently"
+                    )));
+                }
+                audit::append(
+                    &tx,
+                    now,
+                    "processor.transition",
+                    &format!("{idempotency_key}:{}", new_state.as_str()),
+                )?;
+                tx.commit()?;
+                Ok(Ok(new_state))
+            }
+            Err(e) => {
+                tx.commit()?;
+                Ok(Err(e))
+            }
+        }
+    }
+
+    /// Resolves every call left `dispatching` by a crash to `ambiguous` (design
+    /// §13.1) — a byte may have left, so it is never auto-retried; the operator
+    /// authorizes any new attempt after seeing the possible duplicate disclosure and
+    /// cost. Called during recovery. Returns how many were resolved.
+    pub fn resolve_crashed_calls(&self, now: i64) -> Result<usize, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let keys: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT idempotency_key FROM processor_calls WHERE state = 'dispatching'",
+            )?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for k in &keys {
+            tx.execute(
+                "UPDATE processor_calls SET state = 'ambiguous'
+                 WHERE idempotency_key = ?1 AND state = 'dispatching'",
+                [k],
+            )?;
+            audit::append(&tx, now, "processor.transition", &format!("{k}:ambiguous"))?;
+        }
+        tx.commit()?;
+        Ok(keys.len())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1734,5 +1942,134 @@ mod tests {
                 ClaimOutcome::AlreadyClaimed(AttemptState::Claimed)
             );
         }
+    }
+
+    // --- processor broker (M10) ---
+
+    fn processor_config(id: &str) -> ProcessorConfig {
+        ProcessorConfig {
+            processor_id: id.to_owned(),
+            provider: "example-ai".to_owned(),
+            origin: axon_broker::Origin::https("api.example.com", 443),
+            disclosure: axon_broker::Disclosure::remote("Example AI", "us-east"),
+            config: serde_json::json!({"model": "review-1"}),
+        }
+    }
+
+    fn processor_call(request: &[u8]) -> ProcessorCall {
+        ProcessorCall::prepare(
+            &processor_config("reviewer"),
+            request,
+            axon_broker::CallBinding {
+                work_order_id: "wo-1".to_owned(),
+                work_order_digest: "aa".repeat(32),
+                task_id: "task-1".to_owned(),
+            },
+            axon_broker::CallBudget {
+                max_cost_microusd: 5000,
+                deadline: "2030-01-01T00:00:00Z".to_owned(),
+                max_response_bytes: 65536,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn processor_config_round_trips_sealed() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store
+            .put_processor(&processor_config("reviewer"), 100)
+            .unwrap();
+        assert_eq!(
+            store.get_processor("reviewer").unwrap().unwrap().provider,
+            "example-ai"
+        );
+        assert_eq!(store.list_processors().unwrap().len(), 1);
+        assert!(store.get_processor("nope").unwrap().is_none());
+        // An update replaces in place (no second row).
+        let mut updated = processor_config("reviewer");
+        updated.provider = "example-ai-v2".to_owned();
+        store.put_processor(&updated, 101).unwrap();
+        assert_eq!(store.list_processors().unwrap().len(), 1);
+        assert_eq!(
+            store.get_processor("reviewer").unwrap().unwrap().provider,
+            "example-ai-v2"
+        );
+    }
+
+    #[test]
+    fn prepare_call_is_idempotent() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let call = processor_call(b"review this");
+        assert_eq!(
+            store.prepare_call(&call, 100).unwrap(),
+            PrepareOutcome::Prepared
+        );
+        assert_eq!(
+            store.call_state(&call.idempotency_key).unwrap(),
+            Some(SubAttemptState::Prepared)
+        );
+        // Re-preparing the identical call never creates a second record.
+        assert_eq!(
+            store.prepare_call(&call, 101).unwrap(),
+            PrepareOutcome::AlreadyPrepared(SubAttemptState::Prepared)
+        );
+    }
+
+    #[test]
+    fn advance_call_drives_the_state_machine() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let call = processor_call(b"x");
+        store.prepare_call(&call, 100).unwrap();
+        assert_eq!(
+            store
+                .advance_call(&call.idempotency_key, SubAttemptEvent::Dispatch, 101)
+                .unwrap()
+                .unwrap(),
+            SubAttemptState::Dispatching
+        );
+        assert_eq!(
+            store
+                .advance_call(&call.idempotency_key, SubAttemptEvent::Complete, 102)
+                .unwrap()
+                .unwrap(),
+            SubAttemptState::Completed
+        );
+        // A terminal call cannot be advanced, and an unknown call is refused.
+        assert!(store
+            .advance_call(&call.idempotency_key, SubAttemptEvent::Dispatch, 103)
+            .unwrap()
+            .is_err());
+        assert!(matches!(
+            store.advance_call("nope", SubAttemptEvent::Dispatch, 104),
+            Err(StoreError::UnknownProcessorCall(_))
+        ));
+    }
+
+    #[test]
+    fn crash_while_dispatching_resolves_ambiguous() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // One call is mid-dispatch (a byte may have left); another only prepared.
+        let dispatching = processor_call(b"disclosed");
+        store.prepare_call(&dispatching, 100).unwrap();
+        store
+            .advance_call(&dispatching.idempotency_key, SubAttemptEvent::Dispatch, 101)
+            .unwrap()
+            .unwrap();
+        let prepared = processor_call(b"not yet sent");
+        store.prepare_call(&prepared, 102).unwrap();
+
+        // Recovery sweeps only the dispatching one to ambiguous (never auto-retried).
+        assert_eq!(store.resolve_crashed_calls(200).unwrap(), 1);
+        assert_eq!(
+            store.call_state(&dispatching.idempotency_key).unwrap(),
+            Some(SubAttemptState::Ambiguous)
+        );
+        assert_eq!(
+            store.call_state(&prepared.idempotency_key).unwrap(),
+            Some(SubAttemptState::Prepared)
+        );
+        // Idempotent: a second sweep finds nothing dispatching.
+        assert_eq!(store.resolve_crashed_calls(201).unwrap(), 0);
     }
 }

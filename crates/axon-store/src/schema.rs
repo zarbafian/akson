@@ -139,9 +139,48 @@ CREATE TABLE attempts (
 ) STRICT;
 "#;
 
+/// Version 7 (M10): the processor broker (design §13.1, §15.2). `processors` holds
+/// each configured processor (sealed config + a plaintext `location` so a listing
+/// needs no unseal). `processor_calls` is the durable sub-attempt: one row per
+/// prepared call, keyed by its deterministic `idempotency_key`, recorded before a
+/// byte leaves; a `dispatching` row found after a crash resolves to `ambiguous`.
+const V7: &str = r#"
+CREATE TABLE processors (
+    processor_id  TEXT PRIMARY KEY,
+    provider      TEXT NOT NULL,
+    location      TEXT NOT NULL,
+    config        BLOB NOT NULL,
+    added_at      INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE processor_calls (
+    idempotency_key    TEXT PRIMARY KEY,
+    work_order_id      TEXT NOT NULL,
+    task_id            TEXT NOT NULL,
+    processor_id       TEXT NOT NULL,
+    provider           TEXT NOT NULL,
+    config_digest      TEXT NOT NULL,
+    request_digest     TEXT NOT NULL,
+    origin             TEXT NOT NULL,
+    state              TEXT NOT NULL,
+    max_cost_microusd  INTEGER NOT NULL,
+    max_response_bytes INTEGER NOT NULL,
+    deadline           TEXT NOT NULL,
+    prepared_at        INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
-const MIGRATIONS: &[(i64, &str)] = &[(1, V1), (2, V2), (3, V3), (4, V4), (5, V5), (6, V6)];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, V1),
+    (2, V2),
+    (3, V3),
+    (4, V4),
+    (5, V5),
+    (6, V6),
+    (7, V7),
+];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the
 /// resulting `journal_mode` so the caller can assert WAL actually took effect
