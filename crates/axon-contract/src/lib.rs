@@ -47,6 +47,6 @@ pub use manifest::{bind_inputs, BindError, InputPart, PartBody};
 pub use proposal::{check_proposal_identities, sign_proposal, verify_proposal, ProposalError};
 pub use receive::{receive_proposal, ReceiveError, ReceivedProposal};
 pub use risk_card::{
-    project_risk_card, EvidenceDestination, EvidenceSlotCard, ExposedInput, LimitsCard, RiskCard,
-    WhatLeaves, WhatRuns, Who,
+    project_risk_card, EvidenceDestination, EvidenceSlotCard, ExposedInput, LimitsCard,
+    RenderedRiskCard, RiskCard, RiskSection, WhatLeaves, WhatRuns, Who,
 };

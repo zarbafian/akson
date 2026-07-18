@@ -163,6 +163,175 @@ pub fn project_risk_card(proposal: &ParsedContract) -> RiskCard {
     }
 }
 
+/// A rendered risk card (design §5.2): a concrete one-line approval sentence the
+/// operator acts on, plus expandable detail — one section per §5.2 question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedRiskCard {
+    /// The single concrete sentence shown for the approve/deny decision.
+    pub sentence: String,
+    /// The expandable detail, one [`RiskSection`] per §5.2 question.
+    pub sections: Vec<RiskSection>,
+}
+
+/// One expandable detail section of a rendered risk card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskSection {
+    pub heading: String,
+    pub lines: Vec<String>,
+}
+
+impl RiskCard {
+    /// Renders the card into a concrete approval sentence and expandable detail
+    /// (design §5.2). Pure text over the contract-fixed data; peer/policy/processor
+    /// context (operator, region, and "Independent verifier: none" unless one is
+    /// configured) is overlaid by the caller before display.
+    pub fn render(&self) -> RenderedRiskCard {
+        let inputs = &self.what_leaves.inputs;
+        let n = inputs.len();
+        let total_bytes: u64 = inputs.iter().map(|i| i.byte_length).sum();
+        let to_processor = inputs.iter().filter(|i| i.processor_visible).count();
+        let disclosure = disclosure_phrase(self.what_leaves.processor_disclosure);
+        let recipient = recipient_phrase(self.evidence_and_destination.result_recipient);
+
+        let processor_clause = if to_processor > 0 {
+            format!(", {to_processor} of them to {disclosure}")
+        } else {
+            String::new()
+        };
+        let sentence = format!(
+            "Approve {} to run \"{}\": {n} input(s) ({total_bytes} B) go to the worker{processor_clause}; up to {} B come back to {recipient} by {}.",
+            self.who.requester.agent, self.who.task_type, self.limits.max_response_bytes, self.limits.deadline,
+        );
+
+        let mut what_leaves: Vec<String> = inputs
+            .iter()
+            .map(|i| {
+                let dest = match (i.worker_visible, i.processor_visible) {
+                    (true, true) => "worker + processor",
+                    (true, false) => "worker only",
+                    (false, true) => "processor only",
+                    (false, false) => "neither",
+                };
+                format!("{} — {} ({} B) → {dest}", i.id, i.media_type, i.byte_length)
+            })
+            .collect();
+        what_leaves.push(format!("processor disclosure: {disclosure}"));
+
+        let caps: Vec<&str> = self
+            .what_runs
+            .requested_capabilities
+            .iter()
+            .map(|c| capability_phrase(*c))
+            .collect();
+
+        let mut limits = vec![
+            format!(
+                "revision {} ({}…)",
+                self.limits.revision,
+                &self.limits.revision_digest[..self.limits.revision_digest.len().min(12)]
+            ),
+            format!("deadline: {}", self.limits.deadline),
+            format!("max response: {} B", self.limits.max_response_bytes),
+        ];
+        if let Some(cost) = self.limits.max_cost_microusd {
+            limits.push(format!("max cost: {cost} µUSD (estimate)"));
+        }
+
+        let mut destination: Vec<String> = self
+            .evidence_and_destination
+            .evidence_slots
+            .iter()
+            .map(|s| {
+                let classes: Vec<&str> = s
+                    .trust_classes
+                    .iter()
+                    .map(|t| trust_class_phrase(*t))
+                    .collect();
+                format!(
+                    "slot {} — {} [{}]",
+                    s.slot_id,
+                    s.statement_type,
+                    classes.join(", ")
+                )
+            })
+            .collect();
+        destination.push(format!("results to: {recipient}"));
+        if let Some(days) = self.evidence_and_destination.retention_days {
+            destination.push(format!("retention: {days} day(s)"));
+        }
+
+        RenderedRiskCard {
+            sentence,
+            sections: vec![
+                RiskSection {
+                    heading: "Who".to_owned(),
+                    lines: vec![
+                        format!(
+                            "requester: {} (issuer {})",
+                            self.who.requester.agent, self.who.requester.issuer
+                        ),
+                        format!("task type: {}", self.who.task_type),
+                    ],
+                },
+                RiskSection {
+                    heading: "What leaves".to_owned(),
+                    lines: what_leaves,
+                },
+                RiskSection {
+                    heading: "What runs".to_owned(),
+                    lines: vec![format!(
+                        "capabilities: {}",
+                        if caps.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            caps.join(", ")
+                        }
+                    )],
+                },
+                RiskSection {
+                    heading: "Limits".to_owned(),
+                    lines: limits,
+                },
+                RiskSection {
+                    heading: "Evidence & destination".to_owned(),
+                    lines: destination,
+                },
+            ],
+        }
+    }
+}
+
+fn disclosure_phrase(d: Disclosure) -> &'static str {
+    match d {
+        Disclosure::None => "no processor",
+        Disclosure::LocalOnly => "a local processor",
+        Disclosure::NamedRemote => "a named remote processor",
+    }
+}
+
+fn capability_phrase(c: Capability) -> &'static str {
+    match c {
+        Capability::Respond => "respond to the requester",
+        Capability::ReadSuppliedInputs => "read the supplied inputs",
+        Capability::ProcessorUse => "use a processor",
+        Capability::ArtifactExport => "export artifacts",
+    }
+}
+
+fn recipient_phrase(r: ResultRecipient) -> &'static str {
+    match r {
+        ResultRecipient::RequestOrigin => "the request origin",
+    }
+}
+
+fn trust_class_phrase(t: TrustClass) -> &'static str {
+    match t {
+        TrustClass::SelfAttested => "self-attested",
+        TrustClass::IndependentlyVerified => "independently verified",
+        TrustClass::HardwareAttested => "hardware-attested",
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -242,5 +411,52 @@ mod tests {
             "request-origin"
         );
         assert_eq!(v["what_runs"]["requested_capabilities"][0], "respond");
+    }
+
+    #[test]
+    fn renders_a_concrete_approval_sentence_and_five_sections() {
+        let rendered = project_risk_card(&proposal()).render();
+        // The one-line sentence names the requester, task, input bytes, recipient,
+        // and deadline — enough to approve or deny without expanding.
+        for needle in [
+            "requester",
+            "code-review",
+            "42 B",
+            "the request origin",
+            "2030-01-01",
+        ] {
+            assert!(
+                rendered.sentence.contains(needle),
+                "sentence missing {needle:?}: {}",
+                rendered.sentence
+            );
+        }
+        // Exactly the five §5.2 questions, in order.
+        let headings: Vec<&str> = rendered
+            .sections
+            .iter()
+            .map(|s| s.heading.as_str())
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "Who",
+                "What leaves",
+                "What runs",
+                "Limits",
+                "Evidence & destination"
+            ]
+        );
+        // Capabilities render readably; the slot's trust class is spelled out.
+        assert!(rendered.sections[2].lines[0].contains("respond to the requester"));
+        assert!(rendered.sections[2].lines[0].contains("read the supplied inputs"));
+        assert!(rendered.sections[4]
+            .lines
+            .iter()
+            .any(|l| l.contains("self-attested")));
+        assert!(rendered.sections[4]
+            .lines
+            .iter()
+            .any(|l| l.contains("retention: 30 day(s)")));
     }
 }
