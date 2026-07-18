@@ -506,7 +506,7 @@ processor); the duplicate-disclosure operator prompt on `ambiguous`; and the
 *Exit:* §20.5 broker suite; kill-during-dispatch yields ambiguous with the
 duplicate-disclosure prompt path.
 
-**M11. Evidence and outcome (L)** — `axon-evidence`
+**M11. Evidence and outcome (L)** — `axon-evidence` — **STANDARDS CORE DONE**
 `result-manifest-v1` build + JCS + DSSE; staged-then-atomic completion
 (never partial completed §14.1); in-toto Statement v1 authorization and
 execution attestations; SARIF 2.1.0 Errata 01 profile parser (hostile-input
@@ -515,6 +515,25 @@ orthogonal result × disclosure; `axon evidence validate|export` including
 the portable personal verification pack; requester outcome as task-less
 SendMessage with fixed receipt (§14.5); trust-class labeling from local
 policy only.
+**Done** (standards-first, all unit+doctested): `ResultManifest` (§14.1) —
+`assemble` puts every array in the normative canonical order and `validate` enforces
+that order *in code* (RFC 8785 sorts object keys, not array elements), schema-valid,
+`bundle_digest` = *the* §14.1 bundle digest, `sign`/`verify` DSSE under the
+task-result key. `check_slots` (§14.3) — "omission cannot look like success":
+missing/non-passing/under-disclosed slots fail, result × disclosure stay orthogonal.
+`Outcome` (§14.5) — binds the bundle digest + contract, DSSE under the
+requester-outcome key, `check_binds_to` refuses replay; `fixed_receipt` is the
+model-free acknowledgment. `parse_sarif` (§14.2) — hostile-input SARIF (I-JSON
+limits, original-byte digest preserved, no URI fetch, bounded findings + truncation
+count). `Statement` (§14.2) — in-toto Statement v1 (payloadType
+`application/vnd.in-toto+json`), DSSE under the evidence key, `execution_over` covers
+exactly the outputs; authorization/execution predicate types pinned. Each object
+uses a *distinct* purpose key, so keys can't cross-sign.
+**Remaining:** trust-class derivation (§14.4, from validated identities not
+self-asserted fields); the composed `axon evidence validate` (the §14.2 V1 check
+list); golden vectors + xcheck cross-check (the exit's "independent validator
+validates a bundle"); durable staged-then-atomic completion in `axon-store`; and
+`axon evidence export` + the portable verification pack + the CLI verbs (M12).
 *Exit:* §20.6 suite; an independent validator (xcheck) validates a real
 bundle without the producer's database (design §4.3).
 
