@@ -19,6 +19,9 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # Mozilla's CA root data (webpki-roots) ships under the Community Data License
+    # Agreement – Permissive 2.0: a permissive, FOSS-friendly data license.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
