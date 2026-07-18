@@ -223,6 +223,35 @@ CREATE TABLE results (
 ) STRICT;
 "#;
 
+/// Version 12 (M12): the requester side of the exchange (design §14.5). A daemon
+/// acting as *requester* tracks each task it sent in `sent_requests` (so a delivered
+/// result can be matched to an outstanding request — an unsolicited result is
+/// refused) and records its signed disposition in `outcomes` (the requester
+/// outcome, sealed at rest; its digest plaintext).
+const V12: &str = r#"
+CREATE TABLE sent_requests (
+    contract_digest   TEXT PRIMARY KEY,
+    task_id           TEXT NOT NULL,
+    context_id        TEXT NOT NULL,
+    contract_id       TEXT NOT NULL,
+    performer_agent   TEXT NOT NULL,
+    performer_issuer  TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    requested_at      INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE outcomes (
+    contract_digest   TEXT PRIMARY KEY,
+    task_id           TEXT NOT NULL,
+    bundle_digest     TEXT NOT NULL,
+    outcome_digest    TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    outcome           BLOB NOT NULL,
+    signed_at         TEXT NOT NULL,
+    recorded_at       INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -237,6 +266,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, V9),
     (10, V10),
     (11, V11),
+    (12, V12),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

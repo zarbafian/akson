@@ -64,6 +64,7 @@ const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
 const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
 const WORK_ORDER_CONTEXT: &str = "work_order.issued";
 const RESULT_MANIFEST_CONTEXT: &str = "result.manifest";
+const OUTCOME_CONTEXT: &str = "outcome.signed";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -193,6 +194,19 @@ pub enum ClaimOutcome {
     /// The one-use nonce belongs to a *different* work order — a replayed or
     /// forged nonce. Refused; nothing is claimed.
     NonceReused,
+}
+
+/// A task this daemon sent as *requester* and is awaiting a result for (design
+/// §14.5). Retained so a delivered result can be matched to an outstanding request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentRequest {
+    pub contract_digest: String,
+    pub task_id: String,
+    pub context_id: String,
+    pub contract_id: String,
+    pub performer_agent: String,
+    pub performer_issuer: String,
+    pub message_id: String,
 }
 
 /// The result of durably completing an attempt with its result (design §14.1).
@@ -1418,6 +1432,128 @@ impl Store {
     }
 }
 
+/// The requester side of the exchange (design §14.5): tracking the tasks this
+/// daemon sent and recording its signed dispositions of their results.
+impl Store {
+    /// Records a task this daemon sent as requester (design §14.5). Idempotent on
+    /// the contract digest — a re-send of the same contract leaves the record.
+    pub fn put_sent_request(&self, req: &SentRequest, now: i64) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO sent_requests
+                 (contract_digest, task_id, context_id, contract_id,
+                  performer_agent, performer_issuer, message_id, requested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(contract_digest) DO NOTHING",
+            params![
+                req.contract_digest,
+                req.task_id,
+                req.context_id,
+                req.contract_id,
+                req.performer_agent,
+                req.performer_issuer,
+                req.message_id,
+                now
+            ],
+        )?;
+        if inserted == 1 {
+            audit::append(&tx, now, "request.sent", &req.contract_digest)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The outstanding request for `contract_digest`, if this daemon sent it.
+    pub fn get_sent_request(
+        &self,
+        contract_digest: &str,
+    ) -> Result<Option<SentRequest>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT contract_digest, task_id, context_id, contract_id,
+                        performer_agent, performer_issuer, message_id
+                 FROM sent_requests WHERE contract_digest = ?1",
+                [contract_digest],
+                |r| {
+                    Ok(SentRequest {
+                        contract_digest: r.get(0)?,
+                        task_id: r.get(1)?,
+                        context_id: r.get(2)?,
+                        contract_id: r.get(3)?,
+                        performer_agent: r.get(4)?,
+                        performer_issuer: r.get(5)?,
+                        message_id: r.get(6)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Records the requester's signed outcome for a result (design §14.5), sealed
+    /// at rest. Idempotent on the contract digest — the first disposition stands.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_outcome(
+        &self,
+        contract_digest: &str,
+        task_id: &str,
+        bundle_digest: &str,
+        outcome_digest: &str,
+        state: &str,
+        outcome_envelope: &[u8],
+        signed_at: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let sealed = self.dek.seal(OUTCOME_CONTEXT, outcome_envelope);
+        let tx = self.conn.unchecked_transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO outcomes
+                 (contract_digest, task_id, bundle_digest, outcome_digest, state,
+                  outcome, signed_at, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(contract_digest) DO NOTHING",
+            params![
+                contract_digest,
+                task_id,
+                bundle_digest,
+                outcome_digest,
+                state,
+                sealed,
+                signed_at,
+                now
+            ],
+        )?;
+        if inserted == 1 {
+            audit::append(&tx, now, "outcome.signed", outcome_digest)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The requester's stored (outcome_digest, sealed-then-opened signed outcome
+    /// envelope) for `contract_digest`, if any (design §14.5).
+    pub fn get_outcome(
+        &self,
+        contract_digest: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        let row: Option<(String, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT outcome_digest, outcome FROM outcomes WHERE contract_digest = ?1",
+                [contract_digest],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((digest, sealed)) => {
+                let envelope = self.dek.open(OUTCOME_CONTEXT, &sealed)?;
+                Ok(Some((digest, envelope)))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 /// The outcome of preparing a processor call (design §13.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrepareOutcome {
@@ -2482,6 +2618,40 @@ mod tests {
             .peer_key("other", "contract-proposal")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn sent_requests_and_outcomes_round_trip() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let req = SentRequest {
+            contract_digest: "a".repeat(64),
+            task_id: "task-1".to_owned(),
+            context_id: "ctx-1".to_owned(),
+            contract_id: "cid".to_owned(),
+            performer_agent: "performer".to_owned(),
+            performer_issuer: "iss".to_owned(),
+            message_id: "msg-1".to_owned(),
+        };
+        store.put_sent_request(&req, 100).unwrap();
+        assert_eq!(store.get_sent_request(&"a".repeat(64)).unwrap(), Some(req));
+        assert!(store.get_sent_request("nope").unwrap().is_none());
+
+        store
+            .put_outcome(
+                &"a".repeat(64),
+                "task-1",
+                &"b".repeat(64),
+                "outcome-digest",
+                "accepted",
+                b"sealed-envelope-bytes",
+                "2026-07-18T00:00:00Z",
+                100,
+            )
+            .unwrap();
+        let (digest, envelope) = store.get_outcome(&"a".repeat(64)).unwrap().unwrap();
+        assert_eq!(digest, "outcome-digest");
+        assert_eq!(envelope, b"sealed-envelope-bytes");
+        assert!(store.get_outcome("nope").unwrap().is_none());
     }
 
     #[test]
