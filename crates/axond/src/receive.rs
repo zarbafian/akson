@@ -17,7 +17,7 @@
 //! (`TASK_STATE_SUBMITTED`) and waits for a local decision. The returned bytes are
 //! the A2A response the peer receives.
 
-use axon_contract::{expires_at_unix, receive_proposal, Identity};
+use axon_contract::{expires_at_unix, receive_proposal, Identity, PartBody, ReceivedProposal};
 use axon_crypto::keypair::PurposeVerifyingKey;
 use axon_proto::v1::{Part, Task, TaskState, TaskStatus};
 use axon_store::delivery::CoveredValues;
@@ -105,6 +105,10 @@ pub fn dispatch_proposal(
     // Record the A2A Context id on the head so the accepting decision can reference
     // it (it is Message-level, not a contract field).
     store.set_task_context(&task_id, context_id)?;
+    // Persist the worker-visible input bytes (the contract holds only digests) so
+    // the worker can be staged with them when the task later runs (§7.2). Done
+    // before the idempotency commit, so a crash here re-runs on replay.
+    persist_worker_inputs(store, &task_id, &received, trusted_now_unix)?;
 
     // 4. Commit the A2A Task response (durable-before-response, §9.2), so an exact
     //    replay returns these identical bytes.
@@ -121,6 +125,51 @@ pub fn dispatch_proposal(
         outcome: DispatchOutcome::Submitted { task_id },
         response,
     })
+}
+
+/// Persists the worker-visible input payloads of a fresh proposal (design §7.2):
+/// the contract carries only each input's digest, so the actual bytes are kept
+/// (sealed) to stage into the sandbox when the task runs. Each payload is exactly
+/// what its manifest digest covers — already verified by `bind_inputs`, so the
+/// stored bytes re-hash to `entry.sha256`.
+fn persist_worker_inputs(
+    store: &Store,
+    task_id: &str,
+    received: &ReceivedProposal,
+    now: i64,
+) -> Result<(), StoreError> {
+    for (ordinal, entry) in received.proposal.contract.inputs.iter().enumerate() {
+        if !entry.worker_visible {
+            continue;
+        }
+        // bind_inputs guarantees exactly one Part per entry; skip defensively if
+        // absent rather than panic.
+        let Some(part) = received
+            .inputs
+            .iter()
+            .find(|p| p.message_id == entry.message_id && p.part_index == entry.part_index)
+        else {
+            continue;
+        };
+        let bytes = match &part.body {
+            PartBody::Text(s) => s.clone().into_bytes(),
+            PartBody::Data(v) => match axon_ext::jcs::canonical_bytes(v) {
+                Ok(b) => b,
+                Err(_) => continue,
+            },
+        };
+        store.put_task_input(
+            task_id,
+            &entry.id,
+            ordinal as i64,
+            &entry.media_type,
+            entry.byte_length as i64,
+            &entry.sha256,
+            &bytes,
+            now,
+        )?;
+    }
+    Ok(())
 }
 
 /// Records a rejection for idempotency consistency (a replay of the same bad
@@ -304,6 +353,13 @@ mod tests {
         let task: serde_json::Value = serde_json::from_slice(&result.response).unwrap();
         assert_eq!(task["id"], task_id);
         assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
+        // The worker-visible input bytes are persisted for later staging (§7.2):
+        // the contract holds only the digest, but the actual Part bytes are kept.
+        let inputs = store.list_task_inputs(&task_id).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].input_id, "src");
+        assert_eq!(inputs[0].payload, TEXT.as_bytes());
+        assert_eq!(inputs[0].sha256, hex::encode(Sha256::digest(TEXT.as_bytes())));
     }
 
     #[test]

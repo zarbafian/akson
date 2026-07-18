@@ -263,6 +263,24 @@ CREATE TABLE processor_credentials (
 ) STRICT;
 "#;
 
+/// Version 14 (M12): the worker-visible input payloads for a received task
+/// (design §7.2, §13.1). The contract reduces each input to its digest; the
+/// worker needs the actual bytes, so they are persisted (sealed at rest) at
+/// receive time to be staged into the sandbox when the task runs. `ordinal` fixes
+/// the manifest order; `(task_id, input_id)` is unique.
+const V14: &str = r#"
+CREATE TABLE task_inputs (
+    task_id      TEXT NOT NULL,
+    input_id     TEXT NOT NULL,
+    ordinal      INTEGER NOT NULL,
+    media_type   TEXT NOT NULL,
+    byte_length  INTEGER NOT NULL,
+    sha256       TEXT NOT NULL,
+    payload      BLOB NOT NULL,
+    PRIMARY KEY (task_id, input_id)
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -279,6 +297,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (11, V11),
     (12, V12),
     (13, V13),
+    (14, V14),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

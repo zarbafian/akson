@@ -68,6 +68,7 @@ const WORK_ORDER_CONTEXT: &str = "work_order.issued";
 const RESULT_MANIFEST_CONTEXT: &str = "result.manifest";
 const OUTCOME_CONTEXT: &str = "outcome.signed";
 const PROCESSOR_CREDENTIAL_CONTEXT: &str = "processor.credential";
+const TASK_INPUT_CONTEXT: &str = "task.input";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -205,6 +206,19 @@ pub struct PeerSummary {
     pub agent_id: String,
     pub endpoint_id: String,
     pub status: String,
+}
+
+/// A worker-visible input payload for a received task (design §7.2), unsealed —
+/// the actual bytes to stage into the sandbox, with the digest/length to check
+/// them against the contract manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskInput {
+    pub input_id: String,
+    pub ordinal: i64,
+    pub media_type: String,
+    pub byte_length: i64,
+    pub sha256: String,
+    pub payload: Vec<u8>,
 }
 
 /// A recorded requester outcome's listing summary (design §14.5).
@@ -1754,6 +1768,67 @@ impl Store {
         }
     }
 
+    /// Persists one worker-visible input payload for a received task (design §7.2),
+    /// sealed at rest. Idempotent on `(task_id, input_id)`: re-receiving the same
+    /// task (which is itself idempotent) does not duplicate or overwrite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_task_input(
+        &self,
+        task_id: &str,
+        input_id: &str,
+        ordinal: i64,
+        media_type: &str,
+        byte_length: i64,
+        sha256: &str,
+        payload: &[u8],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let sealed = self.dek.seal(TASK_INPUT_CONTEXT, payload);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO task_inputs
+                 (task_id, input_id, ordinal, media_type, byte_length, sha256, payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(task_id, input_id) DO NOTHING",
+            params![task_id, input_id, ordinal, media_type, byte_length, sha256, sealed],
+        )?;
+        audit::append(&tx, now, "task.input_stored", task_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The worker-visible input payloads for a task, unsealed, in manifest order.
+    pub fn list_task_inputs(&self, task_id: &str) -> Result<Vec<TaskInput>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT input_id, ordinal, media_type, byte_length, sha256, payload
+             FROM task_inputs WHERE task_id = ?1 ORDER BY ordinal",
+        )?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut inputs = Vec::new();
+        for row in rows {
+            let (input_id, ordinal, media_type, byte_length, sha256, sealed) = row?;
+            let payload = self.dek.open(TASK_INPUT_CONTEXT, &sealed)?;
+            inputs.push(TaskInput {
+                input_id,
+                ordinal,
+                media_type,
+                byte_length,
+                sha256,
+                payload,
+            });
+        }
+        Ok(inputs)
+    }
+
     /// Durably records a processor call in `prepared` *before* it is dispatched
     /// (design §13.1) — so a crash after any byte leaves is recoverable as
     /// `ambiguous`. Idempotent on the call's idempotency key: re-preparing the
@@ -2803,6 +2878,48 @@ mod tests {
             Some(b"sk-rotated".to_vec())
         );
         assert!(store.get_credential("proc-none").unwrap().is_none());
+    }
+
+    #[test]
+    fn task_inputs_round_trip_sealed_and_ordered() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // Insert out of order; list returns them by ordinal.
+        store
+            .put_task_input("task-1", "b", 1, "text/plain", 3, &"b".repeat(64), b"two", 100)
+            .unwrap();
+        store
+            .put_task_input("task-1", "a", 0, "text/x-diff", 5, &"a".repeat(64), b"first", 100)
+            .unwrap();
+        let inputs = store.list_task_inputs("task-1").unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].input_id, "a");
+        assert_eq!(inputs[0].payload, b"first");
+        assert_eq!(inputs[0].media_type, "text/x-diff");
+        assert_eq!(inputs[1].input_id, "b");
+        assert_eq!(inputs[1].payload, b"two");
+        // Idempotent: re-storing the same (task, input) does not overwrite or dup.
+        store
+            .put_task_input("task-1", "a", 0, "text/x-diff", 5, &"a".repeat(64), b"CHANGED", 200)
+            .unwrap();
+        let again = store.list_task_inputs("task-1").unwrap();
+        assert_eq!(again.len(), 2);
+        assert_eq!(again[0].payload, b"first");
+        // A different task is isolated.
+        assert!(store.list_task_inputs("task-2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn task_inputs_are_sealed_at_rest() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store
+            .put_task_input("task-1", "a", 0, "text/plain", 6, &"a".repeat(64), b"secret", 100)
+            .unwrap();
+        // The plaintext must not appear in the raw column.
+        let raw: Vec<u8> = store
+            .conn
+            .query_row("SELECT payload FROM task_inputs WHERE input_id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!raw.windows(6).any(|w| w == b"secret"));
     }
 
     #[test]
