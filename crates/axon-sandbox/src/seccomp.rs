@@ -106,6 +106,52 @@ impl SeccompPolicy {
         Self::deny_all_except(common_worker_syscalls(), deny)
     }
 
+    /// A default-deny allowlist for an **agent-tool worker** (design
+    /// 2026-07-19-agent-harness): a full agent CLI (Codex, herdr, OpenCode — Node
+    /// runtimes) run confined, reaching its model through a loopback proxy.
+    ///
+    /// Unlike the adapter profiles this one permits the **socket family** and process
+    /// creation, because the agent runtime forks/threads and must open a TCP socket to
+    /// the in-sandbox proxy. Allowing `socket`/`connect` does NOT open the network: the
+    /// worker runs in a net namespace with **loopback only and no route out**, so the
+    /// only address it can reach is `127.0.0.1` (the proxy). seccomp cannot restrict
+    /// `connect` to loopback — its argument is a pointer — so that seal is the
+    /// namespace's job; this filter only enables the syscalls the runtime needs.
+    ///
+    /// This set is a *principled starting point* — a Node runtime touches many
+    /// syscalls, so the exact list is tuned by live syscall discovery when a real
+    /// agent runs under it (as the other profiles were).
+    pub fn agent_worker_baseline(deny: DenyAction) -> Self {
+        let mut allow = common_worker_syscalls();
+        allow.extend_from_slice(&[
+            // Process creation (a runtime forks/threads/execs, like the shell profile).
+            libc::SYS_vfork,
+            libc::SYS_clone,
+            libc::SYS_clone3,
+            // The socket family — only loopback is reachable (net namespace has no route).
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_accept,
+            libc::SYS_accept4,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
+            libc::SYS_setsockopt,
+            libc::SYS_getsockopt,
+            libc::SYS_shutdown,
+            libc::SYS_socketpair,
+            // Async runtime primitives (libuv/V8 event loop).
+            libc::SYS_epoll_wait,
+            libc::SYS_eventfd2,
+            libc::SYS_timerfd_create,
+            libc::SYS_timerfd_settime,
+            libc::SYS_timerfd_gettime,
+            libc::SYS_signalfd4,
+        ]);
+        Self::deny_all_except(allow, deny)
+    }
+
     /// Compiles the policy and writes the BPF program to an anonymous `memfd`,
     /// returning the (non-`CLOEXEC`, so inheritable) fd to hand to `bwrap
     /// --seccomp` (design §13.1, ADR-0006). Because everything the daemon opens via
@@ -435,6 +481,32 @@ mod tests {
             );
         }
         assert!(shell.allow.len() > adapter.allow.len());
+    }
+
+    #[test]
+    fn agent_profile_adds_the_socket_family_and_process_creation() {
+        let agent = SeccompPolicy::agent_worker_baseline(DenyAction::KillProcess);
+        // An agent runtime opens a socket to the loopback proxy and forks/threads.
+        for needed in [
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_clone,
+            libc::SYS_epoll_wait,
+            libc::SYS_eventfd2,
+        ] {
+            assert!(agent.allow.contains(&needed), "agent must allow {needed}");
+        }
+        // It is a strict superset of the adapter profile (adds sockets + spawning).
+        let adapter = SeccompPolicy::adapter_worker_baseline(DenyAction::KillProcess);
+        for &s in &adapter.allow {
+            assert!(agent.allow.contains(&s), "agent must be a superset ({s})");
+        }
+        assert!(agent.allow.len() > adapter.allow.len());
+        // The network reachability is bounded by the net namespace, not this filter —
+        // socket() is allowed here; the fresh loopback-only ns is what seals egress.
+        assert!(agent.compile().is_ok());
     }
 
     /// Enforcement, validated unprivileged: under the adapter profile a process
