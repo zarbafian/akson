@@ -192,7 +192,7 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         }
         _ => {
             return usage(
-                "axon processor add <id> <provider> <host> <port> <pin-sha256> [--path <path>] [--auth <bearer|none|header>]",
+                "axon processor add <id> <provider> <host> <port> <ca|pin-sha256> [--path <path>] [--auth <bearer|none|header>]",
             )
         }
     };
@@ -205,13 +205,20 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             _ => {}
         }
     }
+    // `ca` selects a public endpoint validated against the CA roots (no pin, global
+    // egress); anything else is a pinned cert (typically a local/self-signed server).
+    let (local, pin) = if pin.eq_ignore_ascii_case("ca") {
+        (false, None)
+    } else {
+        (true, Some(pin))
+    };
     let result = match call(&ControlRequest::ProcessorAdd {
         processor_id: id.clone(),
         provider,
         origin_host: host,
         origin_port: port,
-        local: true,
-        tls_certificate_sha256: Some(pin),
+        local,
+        tls_certificate_sha256: pin,
         path,
         auth,
     }) {
