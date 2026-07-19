@@ -363,7 +363,6 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         }))
     };
     let outcome = record();
-    drop(record);
 
     match outcome {
         Ok(value) => {
@@ -408,6 +407,18 @@ fn collect_artifacts(
     let entries: Vec<ArtifactEntry> = serde_json::from_slice(&raw)
         .map_err(|e| problem_detail(422, "bad-artifacts", "the artifact manifest is invalid", e))?;
     for entry in &entries {
+        // A hostile worker can write `artifacts.json` directly (bypassing the SDK,
+        // which slug-checks the role). Re-validate before joining into a host path:
+        // an absolute `role` like `/etc/passwd`, or one containing `..`, would
+        // otherwise make the unconfined daemon read arbitrary host files and deliver
+        // them as an "artifact".
+        if !is_slug_role(&entry.role) {
+            return Err(problem(
+                422,
+                "bad-artifact-role",
+                "an artifact role is not a safe name",
+            ));
+        }
         let bytes = std::fs::read(output.join("artifacts").join(&entry.role)).map_err(|e| {
             problem_detail(
                 422,
@@ -443,6 +454,18 @@ fn collect_artifacts(
         });
     }
     Ok(entries.len())
+}
+
+/// Whether `s` is a safe single path component (`[a-z0-9][a-z0-9-]*`): no `/`, no
+/// `..`, non-empty. The SDK enforces this when writing an artifact; the daemon
+/// re-enforces it on the worker-supplied role before any host-path join.
+fn is_slug_role(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn path_str(p: &Path) -> Result<&str, Problem> {
@@ -565,6 +588,32 @@ mod tests {
         .unwrap();
         let (mut p, mut o) = (Vec::new(), Vec::new());
         assert!(collect_artifacts(&dir, "task-1", &mut p, &mut o).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_malicious_artifact_role_cannot_escape_the_output_dir() {
+        let dir = std::env::temp_dir().join(format!("axon-wr-esc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A hostile worker names an absolute host path (and a traversal) as the role.
+        for role in ["/etc/passwd", "../../../../etc/passwd", "a/b", "..", ""] {
+            std::fs::write(
+                dir.join("artifacts.json"),
+                format!(r#"[{{"role":{role:?},"media_type":"text/plain"}}]"#),
+            )
+            .unwrap();
+            let (mut p, mut o) = (Vec::new(), Vec::new());
+            let err = collect_artifacts(&dir, "task-1", &mut p, &mut o).unwrap_err();
+            // Rejected before any read — never touches the host path.
+            assert_eq!(err.status, 422, "role {role:?} must be refused");
+            assert!(o.is_empty());
+        }
+        // is_slug_role accepts only safe single components.
+        assert!(is_slug_role("findings"));
+        assert!(is_slug_role("sarif-1"));
+        assert!(!is_slug_role("/etc/passwd"));
+        assert!(!is_slug_role("../x"));
+        assert!(!is_slug_role("A"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

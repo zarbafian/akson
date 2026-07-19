@@ -333,10 +333,7 @@ fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
 /// malformed framing (returns the bytes decoded up to that point).
 fn dechunk(mut data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    loop {
-        let Some(nl) = data.windows(2).position(|w| w == b"\r\n") else {
-            break;
-        };
+    while let Some(nl) = data.windows(2).position(|w| w == b"\r\n") {
         let Some(hex) = std::str::from_utf8(&data[..nl]).ok().and_then(|l| {
             let tok = l.split(';').next()?.trim();
             usize::from_str_radix(tok, 16).ok()
@@ -1012,7 +1009,7 @@ mod tests {
             p2.len(),
             p2
         );
-        let (status, body) = super::split_response(raw.as_bytes()).expect("parse");
+        let (status, body) = super::split_response(raw.as_bytes()).unwrap();
         assert_eq!(status, 200);
         // Reassembled across chunks and valid JSON (the adapter's next step).
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1022,7 +1019,7 @@ mod tests {
     #[test]
     fn split_response_passes_a_content_length_body_through() {
         let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
-        let (status, body) = super::split_response(raw).expect("parse");
+        let (status, body) = super::split_response(raw).unwrap();
         assert_eq!(status, 200);
         assert_eq!(body, br#"{"a":1}"#);
     }
