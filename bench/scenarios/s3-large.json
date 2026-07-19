@@ -1,0 +1,8 @@
+{ "performer": "bob",
+  "task_type": "https://axon.invalid/task/code-review/v1",
+  "objective": "Review this refactor for correctness, error handling, and edge cases.",
+  "inputs": [{ "id": "diff", "media_type": "text/x-diff",
+    "text": "--- a/cache.go\n+++ b/cache.go\n@@ -10,20 +10,34 @@\n type Cache struct {\n-\tm map[string]string\n+\tmu sync.RWMutex\n+\tm  map[string][]byte\n+\tcap int\n }\n \n-func (c *Cache) Get(k string) string {\n-\treturn c.m[k]\n+func (c *Cache) Get(k string) ([]byte, bool) {\n+\tc.mu.RLock()\n+\tdefer c.mu.RUnlock()\n+\tv, ok := c.m[k]\n+\treturn v, ok\n }\n \n-func (c *Cache) Set(k, v string) {\n-\tc.m[k] = v\n+func (c *Cache) Set(k string, v []byte) {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\tif len(c.m) >= c.cap {\n+\t\tfor kk := range c.m { delete(c.m, kk); break }\n+\t}\n+\tc.m[k] = v\n }\n" }],
+  "deliverables": [{ "role": "review", "media_type": "text/plain" }],
+  "capabilities": ["respond", "read_supplied_inputs", "processor_use"],
+  "deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 8192 }

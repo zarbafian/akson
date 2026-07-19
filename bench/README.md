@@ -49,27 +49,46 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0   # or use a 22.04
 
 ## Start the daemons
 
+The performer configures a processor for **every model back-end whose key is
+present** (openai / anthropic / gemini) and runs the adapter named by `PROVIDER`.
+The keys are stored sealed on bob and never leave it.
+
 ```
-# bob (performer): SELF_IP is bob's VPC/private IP; OPENAI_API_KEY is your key.
-ssh bob 'cd ~/axon/bench && ROLE=performer SELF_IP=10.0.0.2 \
-         OPENAI_API_KEY=sk-... MODEL=gpt-4o-mini ./serve.sh'
+# bob (performer): pass whichever keys you have; PROVIDER picks the initial worker.
+ssh bob 'cd ~/axon/bench && ROLE=performer SELF_IP=10.0.0.2 PROVIDER=openai \
+         OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... ./serve.sh'
 
 # alice (requester): SELF_IP is alice's IP.
 ssh alice 'cd ~/axon/bench && ROLE=requester SELF_IP=10.0.0.1 ./serve.sh'
 ```
 
 Open the two ports between the droplets (a DO firewall / VPC rule): each host's
-RECEIVE and PAIR ports (alice 18443/19443, bob 18444/19444 by default).
+RECEIVE and PAIR ports (alice 18443/19443, bob 18444/19444 by default). Then pair
+them once (invite on alice → copy to bob → accept → both `peer confirm`).
 
 ## Run the bench
+
+Single-provider, per-phase timing:
 
 ```
 REQUESTER_SSH=alice PERFORMER_SSH=bob \
   ALICE_IP=10.0.0.1 BOB_IP=10.0.0.2 ITERS=20 ./run-bench.sh
 ```
 
-It pairs the two once, then times `send → approve → run → deliver` for `ITERS`
-iterations and prints per-phase p50/p95/max plus the whole-loop total.
+Times `send → approve → run → deliver` for `ITERS` iterations and prints per-phase
+p50/p95/max plus the whole-loop total.
+
+**Matrix** — every back-end × every scenario in `scenarios/`, run *on alice*:
+
+```
+scp -i <key> bench/bench-matrix.sh bench/scenarios alice:~/axon/bench/   # if not already synced
+ssh alice 'cd ~/axon/bench && BOB_PRIV=10.0.0.2 PROVIDERS="openai anthropic gemini" ITERS=10 ./bench-matrix.sh'
+```
+
+For each provider it switches bob's active worker (processors persist, so no key
+re-enters), then times the full round trip for every scenario, and prints a
+`provider × scenario` table of `n / ok / p50 / p95` (loop seconds). Add or edit
+`scenarios/*.json` to extend the matrix.
 
 ## Reading the numbers
 
