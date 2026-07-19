@@ -11,7 +11,9 @@
 //! independent of the isolation mechanism.
 
 mod gate;
+mod inert;
 mod staging;
 
 pub use gate::{gate_outputs, GateError, GateReject, OutputChannel, ProposedOutput};
+pub use inert::{check_inert, NotInert};
 pub use staging::{stage_inputs, StageError, StageItem, StagedInput, StagedInputs};

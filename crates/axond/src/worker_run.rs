@@ -28,7 +28,7 @@ use axon_sandbox::{
     SeccompPolicy,
 };
 use axon_store::StoreError;
-use axon_worker::{gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem};
+use axon_worker::{check_inert, gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem};
 
 use crate::bootstrap::DaemonState;
 use crate::broker::run_processor_call;
@@ -288,6 +288,16 @@ fn collect_artifacts(
         let bytes = std::fs::read(output.join("artifacts").join(&entry.role)).map_err(|e| {
             problem_detail(422, "missing-artifact", "a declared artifact was not written", e)
         })?;
+        // A renderable artifact must be inert — no scripts, event handlers, or
+        // external fetches that would execute when the requester views it (§20.4).
+        check_inert(&entry.media_type, &bytes).map_err(|e| {
+            problem_detail(
+                403,
+                "artifact-not-inert",
+                "an artifact carries active content and was refused",
+                e,
+            )
+        })?;
         proposed.push(ProposedOutput {
             channel: OutputChannel::Artifact,
             recipient: REQUEST_ORIGIN.to_owned(),
@@ -383,6 +393,28 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn a_non_inert_artifact_is_refused() {
+        let dir = std::env::temp_dir().join(format!("axon-wr-inert-{}", std::process::id()));
+        let artifacts = dir.join("artifacts");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(
+            dir.join("artifacts.json"),
+            br#"[{"role":"diagram","media_type":"image/svg+xml"}]"#,
+        )
+        .unwrap();
+        // An SVG carrying a script must be refused before it is recorded.
+        std::fs::write(
+            artifacts.join("diagram"),
+            b"<svg><script>alert(1)</script></svg>",
+        )
+        .unwrap();
+        let (mut p, mut o) = (Vec::new(), Vec::new());
+        let err = collect_artifacts(&dir, "task-1", &mut p, &mut o).unwrap_err();
+        assert_eq!(err.status, 403);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
