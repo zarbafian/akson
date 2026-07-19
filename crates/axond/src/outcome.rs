@@ -29,6 +29,7 @@ use crate::control::Problem;
 /// `outcome_key` is this endpoint's requester-outcome signing key. `signed_at` is
 /// RFC 3339. Fails closed: the manifest must verify, and the result must answer a
 /// request this daemon actually sent.
+#[allow(clippy::too_many_arguments)]
 pub fn finalize_result(
     store: &Store,
     requester: &Identity,
