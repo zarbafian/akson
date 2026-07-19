@@ -75,9 +75,53 @@ fn the_adapter_reviews_an_input_via_a_brokered_model_call() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// Reads one broker request and answers with a canned OpenAI chat-completion,
-/// returning the request it saw.
+#[test]
+fn the_adapter_emits_validated_sarif_as_an_artifact() {
+    let tmp = std::env::temp_dir().join(format!("axon-openai-sarif-{}", std::process::id()));
+    let input_root = tmp.join("inputs");
+    let output_root = tmp.join("output");
+    std::fs::create_dir_all(&output_root).unwrap();
+    stage_input(&input_root, "diff", b"--- a\n+++ b\n@@\n-x\n+y\n");
+
+    // The mock model returns a SARIF report as its message content.
+    let sarif = r#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[{"message":{"text":"nit on line 1"}}]}]}"#;
+    let (worker_end, daemon_end) = broker_socketpair().unwrap();
+    let sarif_owned = sarif.to_owned();
+    let mock = std::thread::spawn(move || mock_daemon_returning(daemon_end, &sarif_owned));
+
+    let status = Command::new(env!("CARGO_BIN_EXE_axon-adapter-openai"))
+        .args(["--processor", "reviewer", "--model", "m", "--sarif"])
+        .env("AXON_INPUT_ROOT", &input_root)
+        .env("AXON_OUTPUT_ROOT", &output_root)
+        .env("AXON_BROKER_FD", worker_end.as_raw_fd().to_string())
+        .status()
+        .expect("spawn adapter");
+    drop(worker_end);
+    mock.join().unwrap();
+    assert!(status.success());
+
+    // The validated SARIF is written as an artifact, recorded with its media type.
+    let artifact = std::fs::read(output_root.join("artifacts").join("findings")).unwrap();
+    assert_eq!(artifact, sarif.as_bytes());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output_root.join("artifacts.json")).unwrap()).unwrap();
+    assert_eq!(manifest[0]["role"], "findings");
+    assert_eq!(manifest[0]["media_type"], "application/sarif+json");
+    // The text response summarizes the finding count.
+    let response = std::fs::read_to_string(output_root.join("response")).unwrap();
+    assert!(response.contains("1 finding"), "response: {response}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Reads one broker request and answers with a canned OpenAI chat-completion whose
+/// assistant content is "Looks good; one nit on line 1.", returning the request.
 fn mock_daemon(stream: UnixStream) -> serde_json::Value {
+    mock_daemon_returning(stream, "Looks good; one nit on line 1.")
+}
+
+/// As `mock_daemon`, but the assistant's message content is `content`.
+fn mock_daemon_returning(stream: UnixStream, content: &str) -> serde_json::Value {
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -85,7 +129,7 @@ fn mock_daemon(stream: UnixStream) -> serde_json::Value {
     let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
 
     let completion = serde_json::json!({
-        "choices": [{ "message": { "role": "assistant", "content": "Looks good; one nit on line 1." } }]
+        "choices": [{ "message": { "role": "assistant", "content": content } }]
     })
     .to_string();
     let reply = serde_json::json!({

@@ -94,6 +94,7 @@ name = "axon-adapter-openai"
 version = "0.0.1"
 dependencies = [
  "axon-adapter-sdk",
+ "axon-evidence",
  "axon-sandbox",
  "hex",
  "serde_json",

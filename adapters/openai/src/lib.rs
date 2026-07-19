@@ -42,6 +42,16 @@ pub fn extract_content(reply: &serde_json::Value) -> Result<String, String> {
         .ok_or_else(|| "the model reply had no choices[0].message.content".to_owned())
 }
 
+/// Validates that `bytes` is a well-formed SARIF report (design §14.2) and returns
+/// how many findings it carries. A worker's SARIF is untrusted, so it is parsed
+/// under the standard limits before it is emitted as evidence — a model that
+/// returns malformed or oversized SARIF fails closed rather than shipping garbage.
+pub fn validate_sarif(bytes: &[u8]) -> Result<usize, String> {
+    let report = axon_evidence::parse_sarif(bytes, &axon_evidence::SarifLimits::default())
+        .map_err(|e| format!("the model did not return valid SARIF: {e}"))?;
+    Ok(report.findings.len())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -79,6 +89,17 @@ mod tests {
             "response": "unauthorized",
         });
         assert!(extract_content(&reply).is_err());
+    }
+
+    #[test]
+    fn validate_sarif_accepts_a_report_and_counts_findings() {
+        let sarif = br#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[
+            {"message":{"text":"nit on line 1"}},
+            {"message":{"text":"nit on line 2"}}
+        ]}]}"#;
+        assert_eq!(validate_sarif(sarif).unwrap(), 2);
+        // Garbage the model might return is refused.
+        assert!(validate_sarif(b"not sarif at all").is_err());
     }
 
     #[test]
