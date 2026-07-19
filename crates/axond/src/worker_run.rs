@@ -11,11 +11,13 @@
 //!   manifest (the same object `axon task deliver` then sends to the requester).
 //!
 //! The worker is the operator's command (`AXON_WORKER_CMD`), run as
-//! `/bin/sh -c <cmd>`. It is confined by the M9 clean-worker baseline, which
-//! blocks the fork/exec an external program needs — so a v1 worker is a
-//! pure-shell adapter (a real model-backed worker needs a broader seccomp
-//! allowlist, a later addition). The daemon refuses to run un-confined: if no
-//! delegated cgroup is available, the call fails closed rather than launch.
+//! `/bin/sh -c <cmd>` and confined by the M9 clean-worker baseline. The baseline
+//! permits a shell to spawn external tools and a real adapter to do socket I/O on
+//! the broker fd, so a full model-backed adapter runs — while `socket()`/`connect()`
+//! stay denied, keeping the network sealed. A `processor_use` grant opens a brokered
+//! model channel; an `artifact_export` grant lets the worker return bounded
+//! artifacts alongside (or instead of) the text response. The daemon refuses to run
+//! un-confined: with no delegated cgroup, the call fails closed rather than launch.
 
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -341,5 +343,60 @@ fn problem_detail(status: u16, kind: &str, title: &str, e: impl std::fmt::Displa
         title: title.to_owned(),
         status,
         detail: Some(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_artifacts_records_declared_artifacts_and_tolerates_none() {
+        let dir = std::env::temp_dir().join(format!("axon-wr-a-{}", std::process::id()));
+        let artifacts = dir.join("artifacts");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(
+            dir.join("artifacts.json"),
+            br#"[{"role":"findings","media_type":"application/sarif+json"}]"#,
+        )
+        .unwrap();
+        std::fs::write(artifacts.join("findings"), b"{\"runs\":[]}").unwrap();
+
+        let mut proposed = Vec::new();
+        let mut outputs = Vec::new();
+        let n = collect_artifacts(&dir, "task-1", &mut proposed, &mut outputs).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(proposed.len(), 1);
+        assert!(matches!(proposed[0].channel, OutputChannel::Artifact));
+        assert_eq!(proposed[0].media_type, "application/sarif+json");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].role, "findings");
+        assert!(matches!(outputs[0].kind, OutputKind::Artifact));
+
+        // No manifest → zero artifacts, no error.
+        let empty = std::env::temp_dir().join(format!("axon-wr-e-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let (mut p2, mut o2) = (Vec::new(), Vec::new());
+        assert_eq!(collect_artifacts(&empty, "task-1", &mut p2, &mut o2).unwrap(), 0);
+        assert!(o2.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn a_declared_but_unwritten_artifact_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("axon-wr-m-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Manifest references an artifact whose file was never written.
+        std::fs::write(
+            dir.join("artifacts.json"),
+            br#"[{"role":"ghost","media_type":"text/plain"}]"#,
+        )
+        .unwrap();
+        let (mut p, mut o) = (Vec::new(), Vec::new());
+        assert!(collect_artifacts(&dir, "task-1", &mut p, &mut o).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
