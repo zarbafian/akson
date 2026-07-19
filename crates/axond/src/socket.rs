@@ -70,6 +70,9 @@ pub enum ControlRequest {
         task_id: String,
         #[serde(default)]
         processor: Option<String>,
+        /// Additionally grant `artifact_export` (bounded artifacts, e.g. SARIF).
+        #[serde(default)]
+        artifacts: bool,
     },
     /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
     TaskDeny { task_id: String, reason: String },

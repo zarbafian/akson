@@ -184,23 +184,44 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         None => launch(&spec)?,
     }
 
-    let body = std::fs::read(output.join("response")).map_err(|_| {
-        problem(
-            422,
-            "no-response",
-            "the worker produced no /output/response",
-        )
-    })?;
+    // Collect what the worker produced: an optional response (/output/response) and
+    // any artifacts it declared (/output/artifacts.json + files). Every output is
+    // gated against the granted scope (§7.2 step 10) before it is recorded — the
+    // adapter cannot pick a recipient or exceed a budget here.
+    let mut proposed = Vec::new();
+    let mut outputs = Vec::new();
+    let mut response_bytes = 0usize;
 
-    // The output must fall inside the granted scope (§7.2 step 10) before it is
-    // recorded — a response, to the request origin, within the byte budget.
-    let proposed = ProposedOutput {
-        channel: OutputChannel::Response,
-        recipient: REQUEST_ORIGIN.to_owned(),
-        media_type: "text/plain".to_owned(),
-        bytes: body.len() as u64,
-    };
-    gate_outputs(&capabilities, &[proposed]).map_err(|e| {
+    if let Ok(body) = std::fs::read(output.join("response")) {
+        response_bytes = body.len();
+        proposed.push(ProposedOutput {
+            channel: OutputChannel::Response,
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: "text/plain".to_owned(),
+            bytes: body.len() as u64,
+        });
+        outputs.push(ResultOutput {
+            role: "response".to_owned(),
+            artifact_id: format!("resp-{task_id}"),
+            kind: OutputKind::Response,
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: "text/plain".to_owned(),
+            byte_length: body.len() as u64,
+            sha256: hex_sha256(&body),
+        });
+    }
+
+    let artifact_count = collect_artifacts(&output, task_id, &mut proposed, &mut outputs)?;
+
+    if outputs.is_empty() {
+        return Err(problem(
+            422,
+            "no-output",
+            "the worker produced no /output/response or artifacts",
+        ));
+    }
+
+    gate_outputs(&capabilities, &proposed).map_err(|e| {
         problem_detail(
             403,
             "output-denied",
@@ -212,15 +233,7 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     // Phase 3 — record the result under the lock, producing the signed manifest.
     let submission = ResultSubmission {
         task_id: task_id.to_owned(),
-        outputs: vec![ResultOutput {
-            role: "response".to_owned(),
-            artifact_id: format!("resp-{task_id}"),
-            kind: OutputKind::Response,
-            recipient: REQUEST_ORIGIN.to_owned(),
-            media_type: "text/plain".to_owned(),
-            byte_length: body.len() as u64,
-            sha256: hex_sha256(&body),
-        }],
+        outputs,
         evidence: vec![],
         slots: vec![],
     };
@@ -235,15 +248,61 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         )?
     };
 
-    // The response bytes were recorded (digest + length) into the durable result;
-    // the run directory is scratch, so clear it.
+    // The outputs were recorded (digest + length) into the durable result; the run
+    // directory is scratch, so clear it.
     let _ = std::fs::remove_dir_all(&run_dir);
     Ok(serde_json::json!({
         "ran": true,
         "task_id": task_id,
-        "response_bytes": body.len(),
+        "response_bytes": response_bytes,
+        "artifacts": artifact_count,
         "result": manifest,
     }))
+}
+
+/// One artifact the worker declared in `/output/artifacts.json` (mirrors the SDK's
+/// `ArtifactEntry`).
+#[derive(serde::Deserialize)]
+struct ArtifactEntry {
+    role: String,
+    media_type: String,
+}
+
+/// Reads the worker's declared artifacts and appends a gated proposal + a result
+/// output for each. Returns how many were collected.
+fn collect_artifacts(
+    output: &Path,
+    task_id: &str,
+    proposed: &mut Vec<ProposedOutput>,
+    outputs: &mut Vec<ResultOutput>,
+) -> Result<usize, Problem> {
+    let raw = match std::fs::read(output.join("artifacts.json")) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(0),
+    };
+    let entries: Vec<ArtifactEntry> = serde_json::from_slice(&raw)
+        .map_err(|e| problem_detail(422, "bad-artifacts", "the artifact manifest is invalid", e))?;
+    for entry in &entries {
+        let bytes = std::fs::read(output.join("artifacts").join(&entry.role)).map_err(|e| {
+            problem_detail(422, "missing-artifact", "a declared artifact was not written", e)
+        })?;
+        proposed.push(ProposedOutput {
+            channel: OutputChannel::Artifact,
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: entry.media_type.clone(),
+            bytes: bytes.len() as u64,
+        });
+        outputs.push(ResultOutput {
+            role: entry.role.clone(),
+            artifact_id: format!("art-{task_id}-{}", entry.role),
+            kind: OutputKind::Artifact,
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: entry.media_type.clone(),
+            byte_length: bytes.len() as u64,
+            sha256: hex_sha256(&bytes),
+        });
+    }
+    Ok(entries.len())
 }
 
 fn path_str(p: &Path) -> Result<&str, Problem> {

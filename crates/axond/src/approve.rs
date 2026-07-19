@@ -44,6 +44,7 @@ const MAX_OPERATIONS: u32 = 1_000_000;
 /// §10.2 then §12.3). `local` is this endpoint's identity — the decider and the
 /// work-order issuer. Fails closed *before* the head is locked: the requester must
 /// be paired, and the accept must grant at least one capability.
+#[allow(clippy::too_many_arguments)]
 pub fn approve_and_issue(
     store: &Store,
     local: &Identity,
@@ -51,6 +52,7 @@ pub fn approve_and_issue(
     work_order_key: &WorkOrderKey,
     task_id: &str,
     processor: Option<&str>,
+    grant_artifacts: bool,
     now: i64,
 ) -> Result<serde_json::Value, Problem> {
     // Load the submitted contract to pre-check the requester and capabilities.
@@ -134,6 +136,7 @@ pub fn approve_and_issue(
         policy_version: POLICY_VERSION,
         max_operations: MAX_OPERATIONS,
         processor_grant: processor,
+        grant_artifacts,
     };
     let issued = issue_for_accepted(store, task_id, &config, now)?;
 
@@ -386,6 +389,7 @@ mod tests {
             &work_order_key(),
             &task_id,
             None,
+            false,
             NOW,
         )
         .unwrap();
@@ -425,6 +429,7 @@ mod tests {
             &work_order_key(),
             &task_id,
             None,
+            false,
             NOW,
         )
         .unwrap_err();
@@ -448,6 +453,7 @@ mod tests {
             &work_order_key(),
             &task_id,
             None,
+            false,
             NOW,
         )
         .unwrap_err();

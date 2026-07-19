@@ -63,6 +63,8 @@ pub enum Error {
     Manifest(serde_json::Error),
     #[error("no input named {0:?} was approved for this task")]
     UnknownInput(String),
+    #[error("artifact role {0:?} is not a safe slug ([a-z0-9][a-z0-9-]*)")]
+    UnsafeArtifactRole(String),
     #[error("input {id:?} does not match its manifest digest (expected {expected}, got {got})")]
     InputDigestMismatch {
         id: String,
@@ -191,6 +193,50 @@ impl Task {
         std::fs::write(self.output_root.join("response"), body)?;
         Ok(())
     }
+
+    /// Emits a bounded artifact (e.g. SARIF findings) under `role`, recording its
+    /// media type in `/output/artifacts.json`. The gateway gates every artifact
+    /// against the `artifact_export` grant (media type in the allowed set, count,
+    /// byte budget, recipient) before it is delivered — this only proposes one.
+    /// `role` must be a slug (`[a-z0-9][a-z0-9-]*`), so it cannot escape `/output`.
+    pub fn write_artifact(&self, role: &str, media_type: &str, bytes: &[u8]) -> Result<(), Error> {
+        if !is_slug(role) {
+            return Err(Error::UnsafeArtifactRole(role.to_owned()));
+        }
+        let dir = self.output_root.join("artifacts");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(role), bytes)?;
+
+        // Append to the manifest the gateway reads to learn each artifact's media
+        // type (read-modify-write; one adapter, single-threaded).
+        let manifest = self.output_root.join("artifacts.json");
+        let mut entries: Vec<ArtifactEntry> = match std::fs::read(&manifest) {
+            Ok(raw) => serde_json::from_slice(&raw).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        entries.retain(|e| e.role != role);
+        entries.push(ArtifactEntry {
+            role: role.to_owned(),
+            media_type: media_type.to_owned(),
+        });
+        std::fs::write(&manifest, serde_json::to_vec(&entries).map_err(Error::Manifest)?)?;
+        Ok(())
+    }
+}
+
+/// One artifact the worker produced, as listed in `/output/artifacts.json`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactEntry {
+    pub role: String,
+    pub media_type: String,
+}
+
+/// Whether `s` is a slug (`[a-z0-9][a-z0-9-]*`) — a safe single path component.
+fn is_slug(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// The adapter's side of the broker channel.
@@ -269,6 +315,33 @@ mod tests {
             std::fs::read(output.path().join("response")).unwrap(),
             b"reviewed"
         );
+    }
+
+    #[test]
+    fn writes_an_artifact_and_records_its_media_type() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        stage(input.path(), "diff", b"x");
+        let task = Task::from_dirs(input.path(), output.path(), None).unwrap();
+
+        task.write_artifact("findings", "application/sarif+json", b"{\"runs\":[]}")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(output.path().join("artifacts").join("findings")).unwrap(),
+            b"{\"runs\":[]}"
+        );
+        let manifest: Vec<ArtifactEntry> =
+            serde_json::from_slice(&std::fs::read(output.path().join("artifacts.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].role, "findings");
+        assert_eq!(manifest[0].media_type, "application/sarif+json");
+
+        // A traversing role is refused.
+        assert!(matches!(
+            task.write_artifact("../escape", "text/plain", b"x"),
+            Err(Error::UnsafeArtifactRole(_))
+        ));
     }
 
     #[test]

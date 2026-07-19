@@ -278,14 +278,18 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         },
         Some("approve") => match next_arg(args) {
             Some(id) => {
-                // Optional `--processor <id>`: additionally grant processor_use.
-                let processor = match next_arg(args).as_deref() {
-                    Some("--processor") => next_arg(args),
-                    _ => None,
-                };
-                task_approve(&id, processor.as_deref())
+                // Optional grants: `--processor <id>` (processor_use), `--artifacts`.
+                let (mut processor, mut artifacts) = (None, false);
+                while let Some(flag) = next_arg(args) {
+                    match flag.as_str() {
+                        "--processor" => processor = next_arg(args),
+                        "--artifacts" => artifacts = true,
+                        _ => {}
+                    }
+                }
+                task_approve(&id, processor.as_deref(), artifacts)
             }
-            None => usage("axon task approve <task-id> [--processor <processor-id>]"),
+            None => usage("axon task approve <task-id> [--processor <processor-id>] [--artifacts]"),
         },
         Some("run") => match next_arg(args) {
             Some(id) => task_run(&id),
@@ -431,10 +435,11 @@ fn task_show(task_id: &str) -> ExitCode {
 }
 
 /// Approve a Task: accept it and issue the one-shot work order (`axon task approve`).
-fn task_approve(task_id: &str, processor: Option<&str>) -> ExitCode {
+fn task_approve(task_id: &str, processor: Option<&str>, artifacts: bool) -> ExitCode {
     let result = match call(&ControlRequest::TaskApprove {
         task_id: task_id.to_owned(),
         processor: processor.map(str::to_owned),
+        artifacts,
     }) {
         Ok(r) => r,
         Err(code) => return code,

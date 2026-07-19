@@ -17,8 +17,8 @@
 //! so the composition is pure and testable.
 
 use axon_authority::{
-    Audience, Budgets, CapabilityVector, Grant, IssuedWorkOrder, ProcessorUseScope, ReadInputsScope,
-    RequestOrigin, RespondScope, WorkOrder, WorkOrderKey,
+    ArtifactExportScope, Audience, Budgets, CapabilityVector, Grant, IssuedWorkOrder,
+    ProcessorUseScope, ReadInputsScope, RequestOrigin, RespondScope, WorkOrder, WorkOrderKey,
 };
 use axon_contract::{parse_payload, Capability, HeadState, Identity, ResultRecipient};
 use axon_store::{ClaimOutcome, Store};
@@ -47,6 +47,10 @@ pub struct IssueConfig<'a> {
     /// the outward capability denied; `Some(id)` grants it only if the contract
     /// requested processor use and the processor is configured.
     pub processor_grant: Option<&'a str>,
+    /// The operator's explicit decision to grant `artifact_export` (design §12.1);
+    /// `false` (the default) keeps it denied. Granted only if the contract requested
+    /// it; the allowed media types are the contract's deliverables.
+    pub grant_artifacts: bool,
 }
 
 /// Issues and durably claims the work order for an accepted Task (design §12.3).
@@ -146,6 +150,31 @@ pub fn issue_for_accepted(
             processor_id: processor_id.to_owned(),
             input_ids: input_ids.clone(),
             max_cost_microusd: contract.limits.max_cost_microusd.unwrap_or(0),
+            max_bytes: contract.limits.max_response_bytes,
+        }));
+    }
+
+    // Likewise, the operator may grant `artifact_export` — the other outward
+    // capability — letting the peer task return bounded artifacts (e.g. SARIF
+    // findings). The allowed media types are exactly the contract's deliverables, so
+    // the worker cannot smuggle out an unrequested format.
+    if config.grant_artifacts {
+        if !contract
+            .requested_capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::ArtifactExport))
+        {
+            return Err(problem(
+                422,
+                "artifacts-not-requested",
+                "this task did not request artifact export; it cannot be granted",
+            ));
+        }
+        grants.push(Grant::ArtifactExport(ArtifactExportScope {
+            recipient: recipient.to_owned(),
+            task_id: task_id.to_owned(),
+            media_types: contract.deliverables.iter().map(|d| d.media_type.clone()).collect(),
+            max_count: contract.deliverables.len().max(1) as u32,
             max_bytes: contract.limits.max_response_bytes,
         }));
     }
@@ -295,6 +324,7 @@ mod tests {
     ) -> IssueConfig<'a> {
         IssueConfig {
             processor_grant: processor,
+            grant_artifacts: false,
             issuer,
             issuer_assurance: "local-human",
             daemon: "axond",
@@ -514,6 +544,48 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.status, 404);
+    }
+
+    #[test]
+    fn an_explicit_artifact_grant_adds_artifact_export_when_requested() {
+        let store = store();
+        let task_id =
+            submit_and_accept(&store, &["respond", "read_supplied_inputs", "artifact_export"]);
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let issued = issue_for_accepted(
+            &store,
+            &task_id,
+            &IssueConfig {
+                grant_artifacts: true,
+                ..config(&key, &issuer, &"n".repeat(43))
+            },
+            NOW,
+        )
+        .unwrap();
+        assert!(issued
+            .order
+            .capabilities
+            .grants_component(CapabilityComponent::ArtifactExport));
+    }
+
+    #[test]
+    fn an_artifact_grant_the_contract_did_not_request_is_refused() {
+        let store = store();
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs"]);
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let err = issue_for_accepted(
+            &store,
+            &task_id,
+            &IssueConfig {
+                grant_artifacts: true,
+                ..config(&key, &issuer, &"n".repeat(43))
+            },
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 422);
     }
 
     #[test]

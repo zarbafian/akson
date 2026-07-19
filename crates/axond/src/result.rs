@@ -396,6 +396,7 @@ mod tests {
             &WorkOrderKey::from_bytes([7u8; 32]),
             &task_id,
             None,
+            false,
             NOW,
         )
         .unwrap();
