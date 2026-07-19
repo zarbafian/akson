@@ -283,12 +283,57 @@ impl CallTransport for HttpsTransport<'_> {
     }
 }
 
-/// Splits an HTTP/1.1 response into (status code, body bytes).
+/// Splits an HTTP/1.1 response into (status code, body bytes), decoding a
+/// `Transfer-Encoding: chunked` body. Real model endpoints (OpenAI included) stream
+/// their reply chunked rather than with a `Content-Length`, so the raw body carries
+/// chunk-size framing that must be removed before it is valid JSON.
 fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..sep]).ok()?;
     let status = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
-    Some((status, raw[sep + 4..].to_vec()))
+    let raw_body = &raw[sep + 4..];
+    let chunked = head.lines().any(|l| {
+        let l = l.to_ascii_lowercase();
+        l.starts_with("transfer-encoding:") && l.contains("chunked")
+    });
+    let body = if chunked {
+        dechunk(raw_body)
+    } else {
+        raw_body.to_vec()
+    };
+    Some((status, body))
+}
+
+/// Decodes an HTTP/1.1 chunked-transfer body to its payload. Each chunk is
+/// `<hex-size>[;ext]\r\n<size bytes>\r\n`, ending at a `0`-size chunk. Tolerant of a
+/// body truncated by the response cap (returns what was decoded so far) and of
+/// malformed framing (returns the bytes decoded up to that point).
+fn dechunk(mut data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let Some(nl) = data.windows(2).position(|w| w == b"\r\n") else {
+            break;
+        };
+        let Some(hex) = std::str::from_utf8(&data[..nl]).ok().and_then(|l| {
+            let tok = l.split(';').next()?.trim();
+            usize::from_str_radix(tok, 16).ok()
+        }) else {
+            break;
+        };
+        data = &data[nl + 2..];
+        if hex == 0 {
+            break; // last chunk; trailers (if any) are ignored
+        }
+        let take = hex.min(data.len()); // cap-truncated bodies take what is present
+        out.extend_from_slice(&data[..take]);
+        data = &data[take..];
+        if data.starts_with(b"\r\n") {
+            data = &data[2..];
+        } else {
+            break; // truncated mid-chunk
+        }
+    }
+    out
 }
 
 /// Serves a worker's request to make a processor call (design §13.1). The worker
@@ -914,5 +959,40 @@ mod tests {
         store_work_order(&daemon, "wo-1", vec![respond_grant()]);
         let err = run_processor_call(&daemon, "proc", "wo-1", b"x").unwrap_err();
         assert_eq!(err.status, 403);
+    }
+
+    #[test]
+    fn split_response_decodes_a_chunked_body() {
+        // Real endpoints (OpenAI) stream the reply chunked, with no Content-Length.
+        // The decoded body must be exactly the JSON payload — no chunk framing. Two
+        // chunks + the terminating zero chunk, sizes computed so the framing is exact.
+        let p1 = r#"{"choices":[{"index":0,"#;
+        let p2 = r#""message":{"content":"hi"}}]}"#;
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            p1.len(), p1, p2.len(), p2
+        );
+        let (status, body) = super::split_response(raw.as_bytes()).expect("parse");
+        assert_eq!(status, 200);
+        // Reassembled across chunks and valid JSON (the adapter's next step).
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["choices"][0]["message"]["content"], "hi");
+    }
+
+    #[test]
+    fn split_response_passes_a_content_length_body_through() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
+        let (status, body) = super::split_response(raw).expect("parse");
+        assert_eq!(status, 200);
+        assert_eq!(body, br#"{"a":1}"#);
+    }
+
+    #[test]
+    fn dechunk_tolerates_a_cap_truncated_final_chunk() {
+        // The transport may stop reading mid-chunk at the response cap; decode what
+        // is present rather than dropping it.
+        let truncated = b"5\r\nhel"; // declares 5 bytes, only 3 arrive
+        assert_eq!(super::dechunk(truncated), b"hel");
     }
 }
