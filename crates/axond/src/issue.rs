@@ -17,8 +17,8 @@
 //! so the composition is pure and testable.
 
 use axon_authority::{
-    Audience, Budgets, CapabilityVector, Grant, IssuedWorkOrder, ReadInputsScope, RequestOrigin,
-    RespondScope, WorkOrder, WorkOrderKey,
+    Audience, Budgets, CapabilityVector, Grant, IssuedWorkOrder, ProcessorUseScope, ReadInputsScope,
+    RequestOrigin, RespondScope, WorkOrder, WorkOrderKey,
 };
 use axon_contract::{parse_payload, Capability, HeadState, Identity, ResultRecipient};
 use axon_store::{ClaimOutcome, Store};
@@ -42,6 +42,11 @@ pub struct IssueConfig<'a> {
     pub policy_version: u32,
     /// The operation ceiling the worker's cgroup enforces (not a contract field).
     pub max_operations: u32,
+    /// The operator's explicit, per-approval decision to grant `processor_use`
+    /// bound to this configured processor (design §12.1). `None` (the default) keeps
+    /// the outward capability denied; `Some(id)` grants it only if the contract
+    /// requested processor use and the processor is configured.
+    pub processor_grant: Option<&'a str>,
 }
 
 /// Issues and durably claims the work order for an accepted Task (design §12.3).
@@ -109,6 +114,42 @@ pub fn issue_for_accepted(
             Capability::ProcessorUse | Capability::ArtifactExport => {}
         }
     }
+
+    // The operator may, at approval, additionally grant `processor_use` bound to a
+    // specific configured processor — the explicit disclosure decision that lets the
+    // peer task call a model. Fail closed: the contract must have requested it, and
+    // the processor must be configured.
+    if let Some(processor_id) = config.processor_grant {
+        if !contract
+            .requested_capabilities
+            .iter()
+            .any(|c| matches!(c, Capability::ProcessorUse))
+        {
+            return Err(problem(
+                422,
+                "processor-not-requested",
+                "this task did not request processor use; it cannot be granted",
+            ));
+        }
+        if store
+            .get_processor(processor_id)
+            .map_err(store_problem)?
+            .is_none()
+        {
+            return Err(problem(
+                404,
+                "no-such-processor",
+                "no processor is configured with that id (add it with `axon processor add`)",
+            ));
+        }
+        grants.push(Grant::ProcessorUse(ProcessorUseScope {
+            processor_id: processor_id.to_owned(),
+            input_ids: input_ids.clone(),
+            max_cost_microusd: contract.limits.max_cost_microusd.unwrap_or(0),
+            max_bytes: contract.limits.max_response_bytes,
+        }));
+    }
+
     let capabilities = CapabilityVector::new(grants).map_err(|_| {
         problem(
             422,
@@ -205,6 +246,7 @@ mod tests {
     use crate::decision::decide;
     use crate::receive::{dispatch_proposal, DispatchOutcome};
     use axon_authority::CapabilityComponent;
+    use axon_broker::{Disclosure, Origin, ProcessorConfig};
     use axon_contract::DecisionKind;
     use axon_crypto::keypair::PurposeKey;
     use axon_crypto::purpose::KeyPurpose;
@@ -242,7 +284,17 @@ mod tests {
     }
 
     fn config<'a>(key: &'a WorkOrderKey, issuer: &'a Identity, nonce: &'a str) -> IssueConfig<'a> {
+        config_p(key, issuer, nonce, None)
+    }
+
+    fn config_p<'a>(
+        key: &'a WorkOrderKey,
+        issuer: &'a Identity,
+        nonce: &'a str,
+        processor: Option<&'a str>,
+    ) -> IssueConfig<'a> {
         IssueConfig {
+            processor_grant: processor,
             issuer,
             issuer_assurance: "local-human",
             daemon: "axond",
@@ -385,6 +437,81 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.status, 422);
+    }
+
+    fn add_processor(store: &Store, id: &str) {
+        store
+            .put_processor(
+                &ProcessorConfig {
+                    processor_id: id.to_owned(),
+                    provider: "example-ai".to_owned(),
+                    origin: Origin::https("api.example.com", 443),
+                    disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
+                    config: serde_json::json!({"model": "review-1"}),
+                    tls_certificate_sha256: None,
+                },
+                NOW,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn an_explicit_processor_grant_adds_processor_use_bound_to_that_processor() {
+        let store = store();
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs", "processor_use"]);
+        add_processor(&store, "reviewer");
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let issued = issue_for_accepted(
+            &store,
+            &task_id,
+            &config_p(&key, &issuer, &"n".repeat(43), Some("reviewer")),
+            NOW,
+        )
+        .unwrap();
+        let caps = &issued.order.capabilities;
+        // The safe two plus the explicitly granted processor use.
+        assert!(caps.grants_component(CapabilityComponent::Respond));
+        assert!(caps.grants_component(CapabilityComponent::ProcessorUse));
+        match caps.grant(CapabilityComponent::ProcessorUse) {
+            Some(Grant::ProcessorUse(scope)) => assert_eq!(scope.processor_id, "reviewer"),
+            other => panic!("expected a processor_use grant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_processor_grant_the_contract_did_not_request_is_refused() {
+        let store = store();
+        // The contract asks only for the safe two — processor use was not requested.
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs"]);
+        add_processor(&store, "reviewer");
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let err = issue_for_accepted(
+            &store,
+            &task_id,
+            &config_p(&key, &issuer, &"n".repeat(43), Some("reviewer")),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 422);
+    }
+
+    #[test]
+    fn a_grant_naming_an_unconfigured_processor_is_refused() {
+        let store = store();
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs", "processor_use"]);
+        // No processor configured.
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let err = issue_for_accepted(
+            &store,
+            &task_id,
+            &config_p(&key, &issuer, &"n".repeat(43), Some("ghost")),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 404);
     }
 
     #[test]

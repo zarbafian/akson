@@ -273,7 +273,7 @@ impl DaemonState {
                     .collect();
                 Ok(serde_json::json!({ "outcomes": items }))
             }
-            ControlRequest::TaskApprove { task_id } => {
+            ControlRequest::TaskApprove { task_id, processor } => {
                 let store = self.store.lock().map_err(|_| internal())?;
                 approve_and_issue(
                     &store,
@@ -281,6 +281,7 @@ impl DaemonState {
                     &self.identity.purpose_key(KeyPurpose::ContractDecision),
                     &self.identity.work_order_key(),
                     task_id,
+                    processor.as_deref(),
                     now_unix(),
                 )
             }
@@ -711,6 +712,7 @@ mod tests {
         let out = state
             .dispatch(&ControlRequest::TaskApprove {
                 task_id: task_id.clone(),
+                processor: None,
             })
             .unwrap();
         assert_eq!(out["approved"], true);

@@ -50,6 +50,7 @@ pub fn approve_and_issue(
     decision_key: &PurposeKey,
     work_order_key: &WorkOrderKey,
     task_id: &str,
+    processor: Option<&str>,
     now: i64,
 ) -> Result<serde_json::Value, Problem> {
     // Load the submitted contract to pre-check the requester and capabilities.
@@ -132,6 +133,7 @@ pub fn approve_and_issue(
         decision_id: &decision_id,
         policy_version: POLICY_VERSION,
         max_operations: MAX_OPERATIONS,
+        processor_grant: processor,
     };
     let issued = issue_for_accepted(store, task_id, &config, now)?;
 
@@ -383,6 +385,7 @@ mod tests {
             &decision_key(),
             &work_order_key(),
             &task_id,
+            None,
             NOW,
         )
         .unwrap();
@@ -421,6 +424,7 @@ mod tests {
             &decision_key(),
             &work_order_key(),
             &task_id,
+            None,
             NOW,
         )
         .unwrap_err();
@@ -443,6 +447,7 @@ mod tests {
             &decision_key(),
             &work_order_key(),
             &task_id,
+            None,
             NOW,
         )
         .unwrap_err();

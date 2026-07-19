@@ -63,8 +63,14 @@ pub enum ControlRequest {
     /// List recorded requester outcomes (`axon task outcomes`).
     TaskOutcomes,
     /// Approve a submitted Task: accept it and issue the one-shot work order
-    /// (`axon task approve`, admin only).
-    TaskApprove { task_id: String },
+    /// (`axon task approve`, admin only). `processor`, when set, additionally grants
+    /// `processor_use` bound to that configured processor — the explicit,
+    /// per-approval disclosure decision to let the peer task call a model.
+    TaskApprove {
+        task_id: String,
+        #[serde(default)]
+        processor: Option<String>,
+    },
     /// Deny a submitted Task: sign a reject decision (`axon task deny`, admin only).
     TaskDeny { task_id: String, reason: String },
     /// Run an approved Task's worker in the sandbox and submit its result

@@ -362,6 +362,7 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
     let approved = state
         .dispatch(&ControlRequest::TaskApprove {
             task_id: task_id.clone(),
+            processor: None,
         })
         .unwrap();
     assert_eq!(approved["approved"], true);
@@ -505,6 +506,7 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
     state
         .dispatch(&ControlRequest::TaskApprove {
             task_id: task_id.clone(),
+            processor: None,
         })
         .unwrap();
 
@@ -1029,6 +1031,7 @@ async fn two_daemons_run_the_whole_task_round_trip() {
     let approved = b_state
         .dispatch(&ControlRequest::TaskApprove {
             task_id: task_id.clone(),
+            processor: None,
         })
         .unwrap();
     assert_eq!(approved["approved"], true);

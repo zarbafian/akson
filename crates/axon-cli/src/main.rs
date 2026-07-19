@@ -8,7 +8,8 @@
 //! - `axon whoami` — this daemon's identity + endpoint fingerprint (§8.1).
 //! - `axon task inbox` — the submitted Tasks awaiting a decision (§16.4).
 //! - `axon task show <id>` — a Task's §5.2 risk card, the approval surface.
-//! - `axon task approve <id>` — accept the Task and issue its work order (§10.2/§12.3).
+//! - `axon task approve <id> [--processor <id>]` — accept the Task and issue its
+//!   work order; `--processor` additionally grants processor_use for a model (§12.1).
 //! - `axon task run <id>` — run the approved Task's worker in the sandbox (§7.2/§13.1).
 //! - `axon task deny <id> <reason>` — sign a reject decision (§10.2).
 //! - `axon task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
@@ -254,8 +255,15 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             None => usage("axon task show <task-id>"),
         },
         Some("approve") => match next_arg(args) {
-            Some(id) => task_approve(&id),
-            None => usage("axon task approve <task-id>"),
+            Some(id) => {
+                // Optional `--processor <id>`: additionally grant processor_use.
+                let processor = match next_arg(args).as_deref() {
+                    Some("--processor") => next_arg(args),
+                    _ => None,
+                };
+                task_approve(&id, processor.as_deref())
+            }
+            None => usage("axon task approve <task-id> [--processor <processor-id>]"),
         },
         Some("run") => match next_arg(args) {
             Some(id) => task_run(&id),
@@ -401,9 +409,10 @@ fn task_show(task_id: &str) -> ExitCode {
 }
 
 /// Approve a Task: accept it and issue the one-shot work order (`axon task approve`).
-fn task_approve(task_id: &str) -> ExitCode {
+fn task_approve(task_id: &str, processor: Option<&str>) -> ExitCode {
     let result = match call(&ControlRequest::TaskApprove {
         task_id: task_id.to_owned(),
+        processor: processor.map(str::to_owned),
     }) {
         Ok(r) => r,
         Err(code) => return code,

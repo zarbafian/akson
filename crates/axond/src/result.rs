@@ -395,6 +395,7 @@ mod tests {
             &PurposeKey::from_seed(KeyPurpose::ContractDecision, &[6u8; 32]),
             &WorkOrderKey::from_bytes([7u8; 32]),
             &task_id,
+            None,
             NOW,
         )
         .unwrap();
