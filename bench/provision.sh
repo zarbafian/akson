@@ -24,12 +24,15 @@ if ! command -v cargo >/dev/null; then
 fi
 export PATH="$HOME/.cargo/bin:$PATH"
 
-echo "==> Building axond, axon CLI, and the OpenAI adapter (release)…"
-# Release build: this is a latency bench, so don't measure debug overhead.
-CARGO_INCREMENTAL=0 cargo build --release -p axond -p axon-cli -p axon-adapter-openai
+echo "==> Building axond, axon CLI, and all model adapters (release)…"
+# Release build: this is a latency bench, so don't measure debug overhead. Build
+# every adapter the matrix can select (openai/anthropic/gemini).
+CARGO_INCREMENTAL=0 cargo build --release \
+  -p axond -p axon-cli \
+  -p axon-adapter-openai -p axon-adapter-anthropic -p axon-adapter-gemini
 
 BIN="$REPO/target/release"
-echo "    built: $BIN/{axond,axon,axon-adapter-openai}"
+echo "    built: $BIN/{axond,axon,axon-adapter-{openai,anthropic,gemini}}"
 
 echo
 echo "==> Sandbox readiness (axon doctor):"
