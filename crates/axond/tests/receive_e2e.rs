@@ -53,6 +53,11 @@ fn ident(agent: &str) -> Identity {
 /// The peer's signed A2A `SendMessageRequest` bytes: a DSSE proposal Part plus the
 /// referenced worker-input Part, signed by `proposal_key`.
 fn send_message_body(proposal_key: &PurposeKey) -> Vec<u8> {
+    send_message_body_caps(proposal_key, &["respond", "read_supplied_inputs"])
+}
+
+/// As [`send_message_body`], but requesting exactly `caps`.
+fn send_message_body_caps(proposal_key: &PurposeKey, caps: &[&str]) -> Vec<u8> {
     let sha = hex::encode(Sha256::digest(TEXT.as_bytes()));
     let value = json!({
         "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
@@ -67,7 +72,7 @@ fn send_message_body(proposal_key: &PurposeKey) -> Vec<u8> {
             "worker_visible": true, "processor_visible": false
         }],
         "deliverables": [{"role": "r", "media_type": "text/plain"}],
-        "evidence_slots": [], "requested_capabilities": ["respond", "read_supplied_inputs"],
+        "evidence_slots": [], "requested_capabilities": caps,
         "processor_constraints": {"disclosure": "none"},
         "limits": {"deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 1024},
         "result_recipient": "request-origin",
@@ -555,6 +560,166 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
         .verifying();
     let (_manifest, verified_digest) = ResultManifest::verify(&envelope, &task_result_vk).unwrap();
     assert_eq!(verified_digest, bundle);
+}
+
+/// A stand-in OpenAI-compatible model endpoint: accepts one pinned-mTLS connection,
+/// reads the request, and answers with a canned chat-completion. The daemon's broker
+/// dials it; the confined adapter never touches it.
+async fn spawn_mock_model(key: &PurposeKey, cert: &EndpointCert) -> SocketAddr {
+    let acceptor = TlsAcceptor::from(Arc::new(bootstrap_server_config(key, cert).unwrap()));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((tcp, _)) = listener.accept().await {
+            if let Ok(mut tls) = acceptor.accept(tcp).await {
+                let mut buf = [0u8; 8192];
+                let _ = tls.read(&mut buf).await; // the POST /v1/chat/completions request
+                let body =
+                    r#"{"choices":[{"message":{"role":"assistant","content":"CONFINED: LGTM"}}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = tls.write_all(resp.as_bytes()).await;
+                let _ = tls.flush().await;
+            }
+        }
+    });
+    addr
+}
+
+/// The full gated-via-broker chain, as a regression guard: the real OpenAI adapter
+/// binary runs *confined* and reviews the input via a model reached only through the
+/// broker (design §13.1/§16.3). Needs bwrap + userns + a delegated cgroup (runs in
+/// CI's isolation job) and the adapter binary; skips gracefully otherwise.
+///   cargo test -p axond --test receive_e2e openai_adapter -- --ignored --nocapture
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs bwrap + userns + cgroup + the built adapter; runs in CI's isolation job"]
+async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
+    // Locate the adapter binary next to the test binary; skip if it was not built.
+    let adapter = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent()?.parent().map(|d| d.join("axon-adapter-openai")));
+    let adapter = match adapter {
+        Some(p) if p.exists() => p,
+        _ => {
+            eprintln!("[skip] axon-adapter-openai not built next to the test binary");
+            return;
+        }
+    };
+
+    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
+    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
+    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let server_cert =
+        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+
+    // The mock model, pinned by the daemon.
+    let model_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[9u8; 32]);
+    let model_cert =
+        self_signed_endpoint(&model_key, "mockmodel", Duration::from_secs(3600)).unwrap();
+    let model_addr = spawn_mock_model(&model_key, &model_cert).await;
+
+    let config = DaemonConfig {
+        data_dir: std::env::temp_dir().join(format!("axond-openai-{}", std::process::id())),
+        local_performer: ident("performer"),
+        interface_url: "https://local/a2a".to_owned(),
+        receive_addr: None,
+        pair_addr: None,
+        worker_command: Some(format!(
+            "{} --processor mockmodel --model test-model",
+            adapter.display()
+        )),
+    };
+    let identity = IdentityKeys::from_master([33u8; 32]);
+    let endpoint_cert = self_signed_endpoint(
+        &identity.purpose_key(KeyPurpose::TlsEndpoint),
+        "axon-endpoint",
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    let state = Arc::new(DaemonState::from_parts(
+        in_memory_store(),
+        identity,
+        endpoint_cert,
+        config,
+    ));
+    state
+        .store()
+        .lock()
+        .unwrap()
+        .put_peer_key(
+            &peer_cert.fingerprint.value,
+            "contract-proposal",
+            "requester",
+            "iss",
+            &peer_proposal_key.verifying().to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+
+    // Configure the mock as a pinned processor at its /v1/chat/completions path.
+    state
+        .dispatch(&ControlRequest::ProcessorAdd {
+            processor_id: "mockmodel".to_owned(),
+            provider: "mock".to_owned(),
+            origin_host: "127.0.0.1".to_owned(),
+            origin_port: model_addr.port(),
+            local: true,
+            tls_certificate_sha256: Some(model_cert.fingerprint.value.clone()),
+            path: Some("/v1/chat/completions".to_owned()),
+            auth: None,
+        })
+        .unwrap();
+    state
+        .dispatch(&ControlRequest::ProcessorCredential {
+            processor_id: "mockmodel".to_owned(),
+            credential: "test-key".to_owned(),
+        })
+        .unwrap();
+
+    // Receive a proposal that requests processor use, then approve granting the mock.
+    let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
+    let body = send_message_body_caps(
+        &peer_proposal_key,
+        &["respond", "read_supplied_inputs", "processor_use"],
+    );
+    let (status, resp) = post_body(addr, &peer_tls_key, &peer_cert, &server_cert, body).await;
+    assert_eq!(status, 200);
+    let task_id = serde_json::from_slice::<serde_json::Value>(&resp).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+            processor: Some("mockmodel".to_owned()),
+            artifacts: false,
+        })
+        .unwrap();
+
+    // Run the confined adapter: it reaches the model only through the broker.
+    let run_state = state.clone();
+    let run_task = task_id.clone();
+    let ran = tokio::task::spawn_blocking(move || {
+        run_state.dispatch(&ControlRequest::TaskRun { task_id: run_task })
+    })
+    .await
+    .unwrap();
+    let ran = match ran {
+        Ok(v) => v,
+        Err(p) if p.status == 503 => {
+            eprintln!("[skip] no delegated cgroup subtree; confined run not exercised");
+            return;
+        }
+        Err(p) => panic!("adapter run failed: {} ({}) {:?}", p.title, p.status, p.detail),
+    };
+    assert_eq!(ran["ran"], true);
+    // The confined adapter wrote exactly the model's completion text.
+    assert_eq!(ran["response_bytes"], "CONFINED: LGTM".len());
+    assert!(ran["result"]["bundle_digest"].as_str().is_some());
 }
 
 /// A performer's signed result manifest for `task_id`, bound to `contract_digest`.

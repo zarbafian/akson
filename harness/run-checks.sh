@@ -57,6 +57,10 @@ if unshare --user --map-root-user true 2>/dev/null; then
   # The daemon-level worker run (receive → approve → run in sandbox → manifest)
   # also skips gracefully without a delegated cgroup.
   run cargo test -p axond --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
+  # The full gated-via-broker chain: the real OpenAI adapter binary, confined,
+  # reviewing via a mock model reached only through the broker.
+  run cargo build -p axon-adapter-openai
+  run cargo test -p axond --test receive_e2e the_openai_adapter -- --ignored --nocapture
 else
   restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '?')"
   cat <<EOF
