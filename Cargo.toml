@@ -18,6 +18,7 @@ members = [
     "crates/axon-adapter-sdk",
     "adapters/openai",
     "adapters/anthropic",
+    "adapters/gemini",
     "harness/runner",
 ]
 # The cargo-fuzz crate needs nightly + libFuzzer; keep it out of the normal build.
