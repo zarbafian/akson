@@ -157,6 +157,8 @@ Anthropic adapter and point the processor at it instead:
   and decisions for the v1 build.
 - [Threat model](design/2026-07-19-threat-model.md) — assets, actors, and how each
   defense is realized in the build.
+- [Control protocol](spec/control-protocol.md) — the local socket the `axon` CLI
+  speaks to a running `axond` (framing, surfaces, operations).
 - [ADRs](spec/adr/) — recorded decisions.
 - [SECURITY.md](SECURITY.md) — reporting vulnerabilities.
 
