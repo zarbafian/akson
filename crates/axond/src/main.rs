@@ -15,6 +15,39 @@ use axond::{
     socket_dir, worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
+/// `axond init` (design §16.4): create the data directory and bootstrap this
+/// endpoint's durable identity (master secret + keys, the stable endpoint cert),
+/// then print who it is and the fingerprint a peer must trust — without serving.
+/// Idempotent: re-running loads the existing identity rather than replacing it.
+fn init() -> Result<(), Box<dyn std::error::Error>> {
+    let config = DaemonConfig::from_env();
+    std::fs::create_dir_all(&config.data_dir)?;
+    std::fs::set_permissions(&config.data_dir, std::fs::Permissions::from_mode(0o700))?;
+    let state = DaemonState::bootstrap(&config)?;
+
+    println!("axon initialized");
+    println!(
+        "  agent:        {}/{}",
+        config.local_performer.issuer, config.local_performer.agent
+    );
+    println!("  data dir:     {}", config.data_dir.display());
+    println!("  interface:    {}", config.interface_url);
+    println!(
+        "  receive:      {}",
+        config.receive_addr.as_deref().unwrap_or("(control-only)")
+    );
+    println!(
+        "  pairing:      {}",
+        config.pair_addr.as_deref().unwrap_or("(disabled)")
+    );
+    println!(
+        "  endpoint fp:  sha256:{}",
+        state.endpoint_cert().fingerprint.value
+    );
+    println!("\nStart it with `axond serve`.");
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env();
     let state = Arc::new(DaemonState::bootstrap(&config)?);
@@ -85,19 +118,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> std::process::ExitCode {
-    // Only `serve` (the default) is wired in this assembly step.
     let arg = std::env::args().nth(1);
-    match arg.as_deref() {
-        None | Some("serve") => match run() {
-            Ok(()) => std::process::ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("axond: {e}");
-                std::process::ExitCode::FAILURE
-            }
-        },
+    let result = match arg.as_deref() {
+        None | Some("serve") => run(),
+        Some("init") => init(),
         Some(other) => {
-            eprintln!("axond: unknown command {other:?}; only `serve` is implemented");
-            std::process::ExitCode::from(2)
+            eprintln!("axond: unknown command {other:?}; expected `serve` or `init`");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("axond: {e}");
+            std::process::ExitCode::FAILURE
         }
     }
 }
