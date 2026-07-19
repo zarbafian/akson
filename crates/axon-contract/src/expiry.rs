@@ -54,15 +54,23 @@ pub struct TimestampError {
     pub field: &'static str,
 }
 
+/// Clock-skew tolerance applied to the *start* of the window only. A performer
+/// whose clock trails the requester's by a fraction of a second must not reject a
+/// freshly-signed contract as "not yet valid" — `created_at` is truncated to whole
+/// seconds, so even sub-second skew across a second boundary would otherwise trip
+/// it. The lapse (`expires_at`) side takes NO leeway: trusted time must never revive
+/// expired authority.
+const NOT_YET_VALID_LEEWAY_SECS: i64 = 5;
+
 /// Evaluates a contract's [`Validity`] at trusted `now_unix` (unix seconds).
 ///
-/// The window is half-open: effective at `created_at`, lapsed at `expires_at`.
-/// `now_unix` MUST be the trusted time (the §8.5 floor), so a rolled-back wall
-/// clock cannot revive an expired contract.
+/// The window is half-open: effective at `created_at` (minus a small clock-skew
+/// leeway), lapsed at `expires_at`. `now_unix` MUST be the trusted time (the §8.5
+/// floor), so a rolled-back wall clock cannot revive an expired contract.
 pub fn validity(contract: &Contract, now_unix: i64) -> Result<Validity, TimestampError> {
     let created = parse(&contract.created_at, "created_at")?;
     let expires = parse(&contract.expires_at, "expires_at")?;
-    Ok(if now_unix < created {
+    Ok(if now_unix < created - NOT_YET_VALID_LEEWAY_SECS {
         Validity::NotYetValid
     } else if now_unix >= expires {
         Validity::Expired
@@ -147,5 +155,19 @@ mod tests {
             .unwrap()
             .unix_timestamp();
         assert_eq!(validity(&c, created).unwrap(), Validity::Valid);
+    }
+
+    #[test]
+    fn a_small_clock_skew_at_the_start_is_tolerated() {
+        // A freshly-signed contract whose created_at is a little ahead of the
+        // performer's trusted-now (the requester's clock leads across a second
+        // boundary) must still be effective — the transient the two-machine bench
+        // hit. Beyond the leeway it is genuinely not-yet-valid.
+        let c = contract("2025-06-01T00:00:03Z", "2027-06-01T00:00:00Z");
+        let created = OffsetDateTime::parse("2025-06-01T00:00:03Z", &Rfc3339)
+            .unwrap()
+            .unix_timestamp();
+        assert_eq!(validity(&c, created - 3).unwrap(), Validity::Valid);
+        assert_eq!(validity(&c, created - 6).unwrap(), Validity::NotYetValid);
     }
 }
