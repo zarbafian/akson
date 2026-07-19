@@ -1,0 +1,20 @@
+[package]
+name = "axon-adapter-openai"
+publish = false
+description = "An OpenAI-compatible worker adapter (chat completions via the broker)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axon-adapter-openai"
+path = "src/main.rs"
+
+[dependencies]
+axon-adapter-sdk = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

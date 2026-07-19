@@ -79,6 +79,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "axon-adapter-openai"
+version = "0.0.1"
+dependencies = [
+ "axon-adapter-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "axon-adapter-sdk"
 version = "0.0.1"
 dependencies = [
