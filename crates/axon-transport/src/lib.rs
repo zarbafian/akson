@@ -12,4 +12,5 @@
 pub mod bootstrap;
 pub mod client;
 pub mod ingress;
+pub mod limits;
 pub mod tls;

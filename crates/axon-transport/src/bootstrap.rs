@@ -30,7 +30,11 @@ use hyper::{HeaderMap, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
+
+use crate::limits::{CONNECTION_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_CONCURRENT_CONNECTIONS};
 
 /// Maximum bootstrap request body (design §9.1: limits before allocation). A
 /// signed card + key bindings + proofs is a few KiB; this is a generous cap
@@ -110,6 +114,9 @@ pub async fn serve<L: PairingStore + Send + 'static>(
     acceptor: TlsAcceptor,
     state: Arc<BootstrapState<L>>,
 ) -> std::io::Result<()> {
+    // Bound concurrent pre-auth connections; a permit is held for the whole
+    // connection so a flood cannot spawn unbounded tasks (§9.1).
+    let limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     loop {
         let (tcp, _) = listener.accept().await?;
         // Rate-limit before the TLS handshake so a flood is cheap to shed.
@@ -117,10 +124,18 @@ pub async fn serve<L: PairingStore + Send + 'static>(
             drop(tcp);
             continue;
         }
+        // Wait for a concurrency slot; the semaphore is never closed, so this only
+        // errors on a bug — drop the connection if so.
+        let Ok(permit) = limiter.clone().acquire_owned().await else {
+            drop(tcp);
+            continue;
+        };
         let acceptor = acceptor.clone();
         let state = state.clone();
         tokio::spawn(async move {
-            let Ok(tls) = acceptor.accept(tcp).await else {
+            let _permit = permit;
+            // Time-bound the handshake so a stalled peer cannot hold the slot.
+            let Ok(Ok(tls)) = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await else {
                 return;
             };
             // Capture the accepter's leaf certificate fingerprint from the
@@ -132,11 +147,14 @@ pub async fn serve<L: PairingStore + Send + 'static>(
                 .and_then(|certs| certs.first())
                 .map(|cert| Fingerprint::cert_sha256(cert.as_ref()).value);
             let svc = service_fn(move |req| handle(state.clone(), peer_fp.clone(), req));
-            // A per-connection protocol error is dropped, not fatal. Structured
-            // error logging is deferred to the telemetry work (design §15.4).
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(tls), svc)
-                .await;
+            // A per-connection protocol error is dropped, not fatal. The whole
+            // connection is time-bounded against a slow-loris body/header sender.
+            // Structured error logging is deferred to telemetry (design §15.4).
+            let _ = timeout(
+                CONNECTION_TIMEOUT,
+                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), svc),
+            )
+            .await;
         });
     }
 }

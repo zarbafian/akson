@@ -16,6 +16,7 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axon_contract::Identity;
 use axon_crypto::identity::Fingerprint;
@@ -31,7 +32,11 @@ use hyper::{HeaderMap, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
+
+use axon_transport::limits::{CONNECTION_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_CONCURRENT_CONNECTIONS};
 
 use crate::receive_http::{handle_receive, HttpRequest, ReceiveConfig};
 
@@ -206,12 +211,45 @@ pub async fn serve<R: PeerResolver>(
     acceptor: TlsAcceptor,
     state: Arc<ReceiveState<R>>,
 ) -> std::io::Result<()> {
+    serve_with_limits(
+        listener,
+        acceptor,
+        state,
+        MAX_CONCURRENT_CONNECTIONS,
+        HANDSHAKE_TIMEOUT,
+        CONNECTION_TIMEOUT,
+    )
+    .await
+}
+
+/// The accept loop with explicit pre-auth ceilings (design §9.1) — [`serve`] calls
+/// this with the shared [`axon_transport::limits`] constants; tests pass small
+/// values to exercise the timeout/cap behaviour quickly.
+async fn serve_with_limits<R: PeerResolver>(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    state: Arc<ReceiveState<R>>,
+    max_concurrent: usize,
+    handshake_timeout: Duration,
+    connection_timeout: Duration,
+) -> std::io::Result<()> {
+    // Bound concurrent pre-auth connections; a permit is held for the whole
+    // connection so a flood cannot spawn unbounded tasks (§9.1).
+    let limiter = Arc::new(Semaphore::new(max_concurrent));
     loop {
         let (tcp, _) = listener.accept().await?;
+        // Wait for a concurrency slot; the semaphore is never closed, so this only
+        // errors on a bug — drop the connection if so.
+        let Ok(permit) = limiter.clone().acquire_owned().await else {
+            drop(tcp);
+            continue;
+        };
         let acceptor = acceptor.clone();
         let state = state.clone();
         tokio::spawn(async move {
-            let Ok(tls) = acceptor.accept(tcp).await else {
+            let _permit = permit;
+            // Time-bound the handshake so a stalled peer cannot hold the slot.
+            let Ok(Ok(tls)) = timeout(handshake_timeout, acceptor.accept(tcp)).await else {
                 return;
             };
             let peer_fp = tls
@@ -221,9 +259,13 @@ pub async fn serve<R: PeerResolver>(
                 .and_then(|certs| certs.first())
                 .map(|cert| Fingerprint::cert_sha256(cert.as_ref()).value);
             let svc = service_fn(move |req| handle(state.clone(), peer_fp.clone(), req));
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(tls), svc)
-                .await;
+            // The whole connection is time-bounded against a slow-loris sender that
+            // stays under the body cap but dribbles bytes.
+            let _ = timeout(
+                connection_timeout,
+                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), svc),
+            )
+            .await;
         });
     }
 }
@@ -569,5 +611,45 @@ mod tests {
             StorePeerResolver.resolve(&store, "fp-1").is_none(),
             "a key without an active peer must not admit work"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stalled_pre_auth_handshake_is_dropped_within_the_timeout() {
+        use axon_crypto::cert::self_signed_endpoint;
+        use axon_crypto::keypair::PurposeKey;
+        use axon_transport::tls::bootstrap_server_config;
+        use tokio::io::AsyncReadExt;
+
+        // A real TLS server config, but the client below never speaks TLS.
+        let tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[5u8; 32]);
+        let cert = self_signed_endpoint(&tls_key, "axon-endpoint", Duration::from_secs(3600))
+            .expect("cert");
+        let acceptor = TlsAcceptor::from(Arc::new(
+            bootstrap_server_config(&tls_key, &cert).expect("config"),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Serve with a short handshake timeout so the test is fast.
+        tokio::spawn(serve_with_limits(
+            listener,
+            acceptor,
+            Arc::new(state()),
+            8,
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+        ));
+
+        // Open a raw TCP connection and send NOTHING — never start the handshake.
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Without the handshake timeout the server would block reading the
+        // ClientHello forever; with it, the connection is closed and the read
+        // observes EOF well within the outer bound.
+        let mut buf = [0u8; 1];
+        let n = timeout(Duration::from_secs(3), client.read(&mut buf))
+            .await
+            .expect("the server must close the stalled connection, not hang")
+            .unwrap();
+        assert_eq!(n, 0, "a stalled pre-auth connection is dropped (EOF)");
     }
 }
