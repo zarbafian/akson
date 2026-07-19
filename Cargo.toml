@@ -20,6 +20,8 @@ members = [
     "adapters/anthropic",
     "harness/runner",
 ]
+# The cargo-fuzz crate needs nightly + libFuzzer; keep it out of the normal build.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"

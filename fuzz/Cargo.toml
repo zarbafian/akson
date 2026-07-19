@@ -1,0 +1,39 @@
+[package]
+name = "axon-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# cargo-fuzz managed crate; excluded from the workspace (needs nightly + libFuzzer).
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+axon-ext = { path = "../crates/axon-ext" }
+axon-contract = { path = "../crates/axon-contract" }
+axon-evidence = { path = "../crates/axon-evidence" }
+
+[[bin]]
+name = "ijson"
+path = "fuzz_targets/ijson.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "contract"
+path = "fuzz_targets/contract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sarif"
+path = "fuzz_targets/sarif.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
