@@ -17,6 +17,8 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO/target/release"
 export PATH="$HOME/.cargo/bin:$BIN:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# systemd-run --user over a non-interactive ssh needs the user bus address.
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 
 case "$ROLE" in
   requester) AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443 ;;
@@ -27,22 +29,26 @@ esac
 DATA="$HOME/.axon-bench-$ROLE"
 UNIT="axon-$ROLE"
 
-# Env the daemon reads at startup (DaemonConfig::from_env). Bind on all interfaces;
-# advertise the reachable IP (mTLS pins the cert fingerprint, not the hostname).
+# Env the daemon reads at startup (DaemonConfig::from_env). Bind + advertise the
+# reachable (VPC) IP — AXON_PAIR_ADDR is both the bind address and the endpoint the
+# invitation tells the peer to dial, so it must not be 0.0.0.0. (mTLS pins the cert
+# fingerprint, not the hostname, so a raw IP is fine.)
 ENV=(
-  "-E" "AXON_DATA_DIR=$DATA"
-  "-E" "AXON_ISSUER=$ISSUER"
-  "-E" "AXON_AGENT=$AGENT"
-  "-E" "AXON_INTERFACE_URL=https://$SELF_IP:$RECV/a2a"
-  "-E" "AXON_RECEIVE_ADDR=0.0.0.0:$RECV"
-  "-E" "AXON_PAIR_ADDR=0.0.0.0:$PAIRP"
+  "--setenv=AXON_DATA_DIR=$DATA"
+  "--setenv=AXON_ISSUER=$ISSUER"
+  "--setenv=AXON_AGENT=$AGENT"
+  "--setenv=AXON_INTERFACE_URL=https://$SELF_IP:$RECV/a2a"
+  "--setenv=AXON_RECEIVE_ADDR=$SELF_IP:$RECV"
+  "--setenv=AXON_PAIR_ADDR=$SELF_IP:$PAIRP"
 )
 if [ "$ROLE" = performer ]; then
   # Run the adapter DIRECTLY (no shell) under the strict adapter seccomp profile.
-  ENV+=("-E" "AXON_WORKER_EXEC=$BIN/axon-adapter-openai --processor gpt --model $MODEL")
+  ENV+=("--setenv=AXON_WORKER_EXEC=$BIN/axon-adapter-openai --processor gpt --model $MODEL")
 fi
 
 echo "==> Starting $UNIT (delegated cgroup) as $ISSUER/$AGENT on $SELF_IP:$RECV…"
+# Replace any previous instance (idempotent restart) before claiming the unit name.
+systemctl --user stop "$UNIT" 2>/dev/null || true
 systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 # A transient user service with Delegate=yes gives axond the cgroup v2 subtree that
 # `task run` needs; without it the daemon fails closed (503) rather than run unconfined.
