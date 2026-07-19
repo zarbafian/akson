@@ -184,6 +184,7 @@ fn handle_result(
     match finalize_result(
         store,
         config.local_performer,
+        config.requester_origin, // the authenticated sender (must be the performer)
         outcome_key,
         task_result_key,
         envelope,

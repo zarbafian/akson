@@ -32,6 +32,7 @@ use crate::control::Problem;
 pub fn finalize_result(
     store: &Store,
     requester: &Identity,
+    sender: &Identity,
     outcome_key: &PurposeKey,
     performer_task_result_key: &PurposeVerifyingKey,
     manifest_envelope: &Envelope,
@@ -64,6 +65,17 @@ pub fn finalize_result(
             409,
             "result-mismatch",
             "the result's task does not match the outstanding request",
+        ));
+    }
+    // The authenticated sender MUST be the performer this task was assigned to.
+    // Without this, any paired peer that learns a contract_digest + task_id could
+    // deliver a result signed with its own task-result key and obtain a
+    // requester-signed acceptance for another performer's task (codex review).
+    if sent.performer_agent != sender.agent || sent.performer_issuer != sender.issuer {
+        return Err(problem(
+            403,
+            "wrong-performer",
+            "the result was not delivered by the assigned performer",
         ));
     }
 
@@ -217,6 +229,7 @@ mod tests {
         let out = finalize_result(
             &store,
             &ident("requester"),
+            &ident("performer"),
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -249,6 +262,7 @@ mod tests {
         let err = finalize_result(
             &store,
             &ident("requester"),
+            &ident("performer"),
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -271,6 +285,7 @@ mod tests {
         let err = finalize_result(
             &store,
             &ident("requester"),
+            &ident("performer"),
             &outcome_key(),
             &wrong.verifying(),
             &envelope,
@@ -292,6 +307,7 @@ mod tests {
         let err = finalize_result(
             &store,
             &ident("requester"),
+            &ident("performer"),
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -300,5 +316,26 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.status, 409);
+    }
+
+    #[test]
+    fn a_result_delivered_by_the_wrong_peer_is_refused() {
+        let store = store();
+        record_sent(&store, "task-1"); // performer = performer/iss
+        let envelope = signed_manifest("task-1"); // signed by the performer's key
+                                                  // A DIFFERENT paired peer delivers the (validly-signed-by-performer) result.
+        let err = finalize_result(
+            &store,
+            &ident("requester"),
+            &ident("impostor"),
+            &outcome_key(),
+            &performer_task_result_key().verifying(),
+            &envelope,
+            SIGNED_AT,
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 403, "a non-performer sender must be refused");
+        assert!(store.list_outcomes().unwrap().is_empty());
     }
 }
