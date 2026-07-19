@@ -143,7 +143,10 @@ fn has_event_handler(text: &str) -> bool {
     while let Some(pos) = text[i..].find("on") {
         let at = i + pos;
         let boundary = at == 0
-            || matches!(b[at - 1], b' ' | b'\t' | b'\n' | b'\r' | b'<' | b'/' | b'"' | b'\'');
+            || matches!(
+                b[at - 1],
+                b' ' | b'\t' | b'\n' | b'\r' | b'<' | b'/' | b'"' | b'\''
+            );
         if boundary {
             let mut j = at + 2;
             while j < b.len() && b[j].is_ascii_lowercase() {
@@ -237,7 +240,11 @@ mod tests {
         // target would phone home on click. Both quote styles and a space around `=`.
         let dot = br#"digraph { a [label="x" URL="https://evil.example/track"]; }"#;
         assert!(check_inert("text/vnd.graphviz", dot).is_err());
-        assert!(check_inert("text/vnd.graphviz+dot", b"digraph{ n[url = \"http://evil/x\"] }").is_err());
+        assert!(check_inert(
+            "text/vnd.graphviz+dot",
+            b"digraph{ n[url = \"http://evil/x\"] }"
+        )
+        .is_err());
     }
 
     #[test]
@@ -249,7 +256,8 @@ mod tests {
     #[test]
     fn a_clean_graphviz_passes() {
         // A local anchor and a URL merely named in a label are not external fetches.
-        let dot = br##"digraph { a -> b; a [URL="#section" label="see https://docs.local later"]; }"##;
+        let dot =
+            br##"digraph { a -> b; a [URL="#section" label="see https://docs.local later"]; }"##;
         assert!(check_inert("text/vnd.graphviz", dot).is_ok());
     }
 

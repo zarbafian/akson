@@ -96,7 +96,12 @@ pub async fn dispatch_processor_call(
             .ok_or_else(|| problem(404, "no-such-processor", "no such processor"))?;
         // The configured origin must be https + allowlisted (a task never supplies it).
         check_origin(&config.origin, policy).map_err(|e| {
-            problem_detail(403, "egress-refused", "the processor origin is not permitted", e)
+            problem_detail(
+                403,
+                "egress-refused",
+                "the processor origin is not permitted",
+                e,
+            )
         })?;
         let call =
             ProcessorCall::prepare(&config, request, binding, budget).map_err(|_| internal())?;
@@ -109,7 +114,12 @@ pub async fn dispatch_processor_call(
             PrepareOutcome::AlreadyPrepared(_) => {}
         }
         // Record `dispatching` before the first byte leaves (§13.1).
-        advance(&store, &call.idempotency_key, SubAttemptEvent::Dispatch, now)?;
+        advance(
+            &store,
+            &call.idempotency_key,
+            SubAttemptEvent::Dispatch,
+            now,
+        )?;
         let credential = store.get_credential(processor_id).map_err(store_problem)?;
         (
             call,
@@ -126,7 +136,11 @@ pub async fn dispatch_processor_call(
         Some(addr) => addr,
         None => {
             mark(store, &call.idempotency_key, SubAttemptEvent::Fail, now)?;
-            return Err(problem(502, "unresolved", "the processor origin did not resolve"));
+            return Err(problem(
+                502,
+                "unresolved",
+                "the processor origin did not resolve",
+            ));
         }
     };
     // Anti-SSRF / anti-rebinding: the address actually dialed is checked, not the name.
@@ -163,9 +177,12 @@ pub async fn dispatch_processor_call(
     let state = mark(store, &call.idempotency_key, event, now)?;
     match result {
         Ok(resp) => Ok(outcome_json(&call, state, Some(&resp))),
-        Err(TransportError::Clean(d)) => {
-            Err(problem_detail(502, "dispatch-failed", "the processor call failed", d))
-        }
+        Err(TransportError::Clean(d)) => Err(problem_detail(
+            502,
+            "dispatch-failed",
+            "the processor call failed",
+            d,
+        )),
         Err(TransportError::Uncertain(d)) => Err(problem_detail(
             502,
             "dispatch-ambiguous",
@@ -223,8 +240,8 @@ impl CallTransport for HttpsTransport<'_> {
         let tcp = TcpStream::connect(SocketAddr::new(addr, port))
             .await
             .map_err(|e| TransportError::Clean(e.to_string()))?;
-        let server_name =
-            ServerName::try_from(host.to_owned()).map_err(|_| TransportError::Clean("bad host".to_owned()))?;
+        let server_name = ServerName::try_from(host.to_owned())
+            .map_err(|_| TransportError::Clean("bad host".to_owned()))?;
         let mut tls = connector
             .connect(server_name, tcp)
             .await
@@ -290,7 +307,13 @@ impl CallTransport for HttpsTransport<'_> {
 fn split_response(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..sep]).ok()?;
-    let status = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let status = head
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
     let raw_body = &raw[sep + 4..];
     let chunked = head.lines().any(|l| {
         let l = l.to_ascii_lowercase();
@@ -371,7 +394,13 @@ pub fn run_processor_call(
         // The attempt must be active — no calls before it claims or after it ends.
         match store.attempt_state(work_order_id).map_err(store_problem)? {
             Some(AttemptState::Claimed) | Some(AttemptState::Running) => {}
-            _ => return Err(problem(409, "attempt-not-active", "the attempt is not active")),
+            _ => {
+                return Err(problem(
+                    409,
+                    "attempt-not-active",
+                    "the attempt is not active",
+                ))
+            }
         }
         let config = store
             .get_processor(processor_id)
@@ -772,9 +801,11 @@ mod tests {
     async fn the_https_transport_pins_the_processor_and_injects_the_credential() {
         // The processor's server cert (the daemon pins it); the daemon's own cert.
         let proc_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[71u8; 32]);
-        let proc_cert = self_signed_endpoint(&proc_key, "processor", Duration::from_secs(3600)).unwrap();
+        let proc_cert =
+            self_signed_endpoint(&proc_key, "processor", Duration::from_secs(3600)).unwrap();
         let daemon_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[72u8; 32]);
-        let daemon_cert = self_signed_endpoint(&daemon_key, "daemon", Duration::from_secs(3600)).unwrap();
+        let daemon_cert =
+            self_signed_endpoint(&daemon_key, "daemon", Duration::from_secs(3600)).unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -836,7 +867,12 @@ mod tests {
 
     /// The single prepared call's idempotency key (there is exactly one per test).
     fn call_key(store: &StdMutex<Store>) -> String {
-        let config = store.lock().unwrap().get_processor("local-llm").unwrap().unwrap();
+        let config = store
+            .lock()
+            .unwrap()
+            .get_processor("local-llm")
+            .unwrap()
+            .unwrap();
         ProcessorCall::prepare(&config, b"p", binding(), budget())
             .unwrap()
             .idempotency_key
@@ -845,11 +881,11 @@ mod tests {
     // --- run_processor_call authorization gates (the worker-facing entry) ---
 
     use crate::DaemonConfig;
+    use crate::IdentityKeys;
     use axon_authority::{
         Audience, Budgets, CapabilityVector, Grant, RequestOrigin, RespondScope, WorkOrder,
         WorkOrderKey,
     };
-    use crate::IdentityKeys;
 
     fn ident(agent: &str) -> axon_contract::Identity {
         axon_contract::Identity {
@@ -971,7 +1007,10 @@ mod tests {
         let raw = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n{:x}\r\n{}\r\n0\r\n\r\n",
-            p1.len(), p1, p2.len(), p2
+            p1.len(),
+            p1,
+            p2.len(),
+            p2
         );
         let (status, body) = super::split_response(raw.as_bytes()).expect("parse");
         assert_eq!(status, 200);

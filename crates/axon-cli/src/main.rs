@@ -231,7 +231,10 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
-    println!("added processor {}", result["processor_id"].as_str().unwrap_or(&id));
+    println!(
+        "added processor {}",
+        result["processor_id"].as_str().unwrap_or(&id)
+    );
     ExitCode::SUCCESS
 }
 
@@ -253,8 +256,16 @@ fn processor_list() -> ExitCode {
             p["processor_id"].as_str().unwrap_or("?"),
             p["provider"].as_str().unwrap_or("?"),
             p["origin"].as_str().unwrap_or("?"),
-            if p["local"].as_bool() == Some(true) { "local" } else { "remote" },
-            if p["pinned"].as_bool() == Some(true) { ", pinned" } else { "" },
+            if p["local"].as_bool() == Some(true) {
+                "local"
+            } else {
+                "remote"
+            },
+            if p["pinned"].as_bool() == Some(true) {
+                ", pinned"
+            } else {
+                ""
+            },
         );
     }
     ExitCode::SUCCESS

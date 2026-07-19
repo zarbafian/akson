@@ -26,7 +26,10 @@ async fn handshake(host: &str) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     let name = ServerName::try_from(host.to_owned()).map_err(|e| e.to_string())?;
-    let mut tls = connector.connect(name, tcp).await.map_err(|e| e.to_string())?;
+    let mut tls = connector
+        .connect(name, tcp)
+        .await
+        .map_err(|e| e.to_string())?;
     tls.flush().await.ok();
     Ok(())
 }

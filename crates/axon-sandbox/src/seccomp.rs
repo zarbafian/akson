@@ -365,7 +365,10 @@ mod tests {
             libc::SYS_sendmsg,
             libc::SYS_recvmsg,
         ] {
-            assert!(policy.allow.contains(&needed), "baseline must allow {needed}");
+            assert!(
+                policy.allow.contains(&needed),
+                "baseline must allow {needed}"
+            );
         }
         // But the network stays sealed: the worker can neither OPEN a socket nor
         // connect anywhere — only I/O on fds it already holds is permitted.
@@ -400,7 +403,10 @@ mod tests {
             libc::SYS_futex,
             libc::SYS_execve,
         ] {
-            assert!(adapter.allow.contains(&needed), "adapter must allow {needed}");
+            assert!(
+                adapter.allow.contains(&needed),
+                "adapter must allow {needed}"
+            );
         }
         // But it cannot CREATE a process (no fork/vfork/clone — so it can neither
         // spawn a helper nor start a thread, and even a shell it execs cannot fork to
@@ -423,7 +429,10 @@ mod tests {
         // plus the process-spawning family.
         let shell = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
         for &s in &adapter.allow {
-            assert!(shell.allow.contains(&s), "shell baseline must be a superset ({s})");
+            assert!(
+                shell.allow.contains(&s),
+                "shell baseline must be a superset ({s})"
+            );
         }
         assert!(shell.allow.len() > adapter.allow.len());
     }

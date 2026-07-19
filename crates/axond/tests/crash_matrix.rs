@@ -46,7 +46,7 @@ fn config(dir: &Path) -> DaemonConfig {
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     }
 }
 
@@ -140,7 +140,9 @@ fn a_running_attempt_is_recovered_ambiguous_after_a_crash() {
         let state = DaemonState::bootstrap(&cfg).unwrap();
         let store = state.store();
         let store = store.lock().unwrap();
-        store.claim_attempt(&work_order("wo-1", &nonce), NOW).unwrap();
+        store
+            .claim_attempt(&work_order("wo-1", &nonce), NOW)
+            .unwrap();
         store
             .advance_attempt("wo-1", AttemptEvent::Start, NOW)
             .unwrap()
@@ -227,7 +229,14 @@ fn a_received_requests_idempotency_survives_a_crash_so_a_replay_is_a_duplicate()
         let store = state.store();
         let store = store.lock().unwrap();
         store
-            .receive_request(&covered, b"the-body", b"THE-RESPONSE", Some("task-1"), "task", NOW)
+            .receive_request(
+                &covered,
+                b"the-body",
+                b"THE-RESPONSE",
+                Some("task-1"),
+                "task",
+                NOW,
+            )
             .unwrap();
     }
 

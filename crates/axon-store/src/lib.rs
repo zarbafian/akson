@@ -1790,7 +1790,15 @@ impl Store {
                  (task_id, input_id, ordinal, media_type, byte_length, sha256, payload)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(task_id, input_id) DO NOTHING",
-            params![task_id, input_id, ordinal, media_type, byte_length, sha256, sealed],
+            params![
+                task_id,
+                input_id,
+                ordinal,
+                media_type,
+                byte_length,
+                sha256,
+                sealed
+            ],
         )?;
         audit::append(&tx, now, "task.input_stored", task_id)?;
         tx.commit()?;
@@ -2888,10 +2896,28 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         // Insert out of order; list returns them by ordinal.
         store
-            .put_task_input("task-1", "b", 1, "text/plain", 3, &"b".repeat(64), b"two", 100)
+            .put_task_input(
+                "task-1",
+                "b",
+                1,
+                "text/plain",
+                3,
+                &"b".repeat(64),
+                b"two",
+                100,
+            )
             .unwrap();
         store
-            .put_task_input("task-1", "a", 0, "text/x-diff", 5, &"a".repeat(64), b"first", 100)
+            .put_task_input(
+                "task-1",
+                "a",
+                0,
+                "text/x-diff",
+                5,
+                &"a".repeat(64),
+                b"first",
+                100,
+            )
             .unwrap();
         let inputs = store.list_task_inputs("task-1").unwrap();
         assert_eq!(inputs.len(), 2);
@@ -2902,7 +2928,16 @@ mod tests {
         assert_eq!(inputs[1].payload, b"two");
         // Idempotent: re-storing the same (task, input) does not overwrite or dup.
         store
-            .put_task_input("task-1", "a", 0, "text/x-diff", 5, &"a".repeat(64), b"CHANGED", 200)
+            .put_task_input(
+                "task-1",
+                "a",
+                0,
+                "text/x-diff",
+                5,
+                &"a".repeat(64),
+                b"CHANGED",
+                200,
+            )
             .unwrap();
         let again = store.list_task_inputs("task-1").unwrap();
         assert_eq!(again.len(), 2);
@@ -2915,12 +2950,25 @@ mod tests {
     fn task_inputs_are_sealed_at_rest() {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         store
-            .put_task_input("task-1", "a", 0, "text/plain", 6, &"a".repeat(64), b"secret", 100)
+            .put_task_input(
+                "task-1",
+                "a",
+                0,
+                "text/plain",
+                6,
+                &"a".repeat(64),
+                b"secret",
+                100,
+            )
             .unwrap();
         // The plaintext must not appear in the raw column.
         let raw: Vec<u8> = store
             .conn
-            .query_row("SELECT payload FROM task_inputs WHERE input_id = 'a'", [], |r| r.get(0))
+            .query_row(
+                "SELECT payload FROM task_inputs WHERE input_id = 'a'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(!raw.windows(6).any(|w| w == b"secret"));
     }

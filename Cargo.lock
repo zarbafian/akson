@@ -91,6 +91,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-adapter-gemini"
+version = "0.0.1"
+dependencies = [
+ "axon-adapter-sdk",
+ "axon-evidence",
+ "axon-sandbox",
+ "hex",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "axon-adapter-openai"
 version = "0.0.1"
 dependencies = [

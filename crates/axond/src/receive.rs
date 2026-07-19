@@ -359,7 +359,10 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].input_id, "src");
         assert_eq!(inputs[0].payload, TEXT.as_bytes());
-        assert_eq!(inputs[0].sha256, hex::encode(Sha256::digest(TEXT.as_bytes())));
+        assert_eq!(
+            inputs[0].sha256,
+            hex::encode(Sha256::digest(TEXT.as_bytes()))
+        );
     }
 
     #[test]

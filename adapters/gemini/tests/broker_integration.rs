@@ -95,7 +95,8 @@ fn the_adapter_emits_validated_sarif_as_an_artifact() {
     let artifact = std::fs::read(output_root.join("artifacts").join("findings")).unwrap();
     assert_eq!(artifact, sarif.as_bytes());
     let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(output_root.join("artifacts.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(output_root.join("artifacts.json")).unwrap())
+            .unwrap();
     assert_eq!(manifest[0]["role"], "findings");
     assert_eq!(manifest[0]["media_type"], "application/sarif+json");
     let response = std::fs::read_to_string(output_root.join("response")).unwrap();

@@ -58,14 +58,20 @@ impl PairingLedger for SharedStore {
         verifier: [u8; 32],
         invitation: PendingInvitation,
     ) -> Result<(), LedgerError> {
-        self.0.lock().map_err(poisoned)?.put_active(verifier, invitation)
+        self.0
+            .lock()
+            .map_err(poisoned)?
+            .put_active(verifier, invitation)
     }
     fn commit_consumed(
         &mut self,
         verifier: [u8; 32],
         consumed: Consumed,
     ) -> Result<(), LedgerError> {
-        self.0.lock().map_err(poisoned)?.commit_consumed(verifier, consumed)
+        self.0
+            .lock()
+            .map_err(poisoned)?
+            .commit_consumed(verifier, consumed)
     }
 }
 
@@ -74,7 +80,10 @@ impl PairingStore for SharedStore {
         self.0.lock().map_err(poisoned)?.store_pending_peer(peer)
     }
     fn persist_peer_keys(&mut self, keys: &KeyBindingSet, now: i64) -> Result<(), LedgerError> {
-        self.0.lock().map_err(poisoned)?.persist_peer_keys(keys, now)
+        self.0
+            .lock()
+            .map_err(poisoned)?
+            .persist_peer_keys(keys, now)
     }
 }
 
@@ -129,7 +138,9 @@ pub fn run_pair_invite(state: &DaemonState) -> Result<serde_json::Value, Problem
     {
         let store = state.store();
         let mut store = store.lock().map_err(|_| internal())?;
-        store.put_active(verifier, pending).map_err(|_| internal())?;
+        store
+            .put_active(verifier, pending)
+            .map_err(|_| internal())?;
     }
     let invitation = serde_json::to_value(&invitation).map_err(|_| internal())?;
     Ok(serde_json::json!({ "invitation": invitation }))

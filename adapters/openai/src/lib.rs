@@ -22,7 +22,9 @@ pub fn chat_request(model: &str, content: &str) -> String {
 /// `{error: …}` on failure; the body is the OpenAI chat-completions JSON.
 pub fn extract_content(reply: &serde_json::Value) -> Result<String, String> {
     if let Some(err) = reply.get("error") {
-        return Err(format!("the broker refused or could not complete the call: {err}"));
+        return Err(format!(
+            "the broker refused or could not complete the call: {err}"
+        ));
     }
     let status = reply.get("status").and_then(serde_json::Value::as_u64);
     if let Some(code) = status {
@@ -59,7 +61,8 @@ mod tests {
 
     #[test]
     fn chat_request_is_well_formed() {
-        let body: serde_json::Value = serde_json::from_str(&chat_request("gpt-4o", "hello")).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&chat_request("gpt-4o", "hello")).unwrap();
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"], "hello");
@@ -93,7 +96,8 @@ mod tests {
 
     #[test]
     fn validate_sarif_accepts_a_report_and_counts_findings() {
-        let sarif = br#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[
+        let sarif =
+            br#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[
             {"message":{"text":"nit on line 1"}},
             {"message":{"text":"nit on line 2"}}
         ]}]}"#;

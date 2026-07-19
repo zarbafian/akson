@@ -304,7 +304,7 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     let identity = IdentityKeys::from_master([33u8; 32]);
     let endpoint_cert = self_signed_endpoint(
@@ -523,10 +523,11 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
     // fails closed (503) rather than run un-isolated — skip the demo there.
     let run_state = state.clone();
     let run_task = task_id.clone();
-    let ran =
-        tokio::task::spawn_blocking(move || run_state.dispatch(&ControlRequest::TaskRun { task_id: run_task }))
-            .await
-            .unwrap();
+    let ran = tokio::task::spawn_blocking(move || {
+        run_state.dispatch(&ControlRequest::TaskRun { task_id: run_task })
+    })
+    .await
+    .unwrap();
     let ran = match ran {
         Ok(v) => v,
         Err(p) if p.status == 503 => {
@@ -568,7 +569,9 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
     let rerun_state = state.clone();
     let rerun_task = task_id.clone();
     let rerun = tokio::task::spawn_blocking(move || {
-        rerun_state.dispatch(&ControlRequest::TaskRun { task_id: rerun_task })
+        rerun_state.dispatch(&ControlRequest::TaskRun {
+            task_id: rerun_task,
+        })
     })
     .await
     .unwrap();
@@ -738,7 +741,10 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
             eprintln!("[skip] no delegated cgroup subtree; confined run not exercised");
             return;
         }
-        Err(p) => panic!("adapter run failed: {} ({}) {:?}", p.title, p.status, p.detail),
+        Err(p) => panic!(
+            "adapter run failed: {} ({}) {:?}",
+            p.title, p.status, p.detail
+        ),
     };
     assert_eq!(ran["ran"], true);
     // The confined adapter wrote exactly the model's completion text.
@@ -978,7 +984,7 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     // A presents exactly the cert B pinned (its stable endpoint cert).
     let a_state = Arc::new(DaemonState::from_parts(
@@ -1176,7 +1182,7 @@ async fn two_daemons_run_the_whole_task_round_trip() {
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     let a_state = Arc::new(DaemonState::from_parts(
         a_store,

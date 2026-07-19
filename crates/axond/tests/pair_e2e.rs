@@ -87,7 +87,8 @@ async fn a_daemon_accepts_an_invitation_and_pins_the_inviter_with_its_keys() {
     let (invitation, pending) =
         Invitation::create(url, inviter_fp.clone(), "kid".to_owned(), now_unix, 900, 5);
     let verifier = pending.verifier();
-    let mut inviter_store = Store::open_in_memory(&Kek::from_bytes([90u8; 32]), checkpoint()).unwrap();
+    let mut inviter_store =
+        Store::open_in_memory(&Kek::from_bytes([90u8; 32]), checkpoint()).unwrap();
     inviter_store.put_active(verifier, pending).unwrap();
     let state = Arc::new(BootstrapState::new(
         inviter_store,
@@ -117,7 +118,7 @@ async fn a_daemon_accepts_an_invitation_and_pins_the_inviter_with_its_keys() {
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     let daemon = Arc::new(DaemonState::from_parts(acc_store, acc_id, acc_cert, config));
     let daemon_store = daemon.store();
@@ -170,7 +171,7 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
         receive_addr: None,
         pair_addr: Some(format!("127.0.0.1:{a_port}")),
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     let a = Arc::new(DaemonState::from_parts(a_store, a_id, a_cert, a_config));
 
@@ -178,8 +179,11 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
     let a_material = material(a.identity(), &a_fp, "inviter");
     let bstate = Arc::new(BootstrapState::new(SharedStore(a.store()), a_material));
     let a_acceptor = TlsAcceptor::from(Arc::new(
-        bootstrap_server_config(&a.identity().purpose_key(KeyPurpose::TlsEndpoint), a.endpoint_cert())
-            .unwrap(),
+        bootstrap_server_config(
+            &a.identity().purpose_key(KeyPurpose::TlsEndpoint),
+            a.endpoint_cert(),
+        )
+        .unwrap(),
     ));
     tokio::spawn(serve_bootstrap(a_listener, a_acceptor, bstate));
 
@@ -210,7 +214,7 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
         receive_addr: None,
         pair_addr: None,
         worker_command: None,
-            worker_exec: None,
+        worker_exec: None,
     };
     let b = Arc::new(DaemonState::from_parts(b_store, b_id, b_cert, b_config));
     let b_store_handle = b.store();
@@ -224,8 +228,19 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
     assert_eq!(out["peer"], "inviter");
 
     // Both endpoints now hold the other as a peer, in their own durable stores.
-    assert!(b_store_handle.lock().unwrap().get_peer("inviter").unwrap().is_some());
-    assert!(a.store().lock().unwrap().get_peer("accepter").unwrap().is_some());
+    assert!(b_store_handle
+        .lock()
+        .unwrap()
+        .get_peer("inviter")
+        .unwrap()
+        .is_some());
+    assert!(a
+        .store()
+        .lock()
+        .unwrap()
+        .get_peer("accepter")
+        .unwrap()
+        .is_some());
 
     // The new peer is pending; the operator confirms it to activate it (§8.2 step 7).
     let confirmed = a

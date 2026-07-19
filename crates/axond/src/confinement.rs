@@ -162,7 +162,10 @@ mod tests {
         assert!(c.input_ids.is_empty());
         assert!(c.writes_output);
         let paths = sandbox_paths(&c.to_spec("/host/in", "/host/out", RUNTIME));
-        assert!(!paths.contains(&"/inputs".to_owned()), "no input grant → no /inputs");
+        assert!(
+            !paths.contains(&"/inputs".to_owned()),
+            "no input grant → no /inputs"
+        );
         assert!(paths.contains(&"/output".to_owned()));
     }
 
@@ -173,7 +176,10 @@ mod tests {
         assert!(!c.writes_output);
         let paths = sandbox_paths(&c.to_spec("/host/in", "/host/out", RUNTIME));
         assert!(paths.contains(&"/inputs".to_owned()));
-        assert!(!paths.contains(&"/output".to_owned()), "no output grant → no /output");
+        assert!(
+            !paths.contains(&"/output".to_owned()),
+            "no output grant → no /output"
+        );
     }
 
     #[test]

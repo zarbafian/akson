@@ -173,7 +173,11 @@ pub fn issue_for_accepted(
         grants.push(Grant::ArtifactExport(ArtifactExportScope {
             recipient: recipient.to_owned(),
             task_id: task_id.to_owned(),
-            media_types: contract.deliverables.iter().map(|d| d.media_type.clone()).collect(),
+            media_types: contract
+                .deliverables
+                .iter()
+                .map(|d| d.media_type.clone())
+                .collect(),
             max_count: contract.deliverables.len().max(1) as u32,
             max_bytes: contract.limits.max_response_bytes,
         }));
@@ -491,7 +495,10 @@ mod tests {
     #[test]
     fn an_explicit_processor_grant_adds_processor_use_bound_to_that_processor() {
         let store = store();
-        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs", "processor_use"]);
+        let task_id = submit_and_accept(
+            &store,
+            &["respond", "read_supplied_inputs", "processor_use"],
+        );
         add_processor(&store, "reviewer");
         let key = WorkOrderKey::from_bytes([7u8; 32]);
         let issuer = ident("authority");
@@ -533,7 +540,10 @@ mod tests {
     #[test]
     fn a_grant_naming_an_unconfigured_processor_is_refused() {
         let store = store();
-        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs", "processor_use"]);
+        let task_id = submit_and_accept(
+            &store,
+            &["respond", "read_supplied_inputs", "processor_use"],
+        );
         // No processor configured.
         let key = WorkOrderKey::from_bytes([7u8; 32]);
         let issuer = ident("authority");
@@ -550,8 +560,10 @@ mod tests {
     #[test]
     fn an_explicit_artifact_grant_adds_artifact_export_when_requested() {
         let store = store();
-        let task_id =
-            submit_and_accept(&store, &["respond", "read_supplied_inputs", "artifact_export"]);
+        let task_id = submit_and_accept(
+            &store,
+            &["respond", "read_supplied_inputs", "artifact_export"],
+        );
         let key = WorkOrderKey::from_bytes([7u8; 32]);
         let issuer = ident("authority");
         let issued = issue_for_accepted(

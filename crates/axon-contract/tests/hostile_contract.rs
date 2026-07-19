@@ -39,15 +39,37 @@ fn malformed_payloads_are_rejected_without_panicking() {
 fn a_deterministic_byte_sweep_never_panics() {
     let mut state: u64 = 0x2545F4914F6CDD1D;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     // A JSON-ish alphabet plus contract field-name fragments, to reach deeper into
     // the parser than pure noise would.
     let alphabet: &[&[u8]] = &[
-        b"{", b"}", b"[", b"]", b"\"", b":", b",", b"1", b"0", b"-", b".", b"e",
-        b"schema_version", b"contract_id", b"inputs", b"requester", b"performer",
-        b"deliverables", b"limits", b"created_at", b"expires_at", b"true", b"null",
+        b"{",
+        b"}",
+        b"[",
+        b"]",
+        b"\"",
+        b":",
+        b",",
+        b"1",
+        b"0",
+        b"-",
+        b".",
+        b"e",
+        b"schema_version",
+        b"contract_id",
+        b"inputs",
+        b"requester",
+        b"performer",
+        b"deliverables",
+        b"limits",
+        b"created_at",
+        b"expires_at",
+        b"true",
+        b"null",
     ];
     for _ in 0..20_000 {
         let tokens = (next() % 40) as usize;

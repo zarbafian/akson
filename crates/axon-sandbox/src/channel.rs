@@ -66,7 +66,11 @@ mod tests {
         // The worker end is inheritable (non-CLOEXEC) so it can cross exec.
         // SAFETY: F_GETFD on a live fd.
         let wflags = unsafe { libc::fcntl(worker.as_raw_fd(), libc::F_GETFD) };
-        assert_eq!(wflags & libc::FD_CLOEXEC, 0, "worker end must be inheritable");
+        assert_eq!(
+            wflags & libc::FD_CLOEXEC,
+            0,
+            "worker end must be inheritable"
+        );
 
         // The daemon end is CLOEXEC so it never leaks into the sandbox.
         // SAFETY: F_GETFD on a live fd.

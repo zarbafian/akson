@@ -58,8 +58,10 @@ fn run() -> Result<(), String> {
         let count = validate_sarif(text.as_bytes())?;
         task.write_artifact("findings", "application/sarif+json", text.as_bytes())
             .map_err(|e| e.to_string())?;
-        task.respond(format!("Review complete: {count} finding(s); see the SARIF artifact.").as_bytes())
-            .map_err(|e| e.to_string())
+        task.respond(
+            format!("Review complete: {count} finding(s); see the SARIF artifact.").as_bytes(),
+        )
+        .map_err(|e| e.to_string())
     } else {
         task.respond(text.as_bytes()).map_err(|e| e.to_string())
     }

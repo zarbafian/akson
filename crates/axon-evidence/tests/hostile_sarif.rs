@@ -59,13 +59,32 @@ fn a_deterministic_byte_sweep_never_panics() {
     let limits = SarifLimits::default();
     let mut state: u64 = 0x14057B7EF767814F;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     let alphabet: &[&[u8]] = &[
-        b"{", b"}", b"[", b"]", b"\"", b":", b",", b"1", b"0",
-        b"version", b"runs", b"results", b"message", b"text", b"ruleId",
-        b"locations", b"level", b"2.1.0", b"true", b"null",
+        b"{",
+        b"}",
+        b"[",
+        b"]",
+        b"\"",
+        b":",
+        b",",
+        b"1",
+        b"0",
+        b"version",
+        b"runs",
+        b"results",
+        b"message",
+        b"text",
+        b"ruleId",
+        b"locations",
+        b"level",
+        b"2.1.0",
+        b"true",
+        b"null",
     ];
     for _ in 0..20_000 {
         let tokens = (next() % 40) as usize;

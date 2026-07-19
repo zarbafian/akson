@@ -219,7 +219,10 @@ impl Task {
             role: role.to_owned(),
             media_type: media_type.to_owned(),
         });
-        std::fs::write(&manifest, serde_json::to_vec(&entries).map_err(Error::Manifest)?)?;
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&entries).map_err(Error::Manifest)?,
+        )?;
         Ok(())
     }
 }
@@ -234,7 +237,9 @@ pub struct ArtifactEntry {
 /// Whether `s` is a slug (`[a-z0-9][a-z0-9-]*`) — a safe single path component.
 fn is_slug(s: &str) -> bool {
     !s.is_empty()
-        && s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && s.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }

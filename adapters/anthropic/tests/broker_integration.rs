@@ -38,7 +38,14 @@ fn the_adapter_reviews_an_input_via_a_brokered_messages_call() {
     let mock = std::thread::spawn(move || mock_daemon(daemon_end));
 
     let status = Command::new(env!("CARGO_BIN_EXE_axon-adapter-anthropic"))
-        .args(["--processor", "claude", "--model", "claude-test", "--max-tokens", "256"])
+        .args([
+            "--processor",
+            "claude",
+            "--model",
+            "claude-test",
+            "--max-tokens",
+            "256",
+        ])
         .env("AXON_INPUT_ROOT", &input_root)
         .env("AXON_OUTPUT_ROOT", &output_root)
         .env("AXON_BROKER_FD", worker_end.as_raw_fd().to_string())
@@ -96,7 +103,8 @@ fn the_adapter_emits_validated_sarif_as_an_artifact() {
     let artifact = std::fs::read(output_root.join("artifacts").join("findings")).unwrap();
     assert_eq!(artifact, sarif.as_bytes());
     let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(output_root.join("artifacts.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(output_root.join("artifacts.json")).unwrap())
+            .unwrap();
     assert_eq!(manifest[0]["role"], "findings");
     assert_eq!(manifest[0]["media_type"], "application/sarif+json");
     let response = std::fs::read_to_string(output_root.join("response")).unwrap();

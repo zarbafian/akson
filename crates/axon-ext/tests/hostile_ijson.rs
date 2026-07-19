@@ -69,14 +69,14 @@ fn malformed_bytes_are_rejected_without_panicking() {
         b"[1,2,",
         b"{\"a\":1,}",
         b"\"unterminated",
-        &[0xff, 0xfe, 0xfd],           // invalid UTF-8
-        &[0x7b, 0xff, 0x7d],           // { <invalid utf8> }
+        &[0xff, 0xfe, 0xfd], // invalid UTF-8
+        &[0x7b, 0xff, 0x7d], // { <invalid utf8> }
         b"\x00\x00\x00",
         b"123abc",
         b"-",
         b"1e",
         b"1.2.3",
-        "\u{feff}{}".as_bytes(),       // BOM prefix
+        "\u{feff}{}".as_bytes(), // BOM prefix
     ];
     for bytes in cases {
         // The only requirement: it returns (Ok or Err) without crashing.
@@ -91,7 +91,9 @@ fn a_deterministic_byte_sweep_never_panics() {
     // the assertion: any panic or overflow aborts it.
     let mut state: u64 = 0x9E3779B97F4A7C15;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     let alphabet = b"{}[]\":,0123456789.-+eEtfnul \t\n\\/u";

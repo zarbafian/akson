@@ -128,9 +128,9 @@ fn run_once(adapter_cmd: &[String], fixture: &Fixture) -> std::io::Result<RunRes
     std::fs::create_dir_all(&output_root)?;
     stage_fixture(&input_root, fixture)?;
 
-    let program = adapter_cmd
-        .first()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty adapter command"))?;
+    let program = adapter_cmd.first().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty adapter command")
+    })?;
     let status = Command::new(program)
         .args(&adapter_cmd[1..])
         .env("AXON_INPUT_ROOT", &input_root)

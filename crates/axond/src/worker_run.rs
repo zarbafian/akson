@@ -29,7 +29,9 @@ use axon_sandbox::{
     SeccompPolicy,
 };
 use axon_store::StoreError;
-use axon_worker::{check_inert, gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem};
+use axon_worker::{
+    check_inert, gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem,
+};
 
 use crate::bootstrap::DaemonState;
 use crate::broker::run_processor_call;
@@ -163,12 +165,18 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     // The read-only OS runtime substrate (interpreter + shared libraries, no task
     // data) is always present; the grant-derived /inputs and /output binds are
     // added by the confinement.
-    let mut bind_dirs: Vec<String> =
-        ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives"]
-            .into_iter()
-            .filter(|d| Path::new(d).exists())
-            .map(str::to_owned)
-            .collect();
+    let mut bind_dirs: Vec<String> = [
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc/alternatives",
+    ]
+    .into_iter()
+    .filter(|d| Path::new(d).exists())
+    .map(str::to_owned)
+    .collect();
     // Make the worker binary's own directory available (read-only) when it lives
     // outside the system dirs — e.g. a locally-built adapter. The bind token (the
     // shell command's first word, or the adapter's argv[0]) names it; a bare name
@@ -193,8 +201,8 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     // and the daemon services the other end. Its number is handed to the worker as
     // AXON_BROKER_FD; the daemon makes the real, credential-injected, budgeted call.
     let mut broker = if confinement.processor.is_some() {
-        let (worker_fd, daemon_stream) =
-            broker_socketpair().map_err(|e| problem_detail(500, "run-setup", "broker channel", e))?;
+        let (worker_fd, daemon_stream) = broker_socketpair()
+            .map_err(|e| problem_detail(500, "run-setup", "broker channel", e))?;
         spec = spec.setenv("AXON_BROKER_FD", &worker_fd.as_raw_fd().to_string());
         Some((worker_fd, daemon_stream))
     } else {
@@ -227,7 +235,12 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         BubblewrapLauncher
             .launch(spec, &program, &args, &seccomp, &cgroup)
             .map_err(|e| {
-                problem_detail(500, "worker-failed", "the worker did not run to completion", e)
+                problem_detail(
+                    500,
+                    "worker-failed",
+                    "the worker did not run to completion",
+                    e,
+                )
             })
     };
     // Durable-before-effect: mark the attempt Running *before* the sandbox launches.
@@ -396,7 +409,12 @@ fn collect_artifacts(
         .map_err(|e| problem_detail(422, "bad-artifacts", "the artifact manifest is invalid", e))?;
     for entry in &entries {
         let bytes = std::fs::read(output.join("artifacts").join(&entry.role)).map_err(|e| {
-            problem_detail(422, "missing-artifact", "a declared artifact was not written", e)
+            problem_detail(
+                422,
+                "missing-artifact",
+                "a declared artifact was not written",
+                e,
+            )
         })?;
         // A renderable artifact must be inert — no scripts, event handlers, or
         // external fetches that would execute when the requester views it (§20.4).
@@ -428,8 +446,13 @@ fn collect_artifacts(
 }
 
 fn path_str(p: &Path) -> Result<&str, Problem> {
-    p.to_str()
-        .ok_or_else(|| problem(500, "run-setup", "the run directory path is not valid UTF-8"))
+    p.to_str().ok_or_else(|| {
+        problem(
+            500,
+            "run-setup",
+            "the run directory path is not valid UTF-8",
+        )
+    })
 }
 
 fn now_unix() -> i64 {
@@ -498,7 +521,10 @@ mod tests {
         let empty = std::env::temp_dir().join(format!("axon-wr-e-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
         let (mut p2, mut o2) = (Vec::new(), Vec::new());
-        assert_eq!(collect_artifacts(&empty, "task-1", &mut p2, &mut o2).unwrap(), 0);
+        assert_eq!(
+            collect_artifacts(&empty, "task-1", &mut p2, &mut o2).unwrap(),
+            0
+        );
         assert!(o2.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);

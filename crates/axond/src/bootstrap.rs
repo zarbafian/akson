@@ -111,9 +111,8 @@ impl DaemonConfig {
         let worker_command = env_nonempty("AXON_WORKER_CMD");
         // A production adapter runs directly (no shell) under the strict profile;
         // split the command line on whitespace into argv. Empty → None.
-        let worker_exec = env_nonempty("AXON_WORKER_EXEC").map(|s| {
-            s.split_whitespace().map(str::to_owned).collect::<Vec<_>>()
-        });
+        let worker_exec = env_nonempty("AXON_WORKER_EXEC")
+            .map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>());
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
@@ -382,7 +381,9 @@ impl DaemonState {
                     config: serde_json::json!({}),
                     tls_certificate_sha256: tls_certificate_sha256.clone(),
                 };
-                store.put_processor(&config, now_unix()).map_err(|_| internal())?;
+                store
+                    .put_processor(&config, now_unix())
+                    .map_err(|_| internal())?;
                 Ok(serde_json::json!({ "added": true, "processor_id": processor_id }))
             }
             ControlRequest::ProcessorList => {

@@ -64,8 +64,8 @@ pub use receive_server::{
 };
 pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 pub use send::{run_send, Deliverable, TaskInput, TaskSpec};
-pub use worker_run::run_worker;
 pub use socket::{
     admin_socket_path, bind_socket, handle_connection, send_request, serve, socket_dir,
     worker_socket_path, ControlRequest, ControlResponse, SocketError,
 };
+pub use worker_run::run_worker;

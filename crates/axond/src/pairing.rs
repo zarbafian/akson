@@ -92,7 +92,9 @@ pub fn run_pair_accept(
     #[allow(clippy::await_holding_lock)]
     let peer = runtime
         .block_on(async {
-            let mut store = store_arc.lock().map_err(|_| "the store is poisoned".to_owned())?;
+            let mut store = store_arc
+                .lock()
+                .map_err(|_| "the store is poisoned".to_owned())?;
             accept_invitation(&invitation, &tls_key, cert, &material, &mut *store, now)
                 .await
                 .map_err(|e| e.to_string())

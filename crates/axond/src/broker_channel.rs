@@ -45,7 +45,10 @@ where
             continue;
         }
         if raw.len() > 1024 * 1024 {
-            let _ = write_line(&mut writer, &serde_json::json!({"error": "request too large"}));
+            let _ = write_line(
+                &mut writer,
+                &serde_json::json!({"error": "request too large"}),
+            );
             break;
         }
         let response = match serde_json::from_slice::<BrokerRequest>(&raw) {

@@ -23,7 +23,9 @@ pub fn messages_request(model: &str, content: &str, max_tokens: u32) -> String {
 /// `{content:[{type:"text", text:"…"}], …}` as the response body.
 pub fn extract_content(reply: &serde_json::Value) -> Result<String, String> {
     if let Some(err) = reply.get("error") {
-        return Err(format!("the broker refused or could not complete the call: {err}"));
+        return Err(format!(
+            "the broker refused or could not complete the call: {err}"
+        ));
     }
     if let Some(code) = reply.get("status").and_then(serde_json::Value::as_u64) {
         if !(200..300).contains(&code) {
@@ -102,7 +104,8 @@ mod tests {
 
     #[test]
     fn validate_sarif_accepts_a_report_and_counts_findings() {
-        let sarif = br#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[
+        let sarif =
+            br#"{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"reviewer"}},"results":[
             {"message":{"text":"nit on line 1"}}
         ]}]}"#;
         assert_eq!(validate_sarif(sarif).unwrap(), 1);
