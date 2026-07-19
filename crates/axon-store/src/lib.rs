@@ -1663,6 +1663,14 @@ pub enum PrepareOutcome {
     /// The identical call (same idempotency key) was already prepared — its current
     /// sub-attempt state is returned. Re-preparing never creates a second record.
     AlreadyPrepared(SubAttemptState),
+    /// This would be a *new* call for the work order, but the work order's aggregate
+    /// operation budget (`max_operations`) is already spent. No record is stored and
+    /// nothing is dispatched. An exact retry of an already-prepared call is never
+    /// refused this way (it takes the `AlreadyPrepared` path first).
+    BudgetExhausted {
+        /// The aggregate operation cap that was reached.
+        max_operations: u32,
+    },
 }
 
 /// The processor broker's durable state (design §13.1, §15.2): configured
@@ -1841,15 +1849,34 @@ impl Store {
     /// (design §13.1) — so a crash after any byte leaves is recoverable as
     /// `ambiguous`. Idempotent on the call's idempotency key: re-preparing the
     /// identical call returns its existing sub-attempt state, never a second record.
+    ///
+    /// Enforces the work order's aggregate operation budget: a *new* call is refused
+    /// with [`PrepareOutcome::BudgetExhausted`] once `max_operations` distinct calls
+    /// already exist for the work order. The count and the insert share one
+    /// transaction, so the cap holds under concurrency and across crashes — per-call
+    /// cost/byte ceilings can no longer be multiplied by an unbounded call count
+    /// (§12.1). An exact retry reuses its idempotency key and is never refused here.
     pub fn prepare_call(
         &self,
         call: &ProcessorCall,
+        max_operations: u32,
         now: i64,
     ) -> Result<PrepareOutcome, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         if let Some(state) = self.call_state(&call.idempotency_key)? {
             tx.commit()?;
             return Ok(PrepareOutcome::AlreadyPrepared(state));
+        }
+        // A new call: it must fit under the work order's aggregate operation cap.
+        // Counting inside this transaction makes the check-then-insert atomic.
+        let existing: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM processor_calls WHERE work_order_id = ?1",
+            [&call.work_order_id],
+            |r| r.get(0),
+        )?;
+        if existing >= i64::from(max_operations) {
+            tx.commit()?;
+            return Ok(PrepareOutcome::BudgetExhausted { max_operations });
         }
         let origin = serde_json::to_string(&call.origin)?;
         tx.execute(
@@ -2680,6 +2707,28 @@ mod tests {
                 max_cost_microusd: 5000,
                 deadline: "2030-01-01T00:00:00Z".to_owned(),
                 max_response_bytes: 65536,
+                max_operations: 16,
+            },
+        )
+        .unwrap()
+    }
+
+    /// Same as `processor_call` but bound to a named work order, so a test can pin
+    /// several distinct calls under one work order and exercise the aggregate cap.
+    fn processor_call_for(request: &[u8], work_order_id: &str) -> ProcessorCall {
+        ProcessorCall::prepare(
+            &processor_config("reviewer"),
+            request,
+            axon_broker::CallBinding {
+                work_order_id: work_order_id.to_owned(),
+                work_order_digest: "aa".repeat(32),
+                task_id: "task-1".to_owned(),
+            },
+            axon_broker::CallBudget {
+                max_cost_microusd: 5000,
+                deadline: "2030-01-01T00:00:00Z".to_owned(),
+                max_response_bytes: 65536,
+                max_operations: 16,
             },
         )
         .unwrap()
@@ -2713,7 +2762,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let call = processor_call(b"review this");
         assert_eq!(
-            store.prepare_call(&call, 100).unwrap(),
+            store.prepare_call(&call, 16, 100).unwrap(),
             PrepareOutcome::Prepared
         );
         assert_eq!(
@@ -2722,8 +2771,48 @@ mod tests {
         );
         // Re-preparing the identical call never creates a second record.
         assert_eq!(
-            store.prepare_call(&call, 101).unwrap(),
+            store.prepare_call(&call, 16, 101).unwrap(),
             PrepareOutcome::AlreadyPrepared(SubAttemptState::Prepared)
+        );
+    }
+
+    #[test]
+    fn prepare_call_enforces_the_aggregate_operation_budget() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // Two operations authorized for this work order.
+        assert_eq!(
+            store
+                .prepare_call(&processor_call_for(b"one", "wo-cap"), 2, 100)
+                .unwrap(),
+            PrepareOutcome::Prepared
+        );
+        assert_eq!(
+            store
+                .prepare_call(&processor_call_for(b"two", "wo-cap"), 2, 101)
+                .unwrap(),
+            PrepareOutcome::Prepared
+        );
+        // A third DISTINCT call is over budget — refused, no record stored.
+        assert_eq!(
+            store
+                .prepare_call(&processor_call_for(b"three", "wo-cap"), 2, 102)
+                .unwrap(),
+            PrepareOutcome::BudgetExhausted { max_operations: 2 }
+        );
+        // An exact retry of an already-prepared call is still idempotent, never
+        // refused as over budget.
+        assert_eq!(
+            store
+                .prepare_call(&processor_call_for(b"one", "wo-cap"), 2, 103)
+                .unwrap(),
+            PrepareOutcome::AlreadyPrepared(SubAttemptState::Prepared)
+        );
+        // A different work order has its own independent budget.
+        assert_eq!(
+            store
+                .prepare_call(&processor_call_for(b"one", "wo-other"), 2, 104)
+                .unwrap(),
+            PrepareOutcome::Prepared
         );
     }
 
@@ -2731,7 +2820,7 @@ mod tests {
     fn advance_call_drives_the_state_machine() {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let call = processor_call(b"x");
-        store.prepare_call(&call, 100).unwrap();
+        store.prepare_call(&call, 16, 100).unwrap();
         assert_eq!(
             store
                 .advance_call(&call.idempotency_key, SubAttemptEvent::Dispatch, 101)
@@ -2762,13 +2851,13 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         // One call is mid-dispatch (a byte may have left); another only prepared.
         let dispatching = processor_call(b"disclosed");
-        store.prepare_call(&dispatching, 100).unwrap();
+        store.prepare_call(&dispatching, 16, 100).unwrap();
         store
             .advance_call(&dispatching.idempotency_key, SubAttemptEvent::Dispatch, 101)
             .unwrap()
             .unwrap();
         let prepared = processor_call(b"not yet sent");
-        store.prepare_call(&prepared, 102).unwrap();
+        store.prepare_call(&prepared, 16, 102).unwrap();
 
         // Recovery sweeps only the dispatching one to ambiguous (never auto-retried).
         assert_eq!(store.resolve_crashed_calls(200).unwrap(), 1);

@@ -125,6 +125,7 @@ fn processor_call(request: &[u8]) -> ProcessorCall {
         max_cost_microusd: 5000,
         deadline: "2030-01-01T00:00:00Z".to_owned(),
         max_response_bytes: 65536,
+        max_operations: 16,
     };
     ProcessorCall::prepare(&config, request, binding, budget).unwrap()
 }
@@ -181,7 +182,7 @@ fn a_dispatching_processor_call_is_recovered_ambiguous_after_a_crash() {
         let state = DaemonState::bootstrap(&cfg).unwrap();
         let store = state.store();
         let store = store.lock().unwrap();
-        store.prepare_call(&call, NOW).unwrap();
+        store.prepare_call(&call, 16, NOW).unwrap();
         store
             .advance_call(&call.idempotency_key, SubAttemptEvent::Dispatch, NOW)
             .unwrap()

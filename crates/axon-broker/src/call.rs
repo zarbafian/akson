@@ -27,13 +27,13 @@
 //!     &config,
 //!     b"review this diff",
 //!     CallBinding { work_order_id: "wo-1".into(), work_order_digest: "aa".repeat(32), task_id: "task-1".into() },
-//!     CallBudget { max_cost_microusd: 5000, deadline: "2030-01-01T00:00:00Z".into(), max_response_bytes: 65536 },
+//!     CallBudget { max_cost_microusd: 5000, deadline: "2030-01-01T00:00:00Z".into(), max_response_bytes: 65536, max_operations: 16 },
 //! ).unwrap();
 //! assert_eq!(call.request_digest.len(), 64);
 //! // Re-preparing the identical call reuses the idempotency key.
 //! let again = ProcessorCall::prepare(&config, b"review this diff",
 //!     CallBinding { work_order_id: "wo-1".into(), work_order_digest: "aa".repeat(32), task_id: "task-1".into() },
-//!     CallBudget { max_cost_microusd: 5000, deadline: "2030-01-01T00:00:00Z".into(), max_response_bytes: 65536 },
+//!     CallBudget { max_cost_microusd: 5000, deadline: "2030-01-01T00:00:00Z".into(), max_response_bytes: 65536, max_operations: 16 },
 //! ).unwrap();
 //! assert_eq!(call.idempotency_key, again.idempotency_key);
 //! ```
@@ -60,6 +60,11 @@ pub struct CallBudget {
     pub max_cost_microusd: u64,
     pub deadline: String,
     pub max_response_bytes: u64,
+    /// The work order's aggregate operation cap: the total number of processor
+    /// calls this attempt may make. Enforced durably by counting prepared calls,
+    /// so per-call ceilings above cannot be multiplied by an unbounded call count
+    /// (§12.1 aggregate budget).
+    pub max_operations: u32,
 }
 
 /// Why a call could not be prepared or digested.
@@ -178,6 +183,7 @@ mod tests {
             max_cost_microusd: 5000,
             deadline: "2030-01-01T00:00:00Z".to_owned(),
             max_response_bytes: 65536,
+            max_operations: 16,
         }
     }
 

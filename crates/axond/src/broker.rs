@@ -103,15 +103,31 @@ pub async fn dispatch_processor_call(
                 e,
             )
         })?;
+        // The aggregate operation cap is checked atomically inside prepare_call; grab
+        // it before `budget` is moved into the call.
+        let max_operations = budget.max_operations;
         let call =
             ProcessorCall::prepare(&config, request, binding, budget).map_err(|_| internal())?;
-        match store.prepare_call(&call, now).map_err(store_problem)? {
+        match store
+            .prepare_call(&call, max_operations, now)
+            .map_err(store_problem)?
+        {
             PrepareOutcome::Prepared => {}
             // Idempotent: a call that already reached a terminal state is never re-sent.
             PrepareOutcome::AlreadyPrepared(state) if is_terminal(state) => {
                 return Ok(outcome_json(&call, state, None));
             }
             PrepareOutcome::AlreadyPrepared(_) => {}
+            // A NEW call over the work order's aggregate operation budget: refused
+            // before any byte leaves, so per-call ceilings cannot be multiplied by an
+            // unbounded number of calls (§12.1).
+            PrepareOutcome::BudgetExhausted { .. } => {
+                return Err(problem(
+                    429,
+                    "budget-exhausted",
+                    "the work order's operation budget is exhausted",
+                ));
+            }
         }
         // Record `dispatching` before the first byte leaves (§13.1).
         advance(
@@ -424,6 +440,7 @@ pub fn run_processor_call(
             max_cost_microusd: issued.order.budgets.max_cost_microusd,
             deadline: issued.order.deadline.clone(),
             max_response_bytes: issued.order.budgets.max_bytes,
+            max_operations: issued.order.budgets.max_operations,
         };
         // Allow the processor's exact origin; permit its local address only for a
         // declared-local processor.
@@ -604,6 +621,7 @@ mod tests {
             max_cost_microusd: 1000,
             deadline: "2030-01-01T00:00:00Z".to_owned(),
             max_response_bytes: 65536,
+            max_operations: 16,
         }
     }
 
@@ -679,6 +697,54 @@ mod tests {
         assert_eq!(addr, "127.0.0.1".parse::<IpAddr>().unwrap());
         assert_eq!(credential.as_deref(), Some(&b"secret-key"[..]));
         assert_eq!(request, b"the prompt");
+    }
+
+    #[tokio::test]
+    async fn a_call_over_the_aggregate_operation_budget_is_refused() {
+        let store = store();
+        let (_config, policy) = processor(&store);
+        // A work order authorizing exactly ONE processor operation.
+        let one_op = CallBudget {
+            max_operations: 1,
+            ..budget()
+        };
+
+        // The single authorized operation succeeds.
+        let t1 = MockTransport::ok(200, b"{}");
+        dispatch_processor_call(
+            &store,
+            "local-llm",
+            b"first prompt",
+            binding(),
+            one_op.clone(),
+            &policy,
+            &t1,
+            NOW,
+        )
+        .await
+        .unwrap();
+        assert!(t1.seen.lock().unwrap().is_some());
+
+        // A second, DISTINCT call is a new operation — over the aggregate budget, so
+        // it is refused (429) before any byte leaves.
+        let t2 = MockTransport::ok(200, b"{}");
+        let err = dispatch_processor_call(
+            &store,
+            "local-llm",
+            b"second prompt",
+            binding(),
+            one_op,
+            &policy,
+            &t2,
+            NOW,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 429);
+        assert!(
+            t2.seen.lock().unwrap().is_none(),
+            "nothing is transmitted for the over-budget call"
+        );
     }
 
     #[tokio::test]
