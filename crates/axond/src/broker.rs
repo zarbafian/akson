@@ -15,7 +15,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use axon_authority::{AttemptState, CapabilityComponent};
+use axon_authority::{AttemptState, CapabilityComponent, Grant};
 use axon_broker::{
     check_origin, check_resolved_address, AuthScheme, CallBinding, CallBudget, EgressPolicy,
     ProcessorCall, SubAttemptEvent, SubAttemptState,
@@ -375,18 +375,30 @@ pub fn run_processor_call(
             .get_work_order(work_order_id)
             .map_err(store_problem)?
             .ok_or_else(|| problem(404, "no-work-order", "no such work order"))?;
-        // The work order must grant processor use (§12.1); Option-2 holds this
-        // outward-disclosing capability for a separate confirmation.
-        if !issued
+        // The work order must grant processor use for THIS EXACT processor (§12.1).
+        // The worker names the processor_id; a coarse "any processor_use" check would
+        // let a task granted processor A disclose plaintext through — and spend the
+        // sealed credential + budget of — any *other* configured processor B.
+        match issued
             .order
             .capabilities
-            .grants_component(CapabilityComponent::ProcessorUse)
+            .grant(CapabilityComponent::ProcessorUse)
         {
-            return Err(problem(
-                403,
-                "processor-use-not-granted",
-                "the work order does not authorise processor use",
-            ));
+            Some(Grant::ProcessorUse(scope)) if scope.processor_id == processor_id => {}
+            Some(Grant::ProcessorUse(_)) => {
+                return Err(problem(
+                    403,
+                    "processor-mismatch",
+                    "the work order does not authorise this processor",
+                ))
+            }
+            _ => {
+                return Err(problem(
+                    403,
+                    "processor-use-not-granted",
+                    "the work order does not authorise processor use",
+                ))
+            }
         }
         // The attempt must be active — no calls before it claims or after it ends.
         match store.attempt_state(work_order_id).map_err(store_problem)? {
@@ -992,6 +1004,31 @@ mod tests {
         store_work_order(&daemon, "wo-1", vec![respond_grant()]);
         let err = run_processor_call(&daemon, "proc", "wo-1", b"x").unwrap_err();
         assert_eq!(err.status, 403);
+    }
+
+    #[test]
+    fn a_processor_call_for_a_different_processor_is_refused() {
+        let daemon = daemon();
+        // Granted processor_use for "proc-a"; a hostile worker asks for "proc-b".
+        store_work_order(
+            &daemon,
+            "wo-1",
+            vec![Grant::ProcessorUse(axon_authority::ProcessorUseScope {
+                processor_id: "proc-a".to_owned(),
+                input_ids: vec![],
+                max_cost_microusd: 5000,
+                max_bytes: 65536,
+            })],
+        );
+        let err = run_processor_call(&daemon, "proc-b", "wo-1", b"x").unwrap_err();
+        assert_eq!(err.status, 403, "a non-granted processor must be refused");
+        // The exact granted processor passes the grant gate (it then fails 404 for a
+        // missing config — proving the gate opened for the right processor, not 403).
+        let err2 = run_processor_call(&daemon, "proc-a", "wo-1", b"x").unwrap_err();
+        assert_ne!(
+            err2.status, 403,
+            "the granted processor passes the grant gate"
+        );
     }
 
     #[test]
