@@ -112,6 +112,43 @@ sandboxed `task run` needs Linux with unprivileged user namespaces and a
 delegated cgroup v2 subtree; without them the daemon refuses to run the worker
 rather than run it unconfined.
 
+### Review with a real model
+
+The stand-in worker above just echoes. A real reviewer runs one of the bundled
+adapters, which reach a model **only through the broker** — the confined worker
+has no network of its own, so the daemon makes the credential-injected, budgeted
+call on its behalf. Build an adapter and make it `bob`'s worker command (needs a
+reachable model endpoint and an API key, so this steps outside the loopback demo):
+
+~~~text
+cargo build -p axon-adapter-openai        # or -p axon-adapter-anthropic
+
+# bob's worker command runs the confined adapter; --sarif emits findings as
+# a validated application/sarif+json artifact instead of a plain response.
+export AXON_WORKER_CMD='target/debug/axon-adapter-openai --processor gpt --model gpt-4o --sarif'
+#   ...then start bob's `axond serve` so it picks up this worker command.
+
+# Register the model endpoint as a pinned processor and store its credential.
+bob processor add gpt openai api.openai.com 443 ca --path /v1/chat/completions --auth bearer
+bob processor credential gpt "$OPENAI_API_KEY"
+~~~
+
+Reaching a model and exporting an artifact are the two *outward-disclosing*
+grants: the task must request them, and `bob` must grant each explicitly at
+approval — neither is ever automatic.
+
+~~~text
+# In the proposal, alongside respond/read_supplied_inputs:
+#   "capabilities": ["respond", "read_supplied_inputs", "processor_use", "artifact_export"]
+bob task approve task-<id> --processor gpt --artifacts   # grants processor_use + artifact_export
+bob task run     task-<id>                               # confined adapter -> broker -> model -> SARIF
+~~~
+
+The returned SARIF is validated before it is emitted, so a model that answers with
+malformed or oversized findings fails closed. For Anthropic's Messages API, use the
+Anthropic adapter and point the processor at it instead:
+`... anthropic api.anthropic.com 443 ca --path /v1/messages --auth x-api-key --header anthropic-version:2023-06-01`.
+
 ## Documents
 
 - [Design](design/2026-07-16-threads-enterprise-agent-communication.md) — the
