@@ -123,10 +123,13 @@ reachable model endpoint and an API key, so this steps outside the loopback demo
 ~~~text
 cargo build -p axon-adapter-openai        # or -p axon-adapter-anthropic
 
-# bob's worker command runs the confined adapter; --sarif emits findings as
-# a validated application/sarif+json artifact instead of a plain response.
-export AXON_WORKER_CMD='target/debug/axon-adapter-openai --processor gpt --model gpt-4o --sarif'
-#   ...then start bob's `axond serve` so it picks up this worker command.
+# AXON_WORKER_EXEC runs the adapter DIRECTLY — no wrapping shell — under the strict
+# adapter seccomp profile: a single confined process that cannot create another
+# process (no fork/clone) and cannot open a socket. --sarif emits findings as a
+# validated application/sarif+json artifact instead of a plain response. (Use an
+# absolute path, or a name on PATH inside the sandbox.)
+export AXON_WORKER_EXEC="$PWD/target/debug/axon-adapter-openai --processor gpt --model gpt-4o --sarif"
+#   ...then start bob's `axond serve` so it picks up this worker.
 
 # Register the model endpoint as a pinned processor and store its credential.
 bob processor add gpt openai api.openai.com 443 ca --path /v1/chat/completions --auth bearer

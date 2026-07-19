@@ -835,6 +835,7 @@ mod tests {
             receive_addr: None,
             pair_addr: None,
             worker_command: None,
+            worker_exec: None,
         };
         DaemonState::from_parts(store, identity, cert, config)
     }

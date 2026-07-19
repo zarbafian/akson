@@ -43,13 +43,74 @@ use crate::result::{hex_sha256, submit_result, OutputKind, ResultOutput, ResultS
 /// recipient, to this same value).
 const REQUEST_ORIGIN: &str = "request-origin";
 
+/// How the approved worker is launched inside the sandbox.
+///
+/// - `Shell` — the operator's `AXON_WORKER_CMD`, run as `/bin/sh -c <cmd>` under the
+///   process-spawning [`clean_worker_baseline`](SeccompPolicy::clean_worker_baseline);
+///   this is the dev stand-in that may shell out to tools.
+/// - `Adapter` — `AXON_WORKER_EXEC` as a direct `argv` (no shell) under the strict
+///   [`adapter_worker_baseline`](SeccompPolicy::adapter_worker_baseline): a single
+///   production-adapter process that cannot spawn a child or open a socket.
+enum Invocation {
+    Shell(String),
+    Adapter(Vec<String>),
+}
+
+impl Invocation {
+    /// The invocation from config: a direct adapter (`worker_exec`) wins over the
+    /// shell command (`worker_command`); `None` if neither is set.
+    fn from_config(config: &crate::bootstrap::DaemonConfig) -> Option<Self> {
+        if let Some(argv) = config.worker_exec.as_ref().filter(|a| !a.is_empty()) {
+            Some(Invocation::Adapter(argv.clone()))
+        } else {
+            config.worker_command.clone().map(Invocation::Shell)
+        }
+    }
+
+    /// The program bubblewrap execs: `/bin/sh` for a shell command, or the adapter's
+    /// `argv[0]` for a direct run.
+    fn program(&self) -> &str {
+        match self {
+            Invocation::Shell(_) => "/bin/sh",
+            Invocation::Adapter(argv) => &argv[0],
+        }
+    }
+
+    /// The arguments after `program`.
+    fn args(&self) -> Vec<String> {
+        match self {
+            Invocation::Shell(cmd) => vec!["-c".to_owned(), cmd.clone()],
+            Invocation::Adapter(argv) => argv[1..].to_vec(),
+        }
+    }
+
+    /// The user tool's path token for the read-only bind of its own directory: the
+    /// shell command's first word, or the adapter's `argv[0]`.
+    fn bind_token(&self) -> Option<&str> {
+        match self {
+            Invocation::Shell(cmd) => cmd.split_whitespace().next(),
+            Invocation::Adapter(argv) => Some(&argv[0]),
+        }
+    }
+
+    /// The seccomp profile for this invocation.
+    fn seccomp(&self) -> SeccompPolicy {
+        match self {
+            Invocation::Shell(_) => SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess),
+            Invocation::Adapter(_) => {
+                SeccompPolicy::adapter_worker_baseline(DenyAction::KillProcess)
+            }
+        }
+    }
+}
+
 /// Runs the approved Task's worker in the sandbox and submits its gated result
 /// (design §7.2). Manages its own store locking (the sandbox launch is slow and
 /// must not hold the lock): gather under the lock → stage + launch + gate with no
 /// lock → submit under the lock. Fails closed at every gate.
 pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Value, Problem> {
     // Phase 1 — gather everything the run needs, then release the lock.
-    let (work_order_id, capabilities, inputs, worker_command) = {
+    let (work_order_id, capabilities, inputs, invocation) = {
         let store = state.store();
         let store = store.lock().map_err(|_| internal())?;
         let work_order_id = store
@@ -61,14 +122,14 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
             .map_err(store_problem)?
             .ok_or_else(|| problem(404, "no-work-order", "the work order is missing"))?;
         let inputs = store.list_task_inputs(task_id).map_err(store_problem)?;
-        let worker_command = state.config().worker_command.clone().ok_or_else(|| {
+        let invocation = Invocation::from_config(state.config()).ok_or_else(|| {
             problem(
                 409,
                 "no-worker",
-                "no worker is configured (set AXON_WORKER_CMD)",
+                "no worker is configured (set AXON_WORKER_CMD or AXON_WORKER_EXEC)",
             )
         })?;
-        (work_order_id, issued.order.capabilities, inputs, worker_command)
+        (work_order_id, issued.order.capabilities, inputs, invocation)
     };
 
     // Phase 2 — stage, launch fully confined, and gate. No store lock is held.
@@ -109,11 +170,11 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
             .map(str::to_owned)
             .collect();
     // Make the worker binary's own directory available (read-only) when it lives
-    // outside the system dirs — e.g. a locally-built adapter. The command's first
-    // token is the program; a bare name resolves on PATH (already under /usr).
-    if let Some(dir) = worker_command
-        .split_whitespace()
-        .next()
+    // outside the system dirs — e.g. a locally-built adapter. The bind token (the
+    // shell command's first word, or the adapter's argv[0]) names it; a bare name
+    // resolves on PATH (already under /usr).
+    if let Some(dir) = invocation
+        .bind_token()
         .filter(|t| t.contains('/'))
         .and_then(|t| Path::new(t).parent())
         .and_then(|p| p.to_str())
@@ -140,7 +201,9 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         None
     };
 
-    let seccomp = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
+    // The shell stand-in gets the process-spawning baseline; a production adapter
+    // runs directly under the strict profile that denies process creation entirely.
+    let seccomp = invocation.seccomp();
     let cgroup = CgroupScope::create(
         &format!("axon-worker-{task_id}"),
         &CgroupLimits {
@@ -158,10 +221,11 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         )
     })?;
 
-    let args = ["-c".to_owned(), worker_command];
+    let program = invocation.program().to_owned();
+    let args = invocation.args();
     let launch = |spec: &_| {
         BubblewrapLauncher
-            .launch(spec, "/bin/sh", &args, &seccomp, &cgroup)
+            .launch(spec, &program, &args, &seccomp, &cgroup)
             .map_err(|e| {
                 problem_detail(500, "worker-failed", "the worker did not run to completion", e)
             })

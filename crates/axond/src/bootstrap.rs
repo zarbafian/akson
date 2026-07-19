@@ -84,6 +84,13 @@ pub struct DaemonConfig {
     /// read-only at `/inputs` and a writable `/output`; the worker writes its
     /// response to `/output/response`. `None` disables `axon task run`.
     pub worker_command: Option<String>,
+    /// A production adapter to run **directly** — no wrapping shell — under the
+    /// strict [`adapter_worker_baseline`](axon_sandbox::SeccompPolicy::adapter_worker_baseline)
+    /// seccomp profile (`AXON_WORKER_EXEC`, whitespace-split into `argv`; the program
+    /// must be an absolute path or resolvable on `PATH` inside the sandbox). When set,
+    /// it takes precedence over `worker_command`. This is the confined-adapter path
+    /// (§13.1/§16.3): a single process that cannot spawn a child or open a socket.
+    pub worker_exec: Option<Vec<String>>,
 }
 
 impl DaemonConfig {
@@ -102,6 +109,11 @@ impl DaemonConfig {
         let receive_addr = env_nonempty("AXON_RECEIVE_ADDR");
         let pair_addr = env_nonempty("AXON_PAIR_ADDR");
         let worker_command = env_nonempty("AXON_WORKER_CMD");
+        // A production adapter runs directly (no shell) under the strict profile;
+        // split the command line on whitespace into argv. Empty → None.
+        let worker_exec = env_nonempty("AXON_WORKER_EXEC").map(|s| {
+            s.split_whitespace().map(str::to_owned).collect::<Vec<_>>()
+        });
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
@@ -109,6 +121,7 @@ impl DaemonConfig {
             receive_addr,
             pair_addr,
             worker_command,
+            worker_exec,
         }
     }
 }
@@ -559,6 +572,7 @@ mod tests {
             receive_addr: None,
             pair_addr: None,
             worker_command: None,
+            worker_exec: None,
         }
     }
 

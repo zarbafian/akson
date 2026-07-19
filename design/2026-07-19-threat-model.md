@@ -64,10 +64,15 @@ authority is never touched by Axon; a **separate, additive** layer governs only 
 - **The TLS stack is `rustls-rustcrypto`** (ADR-0011): pure-Rust but community-
   maintained and less audited than aws-lc-rs. The `CryptoProvider` is the swap seam
   if it proves insufficient.
-- **A shell-orchestrated worker can spawn tools** (the seccomp baseline allows
-  `vfork`/`execve`); those children inherit the same sandbox, so they gain no
-  authority, but a worker that *needs* a broader syscall set is the operator's
-  responsibility to vet.
+- **A shell-orchestrated worker can spawn tools** (the shell baseline allows
+  `vfork`/`clone`/`execve`); those children inherit the same sandbox, so they gain
+  no authority, but a worker that *needs* a broader syscall set is the operator's
+  responsibility to vet. A **production adapter** (`AXON_WORKER_EXEC`) instead runs
+  directly under the strict `adapter_worker_baseline`, which drops the
+  process-creation family: it cannot `fork`/`clone`/`vfork` a helper or thread, so
+  even a shell reached via `execve` is inert (it cannot fork to run a command).
+  (`SeccompPolicy::adapter_worker_baseline`, validated live against a confined
+  adapter.)
 - **Denial of service by a peer** (flooding pairing/receive) is rate-limited and
   body-capped, but sustained resource pressure is not fully modeled here.
 - **Physical access, kernel/hypervisor compromise, and side channels** are out of

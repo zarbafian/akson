@@ -70,122 +70,40 @@ impl SeccompPolicy {
     }
 
     /// A starting default-deny allowlist for the clean worker (design §13.1): the
-    /// common syscalls a sandboxed program needs to start and do bounded work, with
-    /// everything else denied. Deliberately conservative; task profiles refine it.
-    /// Uses `Errno` so a missing syscall degrades rather than killing outright —
-    /// the strict worker profile uses [`DenyAction::KillProcess`].
+    /// common syscalls a sandboxed program needs to start and do bounded work, plus
+    /// the process-spawning family, with everything else denied. This is the profile
+    /// for the shell stand-in worker (`/bin/sh -c <cmd>`), which may `fork`/`exec`
+    /// external tools. A production adapter runs directly and uses the tighter
+    /// [`adapter_worker_baseline`]. The strict worker profile uses
+    /// [`DenyAction::KillProcess`].
     pub fn clean_worker_baseline(deny: DenyAction) -> Self {
-        Self::deny_all_except(
-            vec![
-                libc::SYS_read,
-                libc::SYS_write,
-                libc::SYS_readv,
-                libc::SYS_writev,
-                // Send/receive on an ALREADY-connected fd — how Rust's std does I/O
-                // on a socket (the inherited broker fd). No new reach: socket(),
-                // connect(), bind(), listen() stay off the list, so the worker can
-                // neither open a socket nor connect anywhere.
-                libc::SYS_sendto,
-                libc::SYS_recvfrom,
-                libc::SYS_sendmsg,
-                libc::SYS_recvmsg,
-                libc::SYS_pread64,
-                libc::SYS_pwrite64,
-                // Vectored positional I/O — the same read/write authority as the
-                // scalar variants above; the Rust std I/O layer uses them.
-                libc::SYS_preadv,
-                libc::SYS_pwritev,
-                // Zero-copy move between two already-open fds — no new authority
-                // (the worker can already read/write those fds); tools like `cat`
-                // use it to copy input to output efficiently.
-                libc::SYS_splice,
-                libc::SYS_lseek,
-                libc::SYS_close,
-                // Close a range of file descriptors — how modern glibc/Rust closes
-                // inherited fds at startup; only closes, never opens.
-                libc::SYS_close_range,
-                libc::SYS_openat,
-                libc::SYS_open,
-                libc::SYS_fstat,
-                libc::SYS_newfstatat,
-                // Read-only filesystem statistics (block size, free space) on a
-                // path/fd the worker can already reach — no isolation impact; real
-                // tools (e.g. uutils `cat`) call it to size their I/O buffers.
-                libc::SYS_statfs,
-                libc::SYS_fstatfs,
-                libc::SYS_statx,
-                libc::SYS_lstat,
-                libc::SYS_stat,
-                libc::SYS_access,
-                libc::SYS_faccessat,
-                libc::SYS_faccessat2,
-                libc::SYS_readlink,
-                libc::SYS_readlinkat,
-                libc::SYS_getdents64,
-                libc::SYS_getcwd,
-                libc::SYS_mmap,
-                libc::SYS_munmap,
-                libc::SYS_mprotect,
-                libc::SYS_mremap,
-                libc::SYS_madvise,
-                libc::SYS_brk,
-                libc::SYS_rt_sigaction,
-                libc::SYS_rt_sigprocmask,
-                libc::SYS_rt_sigreturn,
-                libc::SYS_sigaltstack,
-                libc::SYS_ioctl,
-                libc::SYS_fcntl,
-                libc::SYS_dup,
-                libc::SYS_dup2,
-                libc::SYS_dup3,
-                libc::SYS_pipe,
-                libc::SYS_pipe2,
-                libc::SYS_poll,
-                libc::SYS_ppoll,
-                libc::SYS_execve,
-                libc::SYS_exit,
-                libc::SYS_exit_group,
-                libc::SYS_wait4,
-                libc::SYS_clone,
-                libc::SYS_clone3,
-                // `vfork` is how a shell (dash) spawns a child before `execve`; a
-                // worker that shells out to a tool needs it. The child inherits
-                // this same seccomp filter, the namespaces, and the cgroup, so it
-                // is no less confined than a `clone`-spawned one (already allowed).
-                libc::SYS_vfork,
-                libc::SYS_futex,
-                libc::SYS_getpid,
-                libc::SYS_getppid,
-                libc::SYS_gettid,
-                libc::SYS_getuid,
-                libc::SYS_getgid,
-                libc::SYS_geteuid,
-                libc::SYS_getegid,
-                libc::SYS_arch_prctl,
-                // Process-control operations a runtime uses (e.g. PR_SET_NAME); the
-                // security-relevant ones (PR_SET_SECCOMP, PR_SET_NO_NEW_PRIVS) are
-                // gated by the already-applied no_new_privs + filter, so they cannot
-                // widen this worker's authority.
-                libc::SYS_prctl,
-                libc::SYS_set_tid_address,
-                libc::SYS_set_robust_list,
-                libc::SYS_rseq,
-                libc::SYS_prlimit64,
-                libc::SYS_getrandom,
-                libc::SYS_clock_gettime,
-                libc::SYS_clock_nanosleep,
-                libc::SYS_nanosleep,
-                libc::SYS_sched_getaffinity,
-                libc::SYS_sched_yield,
-                libc::SYS_uname,
-                libc::SYS_sysinfo,
-                libc::SYS_tgkill,
-                libc::SYS_epoll_create1,
-                libc::SYS_epoll_ctl,
-                libc::SYS_epoll_pwait,
-            ],
-            deny,
-        )
+        let mut allow = common_worker_syscalls();
+        // The process-CREATION family: a shell (dash) `fork`/`vfork`/`clone`s a child
+        // before `execve`ing an external tool. A single-process adapter never creates
+        // a process, so [`adapter_worker_baseline`] omits exactly this set. (Reaping —
+        // `wait4` — and `pipe`/`splice` are *not* here: bubblewrap's own pid-1 monitor
+        // needs them under this filter to reap the sandboxed child, so they live in
+        // the common set.)
+        allow.extend_from_slice(&[libc::SYS_vfork, libc::SYS_clone, libc::SYS_clone3]);
+        Self::deny_all_except(allow, deny)
+    }
+
+    /// A default-deny allowlist for a **production adapter** (design §13.1): a single
+    /// process that reads task inputs, does I/O on the inherited broker fd, and writes
+    /// outputs — run directly, with **no wrapping shell and no process creation**.
+    ///
+    /// It is [`clean_worker_baseline`] minus the process-creation family
+    /// (`clone`/`clone3`/`vfork`): a compromised adapter cannot spawn a helper or a
+    /// thread, and — as in every profile — cannot `socket()`/`connect()` to reach the
+    /// network. `execve` remains (bubblewrap performs the adapter's own launch under
+    /// this filter), but without process creation the adapter can only replace its own
+    /// image — and even a shell it `execve`s is inert, unable to `fork` to run a single
+    /// external command. Validated live: the real `axon-adapter-openai` runs to
+    /// completion confined over a brokered model call under this profile (bubblewrap's
+    /// pid-1 monitor `fork`s the sandboxed child *before* the filter is installed, so
+    /// omitting `clone`/`vfork` does not disturb the launch).
+    pub fn adapter_worker_baseline(deny: DenyAction) -> Self {
+        Self::deny_all_except(common_worker_syscalls(), deny)
     }
 
     /// Compiles the policy and writes the BPF program to an anonymous `memfd`,
@@ -262,6 +180,127 @@ impl SeccompPolicy {
         }
         seccompiler::apply_filter(&program).map_err(|e| SeccompError::Apply(e.to_string()))
     }
+}
+
+/// The syscalls common to every worker profile: enough for a single process to
+/// start, read inputs, do I/O on already-open fds (including the inherited broker
+/// fd), and write outputs — but *not* the process-CREATION family (that is added
+/// only by [`SeccompPolicy::clean_worker_baseline`] for the shell stand-in).
+///
+/// Two subtleties, both validated live against a real confined adapter under
+/// bubblewrap:
+/// - `execve` is here, not shell-only: bubblewrap `execve`s the target program under
+///   the filter, so every profile must permit it. What keeps a direct adapter from
+///   spawning is the absence of `fork`/`vfork`/`clone` — without those it can only
+///   replace its own image, never run a helper alongside its work.
+/// - `wait4`, `pipe`/`pipe2`, and `splice` are here too: bubblewrap's own pid-1
+///   monitor runs under this same filter and needs them to reap the sandboxed child.
+///   They confer no spawning ability on their own (no `clone`/`fork` to create the
+///   process being waited on).
+fn common_worker_syscalls() -> Vec<i64> {
+    vec![
+        libc::SYS_read,
+        libc::SYS_write,
+        libc::SYS_readv,
+        libc::SYS_writev,
+        // Reaping + plumbing bubblewrap's pid-1 monitor performs under this filter
+        // (it forked the sandboxed child *before* installing the filter).
+        libc::SYS_wait4,
+        libc::SYS_pipe,
+        libc::SYS_pipe2,
+        // Zero-copy move between two already-open fds — no new authority (the process
+        // can already read/write those fds); real tools use it to copy input→output.
+        libc::SYS_splice,
+        // Send/receive on an ALREADY-connected fd — how Rust's std does I/O on a
+        // socket (the inherited broker fd). No new reach: socket(), connect(),
+        // bind(), listen() stay off the list, so the worker can neither open a
+        // socket nor connect anywhere.
+        libc::SYS_sendto,
+        libc::SYS_recvfrom,
+        libc::SYS_sendmsg,
+        libc::SYS_recvmsg,
+        libc::SYS_pread64,
+        libc::SYS_pwrite64,
+        // Vectored positional I/O — the same read/write authority as the scalar
+        // variants above; the Rust std I/O layer uses them.
+        libc::SYS_preadv,
+        libc::SYS_pwritev,
+        libc::SYS_lseek,
+        libc::SYS_close,
+        // Close a range of file descriptors — how modern glibc/Rust closes inherited
+        // fds at startup; only closes, never opens.
+        libc::SYS_close_range,
+        libc::SYS_openat,
+        libc::SYS_open,
+        libc::SYS_fstat,
+        libc::SYS_newfstatat,
+        // Read-only filesystem statistics (block size, free space) on a path/fd the
+        // worker can already reach — no isolation impact; real tools call it to size
+        // their I/O buffers.
+        libc::SYS_statfs,
+        libc::SYS_fstatfs,
+        libc::SYS_statx,
+        libc::SYS_lstat,
+        libc::SYS_stat,
+        libc::SYS_access,
+        libc::SYS_faccessat,
+        libc::SYS_faccessat2,
+        libc::SYS_readlink,
+        libc::SYS_readlinkat,
+        libc::SYS_getdents64,
+        libc::SYS_getcwd,
+        libc::SYS_mmap,
+        libc::SYS_munmap,
+        libc::SYS_mprotect,
+        libc::SYS_mremap,
+        libc::SYS_madvise,
+        libc::SYS_brk,
+        libc::SYS_rt_sigaction,
+        libc::SYS_rt_sigprocmask,
+        libc::SYS_rt_sigreturn,
+        libc::SYS_sigaltstack,
+        libc::SYS_ioctl,
+        libc::SYS_fcntl,
+        libc::SYS_dup,
+        libc::SYS_dup2,
+        libc::SYS_dup3,
+        libc::SYS_poll,
+        libc::SYS_ppoll,
+        // Present so bubblewrap can `execve` the target program under this filter;
+        // process *creation* (fork/vfork/clone) is deliberately absent here.
+        libc::SYS_execve,
+        libc::SYS_exit,
+        libc::SYS_exit_group,
+        libc::SYS_futex,
+        libc::SYS_getpid,
+        libc::SYS_getppid,
+        libc::SYS_gettid,
+        libc::SYS_getuid,
+        libc::SYS_getgid,
+        libc::SYS_geteuid,
+        libc::SYS_getegid,
+        libc::SYS_arch_prctl,
+        // Process-control operations a runtime uses (e.g. PR_SET_NAME); the
+        // security-relevant ones (PR_SET_SECCOMP, PR_SET_NO_NEW_PRIVS) are gated by
+        // the already-applied no_new_privs + filter, so they cannot widen authority.
+        libc::SYS_prctl,
+        libc::SYS_set_tid_address,
+        libc::SYS_set_robust_list,
+        libc::SYS_rseq,
+        libc::SYS_prlimit64,
+        libc::SYS_getrandom,
+        libc::SYS_clock_gettime,
+        libc::SYS_clock_nanosleep,
+        libc::SYS_nanosleep,
+        libc::SYS_sched_getaffinity,
+        libc::SYS_sched_yield,
+        libc::SYS_uname,
+        libc::SYS_sysinfo,
+        libc::SYS_tgkill,
+        libc::SYS_epoll_create1,
+        libc::SYS_epoll_ctl,
+        libc::SYS_epoll_pwait,
+    ]
 }
 
 /// The seccomp target architecture for this build, if supported.
@@ -341,6 +380,91 @@ mod tests {
                 !policy.allow.contains(&denied),
                 "baseline must NOT allow {denied}"
             );
+        }
+    }
+
+    #[test]
+    fn adapter_profile_denies_process_creation_but_keeps_io() {
+        let adapter = SeccompPolicy::adapter_worker_baseline(DenyAction::KillProcess);
+        // A single-process adapter can still start, read inputs, talk on the broker
+        // fd, and write outputs — and bubblewrap can execve it under this filter.
+        for needed in [
+            libc::SYS_openat,
+            libc::SYS_read,
+            libc::SYS_write,
+            libc::SYS_sendto,
+            libc::SYS_recvfrom,
+            libc::SYS_sendmsg,
+            libc::SYS_recvmsg,
+            libc::SYS_mmap,
+            libc::SYS_futex,
+            libc::SYS_execve,
+        ] {
+            assert!(adapter.allow.contains(&needed), "adapter must allow {needed}");
+        }
+        // But it cannot CREATE a process (no fork/vfork/clone — so it can neither
+        // spawn a helper nor start a thread, and even a shell it execs cannot fork to
+        // run a command), and — as in every profile — cannot open the network.
+        for denied in [
+            libc::SYS_vfork,
+            libc::SYS_clone,
+            libc::SYS_clone3,
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_listen,
+        ] {
+            assert!(
+                !adapter.allow.contains(&denied),
+                "adapter must NOT allow {denied}"
+            );
+        }
+        // The shell baseline is a strict superset: everything the adapter allows,
+        // plus the process-spawning family.
+        let shell = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
+        for &s in &adapter.allow {
+            assert!(shell.allow.contains(&s), "shell baseline must be a superset ({s})");
+        }
+        assert!(shell.allow.len() > adapter.allow.len());
+    }
+
+    /// Enforcement, validated unprivileged: under the adapter profile a process
+    /// cannot create another process — `fork()` (which glibc issues as `clone`) is
+    /// denied. This is what makes even an `execve`'d shell inert: it cannot fork to
+    /// run a command. Runs anywhere (seccomp needs no user namespace).
+    #[test]
+    fn adapter_profile_blocks_forking_a_child() {
+        // Errno (not kill) so the forking child observes the denial and exits cleanly.
+        let policy = SeccompPolicy::adapter_worker_baseline(DenyAction::Errno(libc::EPERM as u32));
+        let program = policy.compile().unwrap();
+
+        // SAFETY: the child performs only syscalls (no allocation/locks) before _exit.
+        match unsafe { libc::fork() } {
+            -1 => panic!("fork failed"),
+            0 => {
+                unsafe {
+                    if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                        libc::_exit(97);
+                    }
+                }
+                if seccompiler::apply_filter(&program).is_err() {
+                    unsafe { libc::_exit(98) };
+                }
+                // clone/clone3/vfork are not allowlisted → fork() gets EPERM.
+                let pid = unsafe { libc::fork() };
+                let code = if pid < 0 { 0 } else { 1 };
+                unsafe { libc::_exit(code) };
+            }
+            pid => {
+                let mut status = 0;
+                // SAFETY: valid pid and status pointer.
+                unsafe { libc::waitpid(pid, &mut status, 0) };
+                assert!(libc::WIFEXITED(status), "child should exit normally");
+                let code = libc::WEXITSTATUS(status);
+                assert_ne!(code, 97, "PR_SET_NO_NEW_PRIVS failed in child");
+                assert_ne!(code, 98, "apply_filter failed in child");
+                assert_eq!(code, 0, "fork() must be denied by the adapter profile");
+            }
         }
     }
 
