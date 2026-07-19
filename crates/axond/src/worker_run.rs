@@ -22,6 +22,7 @@
 use std::os::fd::AsRawFd;
 use std::path::Path;
 
+use axon_authority::AttemptEvent;
 use axon_crypto::purpose::KeyPurpose;
 use axon_sandbox::{
     broker_socketpair, BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher,
@@ -130,7 +131,7 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     // already-connected AF_UNIX fd (no socket() syscall — the network seal holds),
     // and the daemon services the other end. Its number is handed to the worker as
     // AXON_BROKER_FD; the daemon makes the real, credential-injected, budgeted call.
-    let broker = if confinement.processor.is_some() {
+    let mut broker = if confinement.processor.is_some() {
         let (worker_fd, daemon_stream) =
             broker_socketpair().map_err(|e| problem_detail(500, "run-setup", "broker channel", e))?;
         spec = spec.setenv("AXON_BROKER_FD", &worker_fd.as_raw_fd().to_string());
@@ -165,101 +166,146 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
                 problem_detail(500, "worker-failed", "the worker did not run to completion", e)
             })
     };
-    match broker {
-        // Service the broker channel on a scoped thread for the worker's lifetime,
-        // then close the daemon's copy of the worker end so the handler sees EOF.
-        Some((worker_fd, daemon_stream)) => std::thread::scope(|scope| {
-            scope.spawn(|| {
-                serve_broker_channel(daemon_stream, |processor_id, request| {
-                    match run_processor_call(state, processor_id, &work_order_id, request) {
-                        Ok(value) => value,
-                        Err(p) => serde_json::json!({
-                            "error": { "status": p.status, "title": p.title }
-                        }),
-                    }
-                });
-            });
-            let result = launch(&spec);
-            drop(worker_fd);
-            result
-        })?,
-        None => launch(&spec)?,
-    }
-
-    // Collect what the worker produced: an optional response (/output/response) and
-    // any artifacts it declared (/output/artifacts.json + files). Every output is
-    // gated against the granted scope (§7.2 step 10) before it is recorded — the
-    // adapter cannot pick a recipient or exceed a budget here.
-    let mut proposed = Vec::new();
-    let mut outputs = Vec::new();
-    let mut response_bytes = 0usize;
-
-    if let Ok(body) = std::fs::read(output.join("response")) {
-        response_bytes = body.len();
-        proposed.push(ProposedOutput {
-            channel: OutputChannel::Response,
-            recipient: REQUEST_ORIGIN.to_owned(),
-            media_type: "text/plain".to_owned(),
-            bytes: body.len() as u64,
-        });
-        outputs.push(ResultOutput {
-            role: "response".to_owned(),
-            artifact_id: format!("resp-{task_id}"),
-            kind: OutputKind::Response,
-            recipient: REQUEST_ORIGIN.to_owned(),
-            media_type: "text/plain".to_owned(),
-            byte_length: body.len() as u64,
-            sha256: hex_sha256(&body),
-        });
-    }
-
-    let artifact_count = collect_artifacts(&output, task_id, &mut proposed, &mut outputs)?;
-
-    if outputs.is_empty() {
-        return Err(problem(
-            422,
-            "no-output",
-            "the worker produced no /output/response or artifacts",
-        ));
-    }
-
-    gate_outputs(&capabilities, &proposed).map_err(|e| {
-        problem_detail(
-            403,
-            "output-denied",
-            "the worker output is outside the granted scope",
-            format!("offending output index {}", e.index),
-        )
-    })?;
-
-    // Phase 3 — record the result under the lock, producing the signed manifest.
-    let submission = ResultSubmission {
-        task_id: task_id.to_owned(),
-        outputs,
-        evidence: vec![],
-        slots: vec![],
-    };
-    let manifest = {
+    // Durable-before-effect: mark the attempt Running *before* the sandbox launches.
+    // The launch is the effect — it may reach a model and spend budget — so the mark
+    // is committed first. `Start` only fires from Claimed, so a duplicate or
+    // concurrent `task run` finds the attempt already Running (or finished) and is
+    // refused here, before a second launch. If the daemon crashes between this mark
+    // and completion, recovery sees Running and resolves the attempt to Ambiguous.
+    {
         let store = state.store();
         let store = store.lock().map_err(|_| internal())?;
-        submit_result(
-            &store,
-            &state.identity().purpose_key(KeyPurpose::TaskResult),
-            &submission,
-            now_unix(),
-        )?
-    };
+        if store
+            .advance_attempt(&work_order_id, AttemptEvent::Start, now_unix())
+            .map_err(store_problem)?
+            .is_err()
+        {
+            return Err(problem(
+                409,
+                "already-running",
+                "this task's worker is already running or has finished",
+            ));
+        }
+    }
 
-    // The outputs were recorded (digest + length) into the durable result; the run
-    // directory is scratch, so clear it.
-    let _ = std::fs::remove_dir_all(&run_dir);
-    Ok(serde_json::json!({
-        "ran": true,
-        "task_id": task_id,
-        "response_bytes": response_bytes,
-        "artifacts": artifact_count,
-        "result": manifest,
-    }))
+    // From here the worker may execute. Run it, collect and gate its outputs, and
+    // record the signed result; on any failure the attempt is marked Failed below so
+    // it becomes terminal rather than lingering as Running. Every output is gated
+    // against the granted scope (§7.2 step 10) before it is recorded — the adapter
+    // cannot pick a recipient or exceed a budget here.
+    let mut record = || -> Result<serde_json::Value, Problem> {
+        match broker.take() {
+            // Service the broker channel on a scoped thread for the worker's lifetime,
+            // then close the daemon's copy of the worker end so the handler sees EOF.
+            Some((worker_fd, daemon_stream)) => std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    serve_broker_channel(daemon_stream, |processor_id, request| {
+                        match run_processor_call(state, processor_id, &work_order_id, request) {
+                            Ok(value) => value,
+                            Err(p) => serde_json::json!({
+                                "error": { "status": p.status, "title": p.title }
+                            }),
+                        }
+                    });
+                });
+                let result = launch(&spec);
+                drop(worker_fd);
+                result
+            })?,
+            None => launch(&spec)?,
+        }
+
+        // Collect what the worker produced: an optional response (/output/response)
+        // and any artifacts it declared (/output/artifacts.json + files).
+        let mut proposed = Vec::new();
+        let mut outputs = Vec::new();
+        let mut response_bytes = 0usize;
+
+        if let Ok(body) = std::fs::read(output.join("response")) {
+            response_bytes = body.len();
+            proposed.push(ProposedOutput {
+                channel: OutputChannel::Response,
+                recipient: REQUEST_ORIGIN.to_owned(),
+                media_type: "text/plain".to_owned(),
+                bytes: body.len() as u64,
+            });
+            outputs.push(ResultOutput {
+                role: "response".to_owned(),
+                artifact_id: format!("resp-{task_id}"),
+                kind: OutputKind::Response,
+                recipient: REQUEST_ORIGIN.to_owned(),
+                media_type: "text/plain".to_owned(),
+                byte_length: body.len() as u64,
+                sha256: hex_sha256(&body),
+            });
+        }
+
+        let artifact_count = collect_artifacts(&output, task_id, &mut proposed, &mut outputs)?;
+
+        if outputs.is_empty() {
+            return Err(problem(
+                422,
+                "no-output",
+                "the worker produced no /output/response or artifacts",
+            ));
+        }
+
+        gate_outputs(&capabilities, &proposed).map_err(|e| {
+            problem_detail(
+                403,
+                "output-denied",
+                "the worker output is outside the granted scope",
+                format!("offending output index {}", e.index),
+            )
+        })?;
+
+        // Record the result under the lock, producing the signed manifest — this also
+        // advances the attempt Running → Succeeded.
+        let submission = ResultSubmission {
+            task_id: task_id.to_owned(),
+            outputs,
+            evidence: vec![],
+            slots: vec![],
+        };
+        let manifest = {
+            let store = state.store();
+            let store = store.lock().map_err(|_| internal())?;
+            submit_result(
+                &store,
+                &state.identity().purpose_key(KeyPurpose::TaskResult),
+                &submission,
+                now_unix(),
+            )?
+        };
+        Ok(serde_json::json!({
+            "ran": true,
+            "task_id": task_id,
+            "response_bytes": response_bytes,
+            "artifacts": artifact_count,
+            "result": manifest,
+        }))
+    };
+    let outcome = record();
+    drop(record);
+
+    match outcome {
+        Ok(value) => {
+            // The outputs were recorded (digest + length) into the durable result;
+            // the run directory is scratch, so clear it.
+            let _ = std::fs::remove_dir_all(&run_dir);
+            Ok(value)
+        }
+        Err(e) => {
+            // The worker may have executed but produced no recorded result. Mark the
+            // attempt Failed (terminal) so a retry is not blocked by a lingering
+            // Running state, then surface the error. The scratch run dir is left for
+            // inspection.
+            if let Ok(store) = state.store().lock() {
+                let _ = store.advance_attempt(&work_order_id, AttemptEvent::Fail, now_unix());
+            }
+            Err(e)
+        }
+    }
 }
 
 /// One artifact the worker declared in `/output/artifacts.json` (mirrors the SDK's

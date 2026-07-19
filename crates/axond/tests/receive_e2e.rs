@@ -560,6 +560,20 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
         .verifying();
     let (_manifest, verified_digest) = ResultManifest::verify(&envelope, &task_result_vk).unwrap();
     assert_eq!(verified_digest, bundle);
+
+    // Durable-before-effect: the attempt is now Succeeded, so a second `task run`
+    // is refused (409) before it can launch the worker a second time.
+    let rerun_state = state.clone();
+    let rerun_task = task_id.clone();
+    let rerun = tokio::task::spawn_blocking(move || {
+        rerun_state.dispatch(&ControlRequest::TaskRun { task_id: rerun_task })
+    })
+    .await
+    .unwrap();
+    match rerun {
+        Ok(v) => panic!("a second run should be refused, got {v}"),
+        Err(p) => assert_eq!(p.status, 409, "second run should be 409, got {}", p.title),
+    }
 }
 
 /// A stand-in OpenAI-compatible model endpoint: accepts one pinned-mTLS connection,
