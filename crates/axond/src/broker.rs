@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use axon_authority::{AttemptState, CapabilityComponent};
 use axon_broker::{
-    check_origin, check_resolved_address, CallBinding, CallBudget, EgressPolicy, ProcessorCall,
-    SubAttemptEvent, SubAttemptState,
+    check_origin, check_resolved_address, AuthScheme, CallBinding, CallBudget, EgressPolicy,
+    ProcessorCall, SubAttemptEvent, SubAttemptState,
 };
 use axon_crypto::cert::EndpointCert;
 use axon_crypto::identity::{Fingerprint, FingerprintKind};
@@ -61,7 +61,9 @@ pub trait CallTransport {
         host: &str,
         port: u16,
         addr: IpAddr,
+        path: &str,
         expected_cert_sha256: Option<&str>,
+        auth: &AuthScheme,
         credential: Option<&[u8]>,
         request: &[u8],
         max_response_bytes: u64,
@@ -84,7 +86,7 @@ pub async fn dispatch_processor_call(
 ) -> Result<serde_json::Value, Problem> {
     // Phase 1 (locked): the config, the durable pre-dispatch record, and the move
     // to `dispatching` — all before any byte leaves.
-    let (call, credential, expected_cert) = {
+    let (call, credential, expected_cert, path, auth) = {
         let store = store.lock().map_err(|_| internal())?;
         let config = store
             .get_processor(processor_id)
@@ -107,7 +109,13 @@ pub async fn dispatch_processor_call(
         // Record `dispatching` before the first byte leaves (§13.1).
         advance(&store, &call.idempotency_key, SubAttemptEvent::Dispatch, now)?;
         let credential = store.get_credential(processor_id).map_err(store_problem)?;
-        (call, credential, config.tls_certificate_sha256.clone())
+        (
+            call,
+            credential,
+            config.tls_certificate_sha256.clone(),
+            config.path.clone(),
+            config.auth.clone(),
+        )
     };
 
     // Phase 2 (unlocked): resolve, RE-CHECK the resolved address, then send.
@@ -133,7 +141,9 @@ pub async fn dispatch_processor_call(
             &call.origin.host,
             call.origin.port,
             addr,
+            &path,
             expected_cert.as_deref(),
+            &auth,
             credential.as_deref(),
             request,
             call.max_response_bytes,
@@ -177,7 +187,9 @@ impl CallTransport for HttpsTransport<'_> {
         host: &str,
         port: u16,
         addr: IpAddr,
+        path: &str,
         expected_cert_sha256: Option<&str>,
+        auth: &AuthScheme,
         credential: Option<&[u8]>,
         request: &[u8],
         max_response_bytes: u64,
@@ -214,13 +226,14 @@ impl CallTransport for HttpsTransport<'_> {
 
         // From the first write on, a failure is *uncertain* — the request may have
         // been transmitted and processed.
-        let auth = match credential {
-            Some(c) => format!("Authorization: Bearer {}\r\n", String::from_utf8_lossy(c)),
+        let auth_line = match credential.and_then(|c| auth.header_line(c)) {
+            Some(line) => format!("{line}\r\n"),
             None => String::new(),
         };
+        let target = if path.starts_with('/') { path } else { "/" };
         let head = format!(
-            "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
-             {auth}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
+             {auth_line}Content-Length: {}\r\nConnection: close\r\n\r\n",
             request.len()
         );
         let exchange = async {
@@ -435,7 +448,7 @@ fn problem_detail(status: u16, kind: &str, title: &str, e: impl std::fmt::Displa
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use axon_broker::{Origin, ProcessorConfig};
+    use axon_broker::{AuthScheme, Origin, ProcessorConfig};
     use axon_crypto::cert::self_signed_endpoint;
     use axon_crypto::purpose::KeyPurpose;
     use axon_store::{ExternalCheckpoint, Store};
@@ -465,6 +478,8 @@ mod tests {
             provider: "local".to_owned(),
             origin: Origin::https("127.0.0.1", 8443),
             disclosure: axon_broker::Disclosure::remote("Local", "here"),
+            path: "/".to_owned(),
+            auth: AuthScheme::Bearer,
             config: serde_json::json!({"model": "m"}),
             tls_certificate_sha256: None,
         };
@@ -515,7 +530,9 @@ mod tests {
             _host: &str,
             _port: u16,
             addr: IpAddr,
+            _path: &str,
             _expected_cert: Option<&str>,
+            _auth: &AuthScheme,
             credential: Option<&[u8]>,
             request: &[u8],
             _max: u64,
@@ -711,6 +728,8 @@ mod tests {
             provider: "local".to_owned(),
             origin: Origin::https("127.0.0.1", port),
             disclosure: axon_broker::Disclosure::remote("Local", "here"),
+            path: "/v1/chat/completions".to_owned(),
+            auth: AuthScheme::Bearer,
             config: serde_json::json!({"model": "m"}),
             tls_certificate_sha256: Some(proc_cert.fingerprint.value.clone()),
         };
@@ -742,8 +761,10 @@ mod tests {
         assert_eq!(out["response"], "{\"answer\":42}");
         server.await.unwrap();
 
-        // The processor received the POST with the injected credential + the request.
+        // The processor received the POST at the configured path, with the injected
+        // credential + the request body.
         let raw = String::from_utf8_lossy(&captured.lock().unwrap()).to_string();
+        assert!(raw.contains("POST /v1/chat/completions HTTP/1.1"));
         assert!(raw.contains("Authorization: Bearer secret-key"));
         assert!(raw.contains("{\"prompt\":\"hi\"}"));
     }

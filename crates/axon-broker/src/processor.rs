@@ -12,13 +12,15 @@
 //!
 //! What you write:
 //! ```
-//! use axon_broker::{Disclosure, Origin, ProcessorConfig, ProcessorLocation};
+//! use axon_broker::{AuthScheme, Disclosure, Origin, ProcessorConfig, ProcessorLocation};
 //! use serde_json::json;
 //! let cfg = ProcessorConfig {
 //!     processor_id: "reviewer".into(),
 //!     provider: "example-ai".into(),
 //!     origin: Origin::https("api.example.com", 443),
 //!     disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
+//!     path: "/v1/chat/completions".into(),
+//!     auth: AuthScheme::Bearer,
 //!     config: json!({"model": "review-1", "temperature": 0}),
 //!     tls_certificate_sha256: None,
 //! };
@@ -101,6 +103,16 @@ pub struct ProcessorConfig {
     /// The exact HTTPS origin dialed. A task never supplies this.
     pub origin: Origin,
     pub disclosure: Disclosure,
+    /// The request path POSTed to (e.g. `/v1/chat/completions` for an
+    /// OpenAI-compatible endpoint). Part of `config_digest` — it is *what is
+    /// dispatched*. Defaults to `/`.
+    #[serde(default = "default_path")]
+    pub path: String,
+    /// How the injected credential is presented (Bearer by default). Not part of
+    /// `config_digest`: it is how the destination is authenticated, not what is
+    /// dispatched.
+    #[serde(default)]
+    pub auth: AuthScheme,
     /// Opaque provider configuration (model name, parameters).
     pub config: serde_json::Value,
     /// The processor's pinned endpoint-cert SHA-256 (design §8.1) — set for a
@@ -109,6 +121,36 @@ pub struct ProcessorConfig {
     /// `config_digest`: it is how the destination is trusted, not what is dispatched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_certificate_sha256: Option<String>,
+}
+
+fn default_path() -> String {
+    "/".to_owned()
+}
+
+/// How a processor's injected credential is presented on the wire (design §15.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "scheme", rename_all = "snake_case")]
+pub enum AuthScheme {
+    /// `Authorization: Bearer <credential>` — OpenAI-compatible; the default.
+    #[default]
+    Bearer,
+    /// `<header>: <credential>` — e.g. `x-api-key` for Anthropic.
+    Header { header: String },
+    /// No credential header (a local model that needs none).
+    None,
+}
+
+impl AuthScheme {
+    /// The HTTP header line (without trailing CRLF) for `credential`, or `None` when
+    /// the scheme carries no credential.
+    pub fn header_line(&self, credential: &[u8]) -> Option<String> {
+        let cred = String::from_utf8_lossy(credential);
+        match self {
+            AuthScheme::Bearer => Some(format!("Authorization: Bearer {cred}")),
+            AuthScheme::Header { header } => Some(format!("{header}: {cred}")),
+            AuthScheme::None => Option::None,
+        }
+    }
 }
 
 /// Why a processor configuration could not be digested.
@@ -131,6 +173,7 @@ impl ProcessorConfig {
         let bound = serde_json::json!({
             "provider": self.provider,
             "origin": self.origin,
+            "path": self.path,
             "config": self.config,
         });
         let bytes = json_canon::to_vec(&bound).map_err(|e| ConfigError(e.to_string()))?;
@@ -150,6 +193,8 @@ mod tests {
             provider: "example-ai".to_owned(),
             origin: Origin::https("api.example.com", 443),
             disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
+            path: "/v1/chat/completions".to_owned(),
+            auth: AuthScheme::Bearer,
             config: json!({"model": "review-1", "temperature": 0}),
             tls_certificate_sha256: None,
         }
@@ -187,5 +232,19 @@ mod tests {
             ..cfg()
         };
         assert_ne!(a, moved.config_digest().unwrap());
+        // A different request path does — it is what is dispatched.
+        let repathed = ProcessorConfig {
+            path: "/v2/responses".to_owned(),
+            ..cfg()
+        };
+        assert_ne!(a, repathed.config_digest().unwrap());
+        // The auth scheme does NOT — it is how the destination is authenticated.
+        let reauthed = ProcessorConfig {
+            auth: AuthScheme::Header {
+                header: "x-api-key".to_owned(),
+            },
+            ..cfg()
+        };
+        assert_eq!(a, reauthed.config_digest().unwrap());
     }
 }

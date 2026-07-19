@@ -14,12 +14,13 @@
 //!
 //! What you write:
 //! ```
-//! use axon_broker::{CallBinding, CallBudget, ProcessorCall, ProcessorConfig, Disclosure, Origin};
+//! use axon_broker::{AuthScheme, CallBinding, CallBudget, ProcessorCall, ProcessorConfig, Disclosure, Origin};
 //! use serde_json::json;
 //! # let config = ProcessorConfig {
 //! #   processor_id: "reviewer".into(), provider: "example-ai".into(),
 //! #   origin: Origin::https("api.example.com", 443),
-//! #   disclosure: Disclosure::remote("Example AI", "us-east"), config: json!({"model": "m"}),
+//! #   disclosure: Disclosure::remote("Example AI", "us-east"),
+//! #   path: "/".into(), auth: AuthScheme::Bearer, config: json!({"model": "m"}),
 //! #   tls_certificate_sha256: None,
 //! # };
 //! let call = ProcessorCall::prepare(
@@ -156,6 +157,8 @@ mod tests {
             provider: "example-ai".to_owned(),
             origin: Origin::https("api.example.com", 443),
             disclosure: Disclosure::remote("Example AI", "us-east"),
+            path: "/".to_owned(),
+            auth: crate::AuthScheme::Bearer,
             config: json!({"model": "review-1"}),
             tls_certificate_sha256: None,
         }

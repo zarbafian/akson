@@ -447,6 +447,8 @@ mod tests {
                     provider: "example-ai".to_owned(),
                     origin: Origin::https("api.example.com", 443),
                     disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
+                    path: "/".to_owned(),
+                    auth: axon_broker::AuthScheme::Bearer,
                     config: serde_json::json!({"model": "review-1"}),
                     tls_certificate_sha256: None,
                 },

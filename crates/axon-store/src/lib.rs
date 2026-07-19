@@ -2651,6 +2651,8 @@ mod tests {
             provider: "example-ai".to_owned(),
             origin: axon_broker::Origin::https("api.example.com", 443),
             disclosure: axon_broker::Disclosure::remote("Example AI", "us-east"),
+            path: "/".to_owned(),
+            auth: axon_broker::AuthScheme::Bearer,
             config: serde_json::json!({"model": "review-1"}),
             tls_certificate_sha256: None,
         }

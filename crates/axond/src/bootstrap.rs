@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axon_broker::{Disclosure, Origin, ProcessorConfig};
+use axon_broker::{AuthScheme, Disclosure, Origin, ProcessorConfig};
 use axon_contract::Identity;
 use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
 use axon_crypto::identity::Fingerprint;
@@ -325,8 +325,17 @@ impl DaemonState {
                 origin_port,
                 local,
                 tls_certificate_sha256,
+                path,
+                auth,
             } => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                let auth = match auth.as_deref() {
+                    None | Some("bearer") => AuthScheme::Bearer,
+                    Some("none") => AuthScheme::None,
+                    Some(header) => AuthScheme::Header {
+                        header: header.to_owned(),
+                    },
+                };
                 let config = ProcessorConfig {
                     processor_id: processor_id.clone(),
                     provider: provider.clone(),
@@ -336,6 +345,8 @@ impl DaemonState {
                     } else {
                         Disclosure::remote(provider, "configured")
                     },
+                    path: path.clone().unwrap_or_else(|| "/".to_owned()),
+                    auth,
                     config: serde_json::json!({}),
                     tls_certificate_sha256: tls_certificate_sha256.clone(),
                 };
@@ -744,6 +755,8 @@ mod tests {
                 origin_port: 8443,
                 local: true,
                 tls_certificate_sha256: Some("ab".repeat(32)),
+                path: None,
+                auth: None,
             })
             .unwrap();
         assert_eq!(added["added"], true);

@@ -102,6 +102,12 @@ pub enum ControlRequest {
         local: bool,
         #[serde(default)]
         tls_certificate_sha256: Option<String>,
+        /// The request path POSTed to (default `/`; e.g. `/v1/chat/completions`).
+        #[serde(default)]
+        path: Option<String>,
+        /// Auth scheme: `bearer` (default), `none`, or a header name (`x-api-key`).
+        #[serde(default)]
+        auth: Option<String>,
     },
     /// List configured processors (admin only).
     ProcessorList,

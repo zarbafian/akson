@@ -31,5 +31,5 @@ mod subattempt;
 
 pub use address::{check_origin, check_resolved_address, EgressError, EgressPolicy, Origin};
 pub use call::{CallBinding, CallBudget, CallError, ProcessorCall};
-pub use processor::{ConfigError, Disclosure, ProcessorConfig, ProcessorLocation};
+pub use processor::{AuthScheme, ConfigError, Disclosure, ProcessorConfig, ProcessorLocation};
 pub use subattempt::{next, SubAttemptEvent, SubAttemptState, TransitionError};

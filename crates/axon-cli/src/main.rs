@@ -190,8 +190,21 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         (Some(id), Some(provider), Some(host), Some(port), Some(pin)) => {
             (id, provider, host, port, pin)
         }
-        _ => return usage("axon processor add <id> <provider> <host> <port> <pin-sha256>"),
+        _ => {
+            return usage(
+                "axon processor add <id> <provider> <host> <port> <pin-sha256> [--path <path>] [--auth <bearer|none|header>]",
+            )
+        }
     };
+    // Optional trailing flags: request path and auth scheme.
+    let (mut path, mut auth) = (None, None);
+    while let Some(flag) = next_arg(args) {
+        match flag.as_str() {
+            "--path" => path = next_arg(args),
+            "--auth" => auth = next_arg(args),
+            _ => {}
+        }
+    }
     let result = match call(&ControlRequest::ProcessorAdd {
         processor_id: id.clone(),
         provider,
@@ -199,6 +212,8 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         origin_port: port,
         local: true,
         tls_certificate_sha256: Some(pin),
+        path,
+        auth,
     }) {
         Ok(r) => r,
         Err(code) => return code,
