@@ -70,6 +70,12 @@ const NOT_YET_VALID_LEEWAY_SECS: i64 = 5;
 pub fn validity(contract: &Contract, now_unix: i64) -> Result<Validity, TimestampError> {
     let created = parse(&contract.created_at, "created_at")?;
     let expires = parse(&contract.expires_at, "expires_at")?;
+    // An empty or inverted window (created >= expires) can never authorize work —
+    // check this BEFORE the start-side leeway, so the tolerance cannot make a
+    // zero-length interval momentarily Valid (codex review).
+    if created >= expires {
+        return Ok(Validity::Expired);
+    }
     Ok(if now_unix < created - NOT_YET_VALID_LEEWAY_SECS {
         Validity::NotYetValid
     } else if now_unix >= expires {
@@ -169,5 +175,14 @@ mod tests {
             .unix_timestamp();
         assert_eq!(validity(&c, created - 3).unwrap(), Validity::Valid);
         assert_eq!(validity(&c, created - 6).unwrap(), Validity::NotYetValid);
+    }
+
+    #[test]
+    fn an_inverted_window_is_never_valid_despite_the_leeway() {
+        // created after expires: the leeway must not make this Valid at any `now`.
+        let c = contract("2027-06-01T00:00:00Z", "2025-06-01T00:00:00Z");
+        for now in [BEFORE, DURING, AFTER] {
+            assert_eq!(validity(&c, now).unwrap(), Validity::Expired);
+        }
     }
 }

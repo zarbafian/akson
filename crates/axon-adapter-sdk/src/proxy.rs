@@ -137,9 +137,18 @@ impl LoopbackProxy {
     }
 }
 
+/// Caps so a malformed request can't exhaust the confined worker's memory: the
+/// request line + headers, and the declared body (a chat-completions request is
+/// small — well under a few MiB).
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// Reads an HTTP/1.1 request from `stream`, returning (path, body). The body length
-/// is taken from `Content-Length` (agent clients always send it for a POST).
+/// is taken from `Content-Length` (agent clients always send it for a POST). Bounded:
+/// oversized headers or a `Content-Length` beyond [`MAX_BODY_BYTES`] are refused
+/// BEFORE any allocation, so one crafted request cannot OOM the proxy.
 fn read_http_request(stream: &mut TcpStream) -> std::io::Result<(String, Vec<u8>)> {
+    let too_large = |what| std::io::Error::new(std::io::ErrorKind::InvalidData, what);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -150,10 +159,16 @@ fn read_http_request(stream: &mut TcpStream) -> std::io::Result<(String, Vec<u8>
         .to_owned();
 
     let mut content_length = 0usize;
+    let mut header_bytes = request_line.len();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
             break;
+        }
+        header_bytes += n;
+        if header_bytes > MAX_HEADER_BYTES {
+            return Err(too_large("request headers too large"));
         }
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -162,6 +177,9 @@ fn read_http_request(stream: &mut TcpStream) -> std::io::Result<(String, Vec<u8>
         if let Some(v) = trimmed.to_ascii_lowercase().strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
         }
+    }
+    if content_length > MAX_BODY_BYTES {
+        return Err(too_large("request body too large"));
     }
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
@@ -253,6 +271,31 @@ mod tests {
             "CONFINED: LGTM"
         );
         assert!(text.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn an_oversized_content_length_is_refused_without_allocating() {
+        let (worker_end, _daemon_end) = UnixStream::pair().unwrap();
+        let proxy = Arc::new(LoopbackProxy::bind(worker_end, "reviewer").unwrap());
+        let addr = proxy.local_addr().unwrap();
+        let serving = Arc::clone(&proxy);
+        std::thread::spawn(move || serving.serve());
+
+        // A crafted 100 GB Content-Length with no body: must be refused before the
+        // proxy tries to `vec![0u8; 100GB]` (which would OOM the confined worker).
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 100000000000\r\n\r\n",
+        )
+        .unwrap();
+        c.flush().unwrap();
+        let mut raw = String::new();
+        c.read_to_string(&mut raw).unwrap();
+        // The connection is closed without a 200 (no gigabyte allocation happened).
+        assert!(
+            !raw.starts_with("HTTP/1.1 200"),
+            "oversized body must be refused"
+        );
     }
 
     #[test]

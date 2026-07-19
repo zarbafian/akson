@@ -21,9 +21,16 @@ pub struct NotInert {
 /// Whether `media_type` names a format that is rendered as markup/diagram (and so
 /// must be checked for active content). Anything else is treated as inert data.
 fn is_renderable(media_type: &str) -> bool {
-    let m = media_type.split(';').next().unwrap_or("").trim();
+    // Case-insensitively: `Image/SVG+XML` renders exactly like `image/svg+xml`, so a
+    // case-variant type must not slip past as "inert data".
+    let m = media_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     matches!(
-        m,
+        m.as_str(),
         "image/svg+xml"
             | "text/html"
             | "application/xhtml+xml"
@@ -48,8 +55,16 @@ pub fn check_inert(media_type: &str, bytes: &[u8]) -> Result<(), NotInert> {
         })
     };
 
-    // Work on a lowercased copy so matches are case-insensitive; non-UTF-8 bytes are
-    // replaced (they cannot form the ASCII tokens below, but keep the scan total).
+    // A renderable text artifact is valid UTF-8 with no NUL bytes. Reject anything
+    // else: a UTF-16/UTF-32 (or NUL-padded) payload hides `<script`/`javascript:`
+    // behind NUL bytes here, yet a browser decodes and executes it. Failing closed
+    // is safe — legitimate SVG/HTML/Markdown/Graphviz is clean UTF-8.
+    if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+        return reject("is not clean UTF-8 text (may hide active content)");
+    }
+
+    // Work on a lowercased copy so matches are case-insensitive (bytes are valid
+    // UTF-8 per the guard above).
     let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
 
     // Active markup / embedding.
@@ -114,7 +129,7 @@ fn references_external_url(text: &str) -> bool {
                 // after; otherwise it is a bare word, not a reference.
                 let boundary = at == 0 || !b[at - 1].is_ascii_alphanumeric();
                 let mut k = after;
-                while k < b.len() && matches!(b[k], b' ' | b'\t') {
+                while k < b.len() && matches!(b[k], b' ' | b'\t' | b'\n' | b'\r' | b'\x0c') {
                     k += 1;
                 }
                 if !boundary || k >= b.len() || !matches!(b[k], b'=' | b'(') {
@@ -155,7 +170,7 @@ fn has_event_handler(text: &str) -> bool {
             if j > at + 2 {
                 // Skip whitespace, then require '='.
                 let mut k = j;
-                while k < b.len() && matches!(b[k], b' ' | b'\t') {
+                while k < b.len() && matches!(b[k], b' ' | b'\t' | b'\n' | b'\r' | b'\x0c') {
                     k += 1;
                 }
                 if k < b.len() && b[k] == b'=' {
@@ -259,6 +274,33 @@ mod tests {
         let dot =
             br##"digraph { a -> b; a [URL="#section" label="see https://docs.local later"]; }"##;
         assert!(check_inert("text/vnd.graphviz", dot).is_ok());
+    }
+
+    #[test]
+    fn a_case_variant_media_type_is_still_checked() {
+        // `Image/SVG+XML` renders as SVG; a script in it must not pass as inert data.
+        assert!(check_inert("Image/SVG+XML", b"<svg><script>x</script></svg>").is_err());
+        assert!(check_inert("TEXT/HTML", b"<body onload=\"x\"></body>").is_err());
+    }
+
+    #[test]
+    fn an_event_handler_with_newline_whitespace_is_rejected() {
+        // LF/CR/form-feed are HTML whitespace, so `onload\n=` is a live handler.
+        assert!(check_inert("text/html", b"<body onload\n=alert(1)>").is_err());
+        assert!(check_inert("text/html", b"<rect onclick\r\n = 'x'/>").is_err());
+    }
+
+    #[test]
+    fn utf16_or_nul_padded_content_is_rejected() {
+        // UTF-16-encoded "<script" hides the token behind NUL bytes but executes.
+        let utf16: Vec<u8> = "<script>"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert!(check_inert("image/svg+xml", &utf16).is_err());
+        assert!(check_inert("text/html", b"ok\0<script>").is_err());
+        // But clean UTF-8 markdown still passes.
+        assert!(check_inert("text/markdown", "# ok\nrésumé\n".as_bytes()).is_ok());
     }
 
     #[test]
