@@ -118,6 +118,8 @@ rather than run it unconfined.
   normative product and security design.
 - [Implementation plan](design/2026-07-16-implementation-plan.md) — milestones
   and decisions for the v1 build.
+- [Threat model](design/2026-07-19-threat-model.md) — assets, actors, and how each
+  defense is realized in the build.
 - [ADRs](spec/adr/) — recorded decisions.
 - [SECURITY.md](SECURITY.md) — reporting vulnerabilities.
 
