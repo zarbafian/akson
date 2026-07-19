@@ -259,6 +259,10 @@ impl ResultManifest {
             });
         }
         let manifest: Self = serde_json::from_value(value)?;
+        // Re-assert normative array ordering (codex review): JCS canonicalizes object
+        // keys but not array order, so a signed manifest with non-canonically-ordered
+        // outputs/evidence would otherwise verify and carry a divergent bundle digest.
+        manifest.validate()?;
         let digest = hex::encode(Sha256::digest(&payload));
         Ok((manifest, digest))
     }

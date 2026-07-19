@@ -136,10 +136,10 @@ pub fn parse_sarif(bytes: &[u8], limits: &SarifLimits) -> Result<SarifReport, Sa
         .get("runs")
         .and_then(|v| v.as_array())
         .ok_or(SarifError::NotSarif("runs is not an array"))?;
-    let run = runs.first().ok_or(SarifError::NotSarif("no runs"))?;
+    let first_run = runs.first().ok_or(SarifError::NotSarif("no runs"))?;
 
     // tool.driver.name — read as an opaque string; no URI is touched.
-    let tool_name = run
+    let tool_name = first_run
         .get("tool")
         .and_then(|t| t.get("driver"))
         .and_then(|d| d.get("name"))
@@ -147,15 +147,16 @@ pub fn parse_sarif(bytes: &[u8], limits: &SarifLimits) -> Result<SarifReport, Sa
         .ok_or(SarifError::NotSarif("missing tool.driver.name"))?
         .to_owned();
 
-    let results = run
-        .get("results")
-        .and_then(|v| v.as_array())
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-
     let mut findings = Vec::new();
     let mut truncated_findings = 0usize;
-    for r in results {
+    // Aggregate results across EVERY run under the global cap — a malicious report
+    // must not hide findings in a later run behind a benign first (codex review).
+    for r in runs.iter().flat_map(|run| {
+        run.get("results")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }) {
         if findings.len() >= limits.max_findings {
             truncated_findings += 1;
             continue;
@@ -226,6 +227,30 @@ mod tests {
         assert_eq!(report.findings[0].level, SarifLevel::Warning);
         assert_eq!(report.findings[1].level, SarifLevel::Error);
         assert_eq!(report.truncated_findings, 0);
+    }
+
+    #[test]
+    fn findings_hidden_in_a_later_run_are_still_counted() {
+        // A benign first run, error findings hidden in a second run: all must count.
+        let multi = br#"{
+            "version": "2.1.0",
+            "runs": [
+                {"tool": {"driver": {"name": "reviewer"}}, "results": [
+                    {"message": {"text": "looks fine"}}
+                ]},
+                {"tool": {"driver": {"name": "reviewer"}}, "results": [
+                    {"level": "error", "message": {"text": "hidden bug"}},
+                    {"level": "error", "message": {"text": "another"}}
+                ]}
+            ]
+        }"#;
+        let report = parse_sarif(multi, &SarifLimits::default()).unwrap();
+        assert_eq!(
+            report.findings.len(),
+            3,
+            "findings from every run are aggregated"
+        );
+        assert!(report.findings.iter().any(|f| f.level == SarifLevel::Error));
     }
 
     #[test]

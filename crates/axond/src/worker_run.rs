@@ -177,20 +177,21 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     .filter(|d| Path::new(d).exists())
     .map(str::to_owned)
     .collect();
-    // Make the worker binary's own directory available (read-only) when it lives
-    // outside the system dirs — e.g. a locally-built adapter. The bind token (the
-    // shell command's first word, or the adapter's argv[0]) names it; a bare name
-    // resolves on PATH (already under /usr).
-    if let Some(dir) = invocation
+    // Make the worker binary itself available (read-only) when it lives outside the
+    // system dirs — e.g. a locally-built adapter. Bind the exact FILE, not its parent
+    // directory: a shallow path like `/worker` has parent `/` and would ro-bind the
+    // entire host root, and `/home/user/worker` would expose sibling files, either of
+    // which a compromised worker could read and exfiltrate (codex review). bwrap
+    // creates the destination's parent dirs for a file bind. A bare name (no `/`)
+    // resolves on PATH, already under /usr.
+    if let Some(file) = invocation
         .bind_token()
         .filter(|t| t.contains('/'))
-        .and_then(|t| Path::new(t).parent())
-        .and_then(|p| p.to_str())
-        .filter(|p| Path::new(p).is_dir())
+        .filter(|t| Path::new(t).is_file())
         .map(str::to_owned)
     {
-        if !bind_dirs.contains(&dir) {
-            bind_dirs.push(dir);
+        if !bind_dirs.contains(&file) {
+            bind_dirs.push(file);
         }
     }
     let runtime: Vec<(&str, &str)> = bind_dirs.iter().map(|d| (d.as_str(), d.as_str())).collect();

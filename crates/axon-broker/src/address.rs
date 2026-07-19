@@ -174,8 +174,20 @@ fn non_global_v6(v6: Ipv6Addr) -> Option<&'static str> {
         return non_global_v4(v4).or(Some("ipv4-mapped"));
     }
     let seg = v6.segments();
+    // 64:ff9b::/96 — well-known NAT64: judge by the embedded IPv4, so a rebound
+    // translated answer cannot hide an inward v4 (127./10./…) (codex review).
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6].iter().all(|&s| s == 0) {
+        let v4 = Ipv4Addr::from(((seg[6] as u32) << 16) | seg[7] as u32);
+        return non_global_v4(v4).or(Some("nat64"));
+    }
     if v6.is_multicast() {
         Some("multicast")
+    } else if (seg[0] & 0xffc0) == 0xfec0 {
+        // fec0::/10 — deprecated site-local unicast.
+        Some("site-local")
+    } else if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0x0001 {
+        // 64:ff9b:1::/48 — local-use NAT64 translation (RFC 8215).
+        Some("nat64-local")
     } else if (seg[0] & 0xfe00) == 0xfc00 {
         // fc00::/7 — unique local addresses.
         Some("unique-local")
@@ -258,6 +270,10 @@ mod tests {
             ("fe80::1", "link-local"),
             ("fc00::1", "unique-local"),
             ("::ffff:127.0.0.1", "loopback"), // v4 loopback mapped into v6
+            ("fec0::1", "site-local"),        // deprecated site-local
+            ("64:ff9b:1::1", "nat64-local"),  // local-use NAT64
+            ("64:ff9b::7f00:1", "loopback"),  // well-known NAT64 of 127.0.0.1
+            ("64:ff9b::a00:1", "private"),    // well-known NAT64 of 10.0.0.1
         ] {
             let err = check_resolved_address(a.parse().unwrap(), &policy()).unwrap_err();
             match err {
