@@ -1,6 +1,10 @@
 # Axon
 
-Private, reliable connections between agents.
+![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange)
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)
+![License: Apache-2.0 (proposed)](https://img.shields.io/badge/license-Apache--2.0%20%28proposed%29-blue)
+
+**Private, reliable connections between agents.**
 
 > Connect an agent, approve exactly what it may do, and receive a result whose
 > inputs, producer, limits, and verification can be checked independently.
@@ -32,6 +36,34 @@ authenticated request -> inert durable task -> explicit local decision
 4. An approved clean, sandboxed worker receives only the supplied change.
 5. It returns findings (SARIF) and signed evidence (DSSE/in-toto).
 6. The requester validates the bundle independently and signs an outcome.
+
+## 🔒 Security, privacy & safety
+
+Axon carries one core principle:
+
+> A peer's commands run in a **separate, enforced, reduced-authority domain**.
+> The agent's own user-granted authority is never touched.
+
+Everything below is how that line holds, stated as what axon does. Each property
+is grounded in the [threat model](design/2026-07-19-threat-model.md) and the
+[design](design/2026-07-16-threads-enterprise-agent-communication.md) (§ marks
+the section).
+
+| Guarantee | How axon holds it |
+|---|---|
+| **Direct and local-first** | Two endpoints pair with no hosted account and no relay, over mutually-authenticated TLS 1.3, pinning each other's certificate by fingerprint at pairing — not by CA or DNS. (§8.2, §9.1) |
+| **Arrival is not execution** | Receiving any message, task, artifact, or control frame never starts a model, mints authority, touches a workspace, invokes a tool, or fetches a URL. Arrival is quiet and abuse-resistant. (§6.3) |
+| **Grant-derived sandbox** | Peer work starts from zero ambient authority: fresh user/mount/pid/net namespaces, default-deny seccomp, Landlock, cgroup limits, dropped capabilities. Only the named inputs and one output are constructed in — a prompt-injected task has no socket and no host filesystem. (§13.1) |
+| **Sealed model access** | `socket()` and `connect()` are denied. A model is reachable only through the broker: the worker inherits one already-connected fd, and the daemon makes the real call, injecting the credential and enforcing an egress allowlist and budget. The model credential never enters the worker. (§13.1) |
+| **Strict adapter profile** | A production adapter runs as a single process that cannot create another — no `fork`, `clone`, or `vfork`. Even a shell reached via `execve` cannot spawn a command. |
+| **Explicit human decision** | The operator sees one risk card and approves or denies the exact signed contract. The outward-disclosing grants — reaching a model, exporting an artifact — are never automatic. (§5.2) |
+| **Verifiable outcomes** | Results are signed (DSSE/in-toto) and findings are standard (SARIF); the requester validates the bundle independently and signs an outcome. Effects are durable-before-effect, and honest crash recovery marks the uncertain `ambiguous` rather than done. (§7.2, §14.5) |
+| **Inert evidence** | Rendered artifacts (SVG, HTML, Graphviz, Markdown, Mermaid) are scanned for active content — scripts, event handlers, external fetches — and refused before delivery. (§20.4) |
+| **Hardened parsing & storage** | Bounded, canonical inputs (I-JSON caps, JCS) fail closed at every gate, backed by fuzz and hostile-input suites; the durable store is envelope-encrypted at rest under a trusted-time floor. (§11.1, §15.1) |
+
+These are the properties axon is built to hold. Key custody is still interim and
+a few residual risks remain open — the
+[threat model](design/2026-07-19-threat-model.md) tracks each one, honestly.
 
 ## Try it
 
@@ -151,6 +183,17 @@ The returned SARIF is validated before it is emitted, so a model that answers wi
 malformed or oversized findings fails closed. For Anthropic's Messages API, use the
 Anthropic adapter and point the processor at it instead:
 `... anthropic api.anthropic.com 443 ca --path /v1/messages --auth x-api-key --header anthropic-version:2023-06-01`.
+
+## Acknowledgments
+
+Axon's founding idea comes from **c2c**, a prior agent-communication system:
+inbound message content can never satisfy an approval or trigger a privileged
+action — *arrival is not execution*. c2c showed that this invariant holds up
+under real dogfooding, and it is the spine of axon's security model (§6.3). Axon
+reuses c2c's hard-won patterns — durable-before-effect writes, per-purpose nonce
+separation, capability tokens that never touch argv or logs — as patterns and
+lessons, not code. Axon is an independent Rust implementation. With gratitude to
+c2c for the groundwork.
 
 ## Documents
 
