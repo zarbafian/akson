@@ -17,16 +17,20 @@
 //! allowlist, a later addition). The daemon refuses to run un-confined: if no
 //! delegated cgroup is available, the call fails closed rather than launch.
 
+use std::os::fd::AsRawFd;
 use std::path::Path;
 
 use axon_crypto::purpose::KeyPurpose;
 use axon_sandbox::{
-    BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher, SeccompPolicy,
+    broker_socketpair, BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher,
+    SeccompPolicy,
 };
 use axon_store::StoreError;
 use axon_worker::{gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem};
 
 use crate::bootstrap::DaemonState;
+use crate::broker::run_processor_call;
+use crate::broker_channel::serve_broker_channel;
 use crate::confinement::Confinement;
 use crate::control::Problem;
 use crate::result::{hex_sha256, submit_result, OutputKind, ResultOutput, ResultSubmission};
@@ -42,7 +46,7 @@ const REQUEST_ORIGIN: &str = "request-origin";
 /// lock → submit under the lock. Fails closed at every gate.
 pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Value, Problem> {
     // Phase 1 — gather everything the run needs, then release the lock.
-    let (capabilities, inputs, worker_command) = {
+    let (work_order_id, capabilities, inputs, worker_command) = {
         let store = state.store();
         let store = store.lock().map_err(|_| internal())?;
         let work_order_id = store
@@ -61,7 +65,7 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
                 "no worker is configured (set AXON_WORKER_CMD)",
             )
         })?;
-        (issued.order.capabilities, inputs, worker_command)
+        (work_order_id, issued.order.capabilities, inputs, worker_command)
     };
 
     // Phase 2 — stage, launch fully confined, and gate. No store lock is held.
@@ -100,7 +104,20 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         .filter(|d| Path::new(d).exists())
         .map(|d| (d, d))
         .collect();
-    let spec = confinement.to_spec(path_str(&staging)?, path_str(&output)?, &runtime);
+    let mut spec = confinement.to_spec(path_str(&staging)?, path_str(&output)?, &runtime);
+
+    // A `processor_use` grant opens the broker channel: the worker inherits one
+    // already-connected AF_UNIX fd (no socket() syscall — the network seal holds),
+    // and the daemon services the other end. Its number is handed to the worker as
+    // AXON_BROKER_FD; the daemon makes the real, credential-injected, budgeted call.
+    let broker = if confinement.processor.is_some() {
+        let (worker_fd, daemon_stream) =
+            broker_socketpair().map_err(|e| problem_detail(500, "run-setup", "broker channel", e))?;
+        spec = spec.setenv("AXON_BROKER_FD", &worker_fd.as_raw_fd().to_string());
+        Some((worker_fd, daemon_stream))
+    } else {
+        None
+    };
 
     let seccomp = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
     let cgroup = CgroupScope::create(
@@ -120,17 +137,34 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         )
     })?;
 
-    BubblewrapLauncher
-        .launch(
-            &spec,
-            "/bin/sh",
-            &["-c".to_owned(), worker_command],
-            &seccomp,
-            &cgroup,
-        )
-        .map_err(|e| {
-            problem_detail(500, "worker-failed", "the worker did not run to completion", e)
-        })?;
+    let args = ["-c".to_owned(), worker_command];
+    let launch = |spec: &_| {
+        BubblewrapLauncher
+            .launch(spec, "/bin/sh", &args, &seccomp, &cgroup)
+            .map_err(|e| {
+                problem_detail(500, "worker-failed", "the worker did not run to completion", e)
+            })
+    };
+    match broker {
+        // Service the broker channel on a scoped thread for the worker's lifetime,
+        // then close the daemon's copy of the worker end so the handler sees EOF.
+        Some((worker_fd, daemon_stream)) => std::thread::scope(|scope| {
+            scope.spawn(|| {
+                serve_broker_channel(daemon_stream, |processor_id, request| {
+                    match run_processor_call(state, processor_id, &work_order_id, request) {
+                        Ok(value) => value,
+                        Err(p) => serde_json::json!({
+                            "error": { "status": p.status, "title": p.title }
+                        }),
+                    }
+                });
+            });
+            let result = launch(&spec);
+            drop(worker_fd);
+            result
+        })?,
+        None => launch(&spec)?,
+    }
 
     let body = std::fs::read(output.join("response")).map_err(|_| {
         problem(

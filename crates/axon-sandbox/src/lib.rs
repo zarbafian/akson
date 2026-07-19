@@ -16,6 +16,7 @@
 //! isolation cannot be established.
 
 mod cgroup;
+mod channel;
 mod diagnostics;
 mod landlock;
 mod launcher;
@@ -25,6 +26,7 @@ mod probe;
 mod seccomp;
 
 pub use cgroup::{CgroupError, CgroupLimits, CgroupScope};
+pub use channel::broker_socketpair;
 pub use diagnostics::{all_required_available, diagnose, Diagnostic};
 pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};
 pub use launcher::{
