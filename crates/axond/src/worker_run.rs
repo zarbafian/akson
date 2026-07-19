@@ -21,13 +21,13 @@ use std::path::Path;
 
 use axon_crypto::purpose::KeyPurpose;
 use axon_sandbox::{
-    BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher, SandboxSpec,
-    SeccompPolicy,
+    BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher, SeccompPolicy,
 };
 use axon_store::StoreError;
 use axon_worker::{gate_outputs, stage_inputs, OutputChannel, ProposedOutput, StageItem};
 
 use crate::bootstrap::DaemonState;
+use crate::confinement::Confinement;
 use crate::control::Problem;
 use crate::result::{hex_sha256, submit_result, OutputKind, ResultOutput, ResultSubmission};
 
@@ -74,28 +74,33 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     std::fs::create_dir_all(&output)
         .map_err(|e| problem_detail(500, "run-setup", "could not prepare the run directory", e))?;
 
+    // The boundary is a function of the grants (§13.1): default-deny, each grant
+    // adds exactly its access. Stage only the inputs the read grant names, and bind
+    // /inputs and /output only when the corresponding grant is present.
+    let confinement = Confinement::from_capabilities(&capabilities);
     let items: Vec<StageItem> = inputs
         .iter()
+        .filter(|i| confinement.input_ids.contains(&i.input_id))
         .map(|i| StageItem {
             id: i.input_id.clone(),
             media_type: i.media_type.clone(),
             content: i.payload.clone(),
         })
         .collect();
-    stage_inputs(&items, &staging, "/inputs")
-        .map_err(|e| problem_detail(500, "stage-failed", "could not stage the inputs", e))?;
-
-    // The isolation policy: a read-only root filesystem, the approved inputs at
-    // /inputs, and a single writable /output for the response.
-    let mut spec = SandboxSpec::clean_worker("/");
-    for dir in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives"] {
-        if Path::new(dir).exists() {
-            spec = spec.ro_bind(dir, dir);
-        }
+    if confinement.reads_inputs {
+        stage_inputs(&items, &staging, "/inputs")
+            .map_err(|e| problem_detail(500, "stage-failed", "could not stage the inputs", e))?;
     }
-    spec = spec
-        .ro_bind(path_str(&staging)?, "/inputs")
-        .rw_bind(path_str(&output)?, "/output");
+
+    // The read-only OS runtime substrate (interpreter + shared libraries, no task
+    // data) is always present; the grant-derived /inputs and /output binds are
+    // added by the confinement.
+    let runtime: Vec<(&str, &str)> = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives"]
+        .into_iter()
+        .filter(|d| Path::new(d).exists())
+        .map(|d| (d, d))
+        .collect();
+    let spec = confinement.to_spec(path_str(&staging)?, path_str(&output)?, &runtime);
 
     let seccomp = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
     let cgroup = CgroupScope::create(

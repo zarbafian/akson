@@ -18,6 +18,7 @@ mod a2a_client;
 mod approve;
 mod bootstrap;
 mod broker;
+mod confinement;
 mod control;
 mod control_dispatch;
 mod decision;
