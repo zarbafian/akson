@@ -84,29 +84,54 @@ pub fn check_inert(media_type: &str, bytes: &[u8]) -> Result<(), NotInert> {
         return reject("contains an inline event handler");
     }
 
-    // External references — an SVG/HTML that fetches over the network on render.
-    // `href`/`src`/`url(` pointing at an absolute or protocol-relative URL.
+    // External references — an SVG/HTML/Graphviz artifact that fetches over the
+    // network on render: `href`/`src`, CSS `url(...)`, or a Graphviz `URL="..."`
+    // attribute — pointing at an absolute or protocol-relative URL.
+    if references_external_url(&text) {
+        return reject("references an external URL");
+    }
+
+    Ok(())
+}
+
+/// Whether `text` (already lowercased) carries an `href`/`src`/`url` reference whose
+/// target is an absolute (`http://`, `https://`) or protocol-relative (`//`) URL.
+///
+/// `href`/`src` are attribute names; `url` is matched only as a CSS function (`url(`)
+/// or an attribute assignment (`url=`, as Graphviz emits for `URL="http://…"`), and
+/// only at a token boundary — so a plain mention of a URL in prose ("see url
+/// https://… for details") is not mistaken for a fetched reference.
+fn references_external_url(text: &str) -> bool {
     let b = text.as_bytes();
-    for anchor in ["href", "src", "url("] {
+    for anchor in ["href", "src", "url"] {
         let mut from = 0;
         while let Some(pos) = text[from..].find(anchor) {
-            let start = from + pos + anchor.len();
-            // Skip an `=` and any quote/paren/whitespace, then look at the target.
-            let target = text[start..].trim_start_matches(['=', '"', '\'', '(', ' ', '\t']);
+            let at = from + pos;
+            let after = at + anchor.len();
+            from = at + 1;
+            if anchor == "url" {
+                // Require a boundary before, and `=` or `(` (after optional space)
+                // after; otherwise it is a bare word, not a reference.
+                let boundary = at == 0 || !b[at - 1].is_ascii_alphanumeric();
+                let mut k = after;
+                while k < b.len() && matches!(b[k], b' ' | b'\t') {
+                    k += 1;
+                }
+                if !boundary || k >= b.len() || !matches!(b[k], b'=' | b'(') {
+                    continue;
+                }
+            }
+            // Skip the `=`/`(`, any quote, and whitespace, then look at the target.
+            let target = text[after..].trim_start_matches(['=', '"', '\'', '(', ' ', '\t']);
             if target.starts_with("http://")
                 || target.starts_with("https://")
                 || target.starts_with("//")
             {
-                return reject("references an external URL");
-            }
-            from = start.max(from + pos + 1);
-            if from >= b.len() {
-                break;
+                return true;
             }
         }
     }
-
-    Ok(())
+    false
 }
 
 /// Whether `text` (already lowercased) contains an inline event handler: a run
@@ -203,6 +228,36 @@ mod tests {
     fn a_word_containing_on_is_not_a_false_positive() {
         // "one", "only", "front" contain "on" but are not handlers.
         let md = b"# Notes\nonly one concern on the frontend; done.\n";
+        assert!(check_inert("text/markdown", md).is_ok());
+    }
+
+    #[test]
+    fn a_graphviz_url_attribute_to_an_external_link_is_rejected() {
+        // Graphviz renders a node's URL="…" as a clickable external link; a remote
+        // target would phone home on click. Both quote styles and a space around `=`.
+        let dot = br#"digraph { a [label="x" URL="https://evil.example/track"]; }"#;
+        assert!(check_inert("text/vnd.graphviz", dot).is_err());
+        assert!(check_inert("text/vnd.graphviz+dot", b"digraph{ n[url = \"http://evil/x\"] }").is_err());
+    }
+
+    #[test]
+    fn a_css_url_function_to_an_external_resource_is_rejected() {
+        let svg = br#"<svg><rect style="fill:url(https://evil.example/p.png)"/></svg>"#;
+        assert!(check_inert("image/svg+xml", svg).is_err());
+    }
+
+    #[test]
+    fn a_clean_graphviz_passes() {
+        // A local anchor and a URL merely named in a label are not external fetches.
+        let dot = br##"digraph { a -> b; a [URL="#section" label="see https://docs.local later"]; }"##;
+        assert!(check_inert("text/vnd.graphviz", dot).is_ok());
+    }
+
+    #[test]
+    fn a_bare_url_word_in_prose_is_not_a_reference() {
+        // "url" mentioned in prose (not as an attribute/function) is not a fetch, even
+        // when an absolute URL follows it; "curl" must not anchor either.
+        let md = b"# Notes\nthe url https://api.example was called; run curl https://x to repro.\n";
         assert!(check_inert("text/markdown", md).is_ok());
     }
 }
