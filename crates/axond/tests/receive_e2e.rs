@@ -218,7 +218,15 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
         self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
 
     let store = in_memory_store();
-    // Pair the peer: pin its proposal key by its endpoint-cert fingerprint.
+    // Pair the peer: record it ACTIVE and pin its proposal key by its endpoint-cert
+    // fingerprint (the resolver admits only an active peer).
+    store
+        .put_peer(&stored_peer(
+            "requester",
+            "https://peer/a2a",
+            &peer_cert.fingerprint,
+        ))
+        .unwrap();
     store
         .put_peer_key(
             &peer_cert.fingerprint.value,
@@ -320,19 +328,27 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         config,
     ));
     // Pair the peer in the daemon's own store, then serve receive over it.
-    state
-        .store()
-        .lock()
-        .unwrap()
-        .put_peer_key(
-            &peer_cert.fingerprint.value,
-            "contract-proposal",
-            "requester",
-            "iss",
-            &peer_proposal_key.verifying().to_public_bytes(),
-            NOW,
-        )
-        .unwrap();
+    {
+        let store = state.store();
+        let store = store.lock().unwrap();
+        store
+            .put_peer(&stored_peer(
+                "requester",
+                "https://peer/a2a",
+                &peer_cert.fingerprint,
+            ))
+            .unwrap();
+        store
+            .put_peer_key(
+                &peer_cert.fingerprint.value,
+                "contract-proposal",
+                "requester",
+                "iss",
+                &peer_proposal_key.verifying().to_public_bytes(),
+                NOW,
+            )
+            .unwrap();
+    }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
 
     // 1. The peer submits over mTLS.
@@ -482,19 +498,27 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
         endpoint_cert,
         config,
     ));
-    state
-        .store()
-        .lock()
-        .unwrap()
-        .put_peer_key(
-            &peer_cert.fingerprint.value,
-            "contract-proposal",
-            "requester",
-            "iss",
-            &peer_proposal_key.verifying().to_public_bytes(),
-            NOW,
-        )
-        .unwrap();
+    {
+        let store = state.store();
+        let store = store.lock().unwrap();
+        store
+            .put_peer(&stored_peer(
+                "requester",
+                "https://peer/a2a",
+                &peer_cert.fingerprint,
+            ))
+            .unwrap();
+        store
+            .put_peer_key(
+                &peer_cert.fingerprint.value,
+                "contract-proposal",
+                "requester",
+                "iss",
+                &peer_proposal_key.verifying().to_public_bytes(),
+                NOW,
+            )
+            .unwrap();
+    }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
 
     // Receive the proposal over mTLS, then approve it (issues the work order).
@@ -672,19 +696,27 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
         endpoint_cert,
         config,
     ));
-    state
-        .store()
-        .lock()
-        .unwrap()
-        .put_peer_key(
-            &peer_cert.fingerprint.value,
-            "contract-proposal",
-            "requester",
-            "iss",
-            &peer_proposal_key.verifying().to_public_bytes(),
-            NOW,
-        )
-        .unwrap();
+    {
+        let store = state.store();
+        let store = store.lock().unwrap();
+        store
+            .put_peer(&stored_peer(
+                "requester",
+                "https://peer/a2a",
+                &peer_cert.fingerprint,
+            ))
+            .unwrap();
+        store
+            .put_peer_key(
+                &peer_cert.fingerprint.value,
+                "contract-proposal",
+                "requester",
+                "iss",
+                &peer_proposal_key.verifying().to_public_bytes(),
+                NOW,
+            )
+            .unwrap();
+    }
 
     // Configure the mock as a pinned processor at its /v1/chat/completions path.
     state
@@ -839,6 +871,13 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
         )
         .unwrap();
     store
+        .put_peer(&stored_peer(
+            "performer",
+            "https://peer/a2a",
+            &performer_cert.fingerprint,
+        ))
+        .unwrap();
+    store
         .put_peer_key(
             &performer_cert.fingerprint.value,
             "contract-proposal",
@@ -951,7 +990,15 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
     let b_tls = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
     let b_cert = self_signed_endpoint(&b_tls, "performer", Duration::from_secs(3600)).unwrap();
     let b_store = in_memory_store();
-    // B pinned A's contract-proposal key at pairing (by A's endpoint-cert fingerprint).
+    // B pinned A as an ACTIVE peer and its contract-proposal key at pairing (by A's
+    // endpoint-cert fingerprint).
+    b_store
+        .put_peer(&stored_peer(
+            "requester",
+            "https://peer/a2a",
+            &a_cert.fingerprint,
+        ))
+        .unwrap();
     b_store
         .put_peer_key(
             &a_cert.fingerprint.value,

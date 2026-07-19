@@ -21,7 +21,7 @@ use axon_contract::Identity;
 use axon_crypto::identity::Fingerprint;
 use axon_crypto::keypair::PurposeVerifyingKey;
 use axon_crypto::purpose::KeyPurpose;
-use axon_store::{Store, StoreError};
+use axon_store::{PeerStatus, Store, StoreError};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
@@ -75,6 +75,11 @@ impl PeerResolver for StorePeerResolver {
             .peer_key(tls_fingerprint, PROPOSAL_KEY_PURPOSE)
             .ok()
             .flatten()?;
+        // The peer must be operator-confirmed ACTIVE — a surviving key row for a
+        // pending, removed, or re-paired peer must not admit work (codex review).
+        if store.peer_status(&pk.agent_id).ok().flatten() != Some(PeerStatus::Active) {
+            return None;
+        }
         let proposal_key =
             PurposeVerifyingKey::from_public_bytes(KeyPurpose::ContractProposal, &pk.public_key)
                 .ok()?;
@@ -343,6 +348,43 @@ mod tests {
         }
     }
 
+    /// Pins an ACTIVE peer (a peer row + its contract-proposal key) — what a
+    /// confirmed peer looks like in the store, so the resolver admits it.
+    fn pin_active_peer(store: &Store, fp: &str, agent: &str, key: &PurposeVerifyingKey) {
+        use axon_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+        use axon_store::StoredPeer;
+        let cert = Fingerprint {
+            kind: FingerprintKind::CertSha256,
+            value: fp.to_owned(),
+        };
+        store
+            .put_peer(&StoredPeer {
+                identity: PeerIdentity {
+                    issuer: Some("iss".to_owned()),
+                    agent_id: agent.to_owned(),
+                    workload_id: None,
+                    endpoint_id: "https://peer/a2a".to_owned(),
+                    tls_cert: cert.clone(),
+                    agent_card_key: cert.clone(),
+                    key_bindings: vec![],
+                    security_projection_digest: cert.clone(),
+                    full_card_digest: cert.clone(),
+                },
+                local_note: String::new(),
+            })
+            .unwrap();
+        store
+            .put_peer_key(
+                fp,
+                "contract-proposal",
+                agent,
+                "iss",
+                &key.to_public_bytes(),
+                NOW,
+            )
+            .unwrap();
+    }
+
     /// A resolver that maps exactly one fingerprint to the test peer.
     struct OnevPeer;
     impl PeerResolver for OnevPeer {
@@ -484,16 +526,7 @@ mod tests {
         };
         let store = Store::open_in_memory(&kek, cp).unwrap();
         let vk = proposal_key().verifying();
-        store
-            .put_peer_key(
-                "fp-1",
-                "contract-proposal",
-                "requester",
-                "iss",
-                &vk.to_public_bytes(),
-                100,
-            )
-            .unwrap();
+        pin_active_peer(&store, "fp-1", "requester", &vk);
 
         let resolver = StorePeerResolver;
         let ctx = resolver
@@ -506,5 +539,35 @@ mod tests {
         assert_eq!(ctx.proposal_key.to_public_bytes(), vk.to_public_bytes());
         // An unknown fingerprint resolves to nothing.
         assert!(resolver.resolve(&store, "stranger").is_none());
+    }
+
+    #[test]
+    fn a_persisted_key_without_an_active_peer_is_refused() {
+        // A surviving proposal-key row is not enough: without an ACTIVE peer row
+        // (pending, removed, or superseded), the resolver must refuse admission.
+        let kek = axon_store::envelope::Kek::from_bytes([9u8; 32]);
+        let cp = ExternalCheckpoint {
+            state_generation: 0,
+            trusted_time: 0,
+            rollback_detectable: true,
+        };
+        let store = Store::open_in_memory(&kek, cp).unwrap();
+        let vk = proposal_key().verifying();
+        // Pin the key ONLY — no peer row, so peer_status is absent.
+        store
+            .put_peer_key(
+                "fp-1",
+                "contract-proposal",
+                "requester",
+                "iss",
+                &vk.to_public_bytes(),
+                100,
+            )
+            .unwrap();
+
+        assert!(
+            StorePeerResolver.resolve(&store, "fp-1").is_none(),
+            "a key without an active peer must not admit work"
+        );
     }
 }
