@@ -1,0 +1,25 @@
+[package]
+name = "axon-adapter-anthropic"
+publish = false
+description = "An Anthropic (Claude Messages API) worker adapter via the broker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "axon-adapter-anthropic"
+path = "src/main.rs"
+
+[dependencies]
+axon-adapter-sdk = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+axon-sandbox = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[lints]
+workspace = true

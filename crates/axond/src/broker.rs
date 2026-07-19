@@ -56,6 +56,7 @@ pub enum TransportError {
 /// composition is testable without a live server.
 pub trait CallTransport {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn send(
         &self,
         host: &str,
@@ -65,6 +66,7 @@ pub trait CallTransport {
         expected_cert_sha256: Option<&str>,
         auth: &AuthScheme,
         credential: Option<&[u8]>,
+        headers: &[(String, String)],
         request: &[u8],
         max_response_bytes: u64,
     ) -> impl std::future::Future<Output = Result<CallResponse, TransportError>>;
@@ -86,7 +88,7 @@ pub async fn dispatch_processor_call(
 ) -> Result<serde_json::Value, Problem> {
     // Phase 1 (locked): the config, the durable pre-dispatch record, and the move
     // to `dispatching` — all before any byte leaves.
-    let (call, credential, expected_cert, path, auth) = {
+    let (call, credential, expected_cert, path, auth, headers) = {
         let store = store.lock().map_err(|_| internal())?;
         let config = store
             .get_processor(processor_id)
@@ -115,6 +117,7 @@ pub async fn dispatch_processor_call(
             config.tls_certificate_sha256.clone(),
             config.path.clone(),
             config.auth.clone(),
+            config.headers.clone(),
         )
     };
 
@@ -145,6 +148,7 @@ pub async fn dispatch_processor_call(
             expected_cert.as_deref(),
             &auth,
             credential.as_deref(),
+            &headers,
             request,
             call.max_response_bytes,
         )
@@ -182,6 +186,7 @@ pub struct HttpsTransport<'a> {
 }
 
 impl CallTransport for HttpsTransport<'_> {
+    #[allow(clippy::too_many_arguments)]
     async fn send(
         &self,
         host: &str,
@@ -191,6 +196,7 @@ impl CallTransport for HttpsTransport<'_> {
         expected_cert_sha256: Option<&str>,
         auth: &AuthScheme,
         credential: Option<&[u8]>,
+        headers: &[(String, String)],
         request: &[u8],
         max_response_bytes: u64,
     ) -> Result<CallResponse, TransportError> {
@@ -230,10 +236,19 @@ impl CallTransport for HttpsTransport<'_> {
             Some(line) => format!("{line}\r\n"),
             None => String::new(),
         };
+        // Static per-processor headers (e.g. anthropic-version). CR/LF is stripped so
+        // a header value cannot inject additional headers or a body.
+        let static_lines: String = headers
+            .iter()
+            .map(|(name, value)| {
+                let clean = |s: &str| s.replace(['\r', '\n'], "");
+                format!("{}: {}\r\n", clean(name), clean(value))
+            })
+            .collect();
         let target = if path.starts_with('/') { path } else { "/" };
         let head = format!(
             "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
-             {auth_line}Content-Length: {}\r\nConnection: close\r\n\r\n",
+             {auth_line}{static_lines}Content-Length: {}\r\nConnection: close\r\n\r\n",
             request.len()
         );
         let exchange = async {
@@ -480,6 +495,7 @@ mod tests {
             disclosure: axon_broker::Disclosure::remote("Local", "here"),
             path: "/".to_owned(),
             auth: AuthScheme::Bearer,
+            headers: Vec::new(),
             config: serde_json::json!({"model": "m"}),
             tls_certificate_sha256: None,
         };
@@ -525,6 +541,7 @@ mod tests {
         }
     }
     impl CallTransport for MockTransport {
+        #[allow(clippy::too_many_arguments)]
         async fn send(
             &self,
             _host: &str,
@@ -534,6 +551,7 @@ mod tests {
             _expected_cert: Option<&str>,
             _auth: &AuthScheme,
             credential: Option<&[u8]>,
+            _headers: &[(String, String)],
             request: &[u8],
             _max: u64,
         ) -> Result<CallResponse, TransportError> {
@@ -730,6 +748,7 @@ mod tests {
             disclosure: axon_broker::Disclosure::remote("Local", "here"),
             path: "/v1/chat/completions".to_owned(),
             auth: AuthScheme::Bearer,
+            headers: vec![("anthropic-version".to_owned(), "2023-06-01".to_owned())],
             config: serde_json::json!({"model": "m"}),
             tls_certificate_sha256: Some(proc_cert.fingerprint.value.clone()),
         };
@@ -766,6 +785,7 @@ mod tests {
         let raw = String::from_utf8_lossy(&captured.lock().unwrap()).to_string();
         assert!(raw.contains("POST /v1/chat/completions HTTP/1.1"));
         assert!(raw.contains("Authorization: Bearer secret-key"));
+        assert!(raw.contains("anthropic-version: 2023-06-01"));
         assert!(raw.contains("{\"prompt\":\"hi\"}"));
     }
 

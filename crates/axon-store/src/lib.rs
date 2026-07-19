@@ -2653,6 +2653,7 @@ mod tests {
             disclosure: axon_broker::Disclosure::remote("Example AI", "us-east"),
             path: "/".to_owned(),
             auth: axon_broker::AuthScheme::Bearer,
+            headers: Vec::new(),
             config: serde_json::json!({"model": "review-1"}),
             tls_certificate_sha256: None,
         }

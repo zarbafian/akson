@@ -111,6 +111,9 @@ pub enum ControlRequest {
         /// Auth scheme: `bearer` (default), `none`, or a header name (`x-api-key`).
         #[serde(default)]
         auth: Option<String>,
+        /// Static request headers as `name:value` strings (e.g. `anthropic-version:2023-06-01`).
+        #[serde(default)]
+        headers: Vec<String>,
     },
     /// List configured processors (admin only).
     ProcessorList,

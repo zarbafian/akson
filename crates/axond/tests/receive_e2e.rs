@@ -671,6 +671,7 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
             tls_certificate_sha256: Some(model_cert.fingerprint.value.clone()),
             path: Some("/v1/chat/completions".to_owned()),
             auth: None,
+            headers: vec![],
         })
         .unwrap();
     state

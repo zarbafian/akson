@@ -20,7 +20,7 @@
 //! #   processor_id: "reviewer".into(), provider: "example-ai".into(),
 //! #   origin: Origin::https("api.example.com", 443),
 //! #   disclosure: Disclosure::remote("Example AI", "us-east"),
-//! #   path: "/".into(), auth: AuthScheme::Bearer, config: json!({"model": "m"}),
+//! #   path: "/".into(), auth: AuthScheme::Bearer, headers: vec![], config: json!({"model": "m"}),
 //! #   tls_certificate_sha256: None,
 //! # };
 //! let call = ProcessorCall::prepare(
@@ -159,6 +159,7 @@ mod tests {
             disclosure: Disclosure::remote("Example AI", "us-east"),
             path: "/".to_owned(),
             auth: crate::AuthScheme::Bearer,
+            headers: Vec::new(),
             config: json!({"model": "review-1"}),
             tls_certificate_sha256: None,
         }

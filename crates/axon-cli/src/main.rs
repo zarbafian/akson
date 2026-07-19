@@ -192,16 +192,21 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         }
         _ => {
             return usage(
-                "axon processor add <id> <provider> <host> <port> <ca|pin-sha256> [--path <path>] [--auth <bearer|none|header>]",
+                "axon processor add <id> <provider> <host> <port> <ca|pin-sha256> [--path <path>] [--auth <bearer|none|header>] [--header <name:value>]",
             )
         }
     };
-    // Optional trailing flags: request path and auth scheme.
-    let (mut path, mut auth) = (None, None);
+    // Optional trailing flags: request path, auth scheme, static headers.
+    let (mut path, mut auth, mut headers) = (None, None, Vec::new());
     while let Some(flag) = next_arg(args) {
         match flag.as_str() {
             "--path" => path = next_arg(args),
             "--auth" => auth = next_arg(args),
+            "--header" => {
+                if let Some(h) = next_arg(args) {
+                    headers.push(h);
+                }
+            }
             _ => {}
         }
     }
@@ -221,6 +226,7 @@ fn processor_add(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         tls_certificate_sha256: pin,
         path,
         auth,
+        headers,
     }) {
         Ok(r) => r,
         Err(code) => return code,

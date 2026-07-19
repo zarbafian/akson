@@ -332,6 +332,7 @@ impl DaemonState {
                 tls_certificate_sha256,
                 path,
                 auth,
+                headers,
             } => {
                 let store = self.store.lock().map_err(|_| internal())?;
                 let auth = match auth.as_deref() {
@@ -341,6 +342,12 @@ impl DaemonState {
                         header: header.to_owned(),
                     },
                 };
+                // Parse `name:value` header strings, splitting on the first colon.
+                let headers: Vec<(String, String)> = headers
+                    .iter()
+                    .filter_map(|h| h.split_once(':'))
+                    .map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned()))
+                    .collect();
                 let config = ProcessorConfig {
                     processor_id: processor_id.clone(),
                     provider: provider.clone(),
@@ -352,6 +359,7 @@ impl DaemonState {
                     },
                     path: path.clone().unwrap_or_else(|| "/".to_owned()),
                     auth,
+                    headers,
                     config: serde_json::json!({}),
                     tls_certificate_sha256: tls_certificate_sha256.clone(),
                 };
@@ -763,6 +771,7 @@ mod tests {
                 tls_certificate_sha256: Some("ab".repeat(32)),
                 path: None,
                 auth: None,
+                headers: vec![],
             })
             .unwrap();
         assert_eq!(added["added"], true);

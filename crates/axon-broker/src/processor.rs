@@ -21,6 +21,7 @@
 //!     disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
 //!     path: "/v1/chat/completions".into(),
 //!     auth: AuthScheme::Bearer,
+//!     headers: vec![],
 //!     config: json!({"model": "review-1", "temperature": 0}),
 //!     tls_certificate_sha256: None,
 //! };
@@ -113,6 +114,11 @@ pub struct ProcessorConfig {
     /// dispatched.
     #[serde(default)]
     pub auth: AuthScheme,
+    /// Static request headers sent on every call (e.g. `anthropic-version`). Part of
+    /// `config_digest` — they shape what is dispatched. The credential is never one
+    /// of these (it rides `auth`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
     /// Opaque provider configuration (model name, parameters).
     pub config: serde_json::Value,
     /// The processor's pinned endpoint-cert SHA-256 (design §8.1) — set for a
@@ -174,6 +180,7 @@ impl ProcessorConfig {
             "provider": self.provider,
             "origin": self.origin,
             "path": self.path,
+            "headers": self.headers,
             "config": self.config,
         });
         let bytes = json_canon::to_vec(&bound).map_err(|e| ConfigError(e.to_string()))?;
@@ -195,6 +202,7 @@ mod tests {
             disclosure: Disclosure::remote("Example AI", "us-east").retains("30d"),
             path: "/v1/chat/completions".to_owned(),
             auth: AuthScheme::Bearer,
+            headers: Vec::new(),
             config: json!({"model": "review-1", "temperature": 0}),
             tls_certificate_sha256: None,
         }
@@ -246,5 +254,11 @@ mod tests {
             ..cfg()
         };
         assert_eq!(a, reauthed.config_digest().unwrap());
+        // Static headers DO — they shape the request.
+        let headed = ProcessorConfig {
+            headers: vec![("anthropic-version".to_owned(), "2023-06-01".to_owned())],
+            ..cfg()
+        };
+        assert_ne!(a, headed.config_digest().unwrap());
     }
 }

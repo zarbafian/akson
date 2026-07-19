@@ -17,6 +17,7 @@ members = [
     "crates/axon-cli",
     "crates/axon-adapter-sdk",
     "adapters/openai",
+    "adapters/anthropic",
     "harness/runner",
 ]
 
