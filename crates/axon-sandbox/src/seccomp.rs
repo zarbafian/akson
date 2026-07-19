@@ -81,6 +81,14 @@ impl SeccompPolicy {
                 libc::SYS_write,
                 libc::SYS_readv,
                 libc::SYS_writev,
+                // Send/receive on an ALREADY-connected fd — how Rust's std does I/O
+                // on a socket (the inherited broker fd). No new reach: socket(),
+                // connect(), bind(), listen() stay off the list, so the worker can
+                // neither open a socket nor connect anywhere.
+                libc::SYS_sendto,
+                libc::SYS_recvfrom,
+                libc::SYS_sendmsg,
+                libc::SYS_recvmsg,
                 libc::SYS_pread64,
                 libc::SYS_pwrite64,
                 // Vectored positional I/O — the same read/write authority as the
@@ -304,18 +312,31 @@ mod tests {
     fn baseline_allows_a_shell_worker_to_run_external_tools_but_not_the_network() {
         let policy = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
         // The syscalls a shell needs to spawn an external tool that copies a file
-        // (validated live against uutils `cat`): without these it is SIGSYS-killed.
+        // (validated live against uutils `cat`), and the send/recv family a Rust
+        // adapter uses to talk on the inherited broker fd (validated live against
+        // the OpenAI adapter): without these the worker is SIGSYS-killed.
         for needed in [
             libc::SYS_vfork,
             libc::SYS_statfs,
             libc::SYS_prctl,
             libc::SYS_splice,
             libc::SYS_pipe,
+            libc::SYS_sendto,
+            libc::SYS_recvfrom,
+            libc::SYS_sendmsg,
+            libc::SYS_recvmsg,
         ] {
             assert!(policy.allow.contains(&needed), "baseline must allow {needed}");
         }
-        // But the network stays sealed: no socket-family syscall is on the list.
-        for denied in [libc::SYS_socket, libc::SYS_connect, libc::SYS_ptrace] {
+        // But the network stays sealed: the worker can neither OPEN a socket nor
+        // connect anywhere — only I/O on fds it already holds is permitted.
+        for denied in [
+            libc::SYS_socket,
+            libc::SYS_connect,
+            libc::SYS_bind,
+            libc::SYS_listen,
+            libc::SYS_ptrace,
+        ] {
             assert!(
                 !policy.allow.contains(&denied),
                 "baseline must NOT allow {denied}"

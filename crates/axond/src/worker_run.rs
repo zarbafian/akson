@@ -99,11 +99,29 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     // The read-only OS runtime substrate (interpreter + shared libraries, no task
     // data) is always present; the grant-derived /inputs and /output binds are
     // added by the confinement.
-    let runtime: Vec<(&str, &str)> = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives"]
-        .into_iter()
-        .filter(|d| Path::new(d).exists())
-        .map(|d| (d, d))
-        .collect();
+    let mut bind_dirs: Vec<String> =
+        ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives"]
+            .into_iter()
+            .filter(|d| Path::new(d).exists())
+            .map(str::to_owned)
+            .collect();
+    // Make the worker binary's own directory available (read-only) when it lives
+    // outside the system dirs — e.g. a locally-built adapter. The command's first
+    // token is the program; a bare name resolves on PATH (already under /usr).
+    if let Some(dir) = worker_command
+        .split_whitespace()
+        .next()
+        .filter(|t| t.contains('/'))
+        .and_then(|t| Path::new(t).parent())
+        .and_then(|p| p.to_str())
+        .filter(|p| Path::new(p).is_dir())
+        .map(str::to_owned)
+    {
+        if !bind_dirs.contains(&dir) {
+            bind_dirs.push(dir);
+        }
+    }
+    let runtime: Vec<(&str, &str)> = bind_dirs.iter().map(|d| (d.as_str(), d.as_str())).collect();
     let mut spec = confinement.to_spec(path_str(&staging)?, path_str(&output)?, &runtime);
 
     // A `processor_use` grant opens the broker channel: the worker inherits one
