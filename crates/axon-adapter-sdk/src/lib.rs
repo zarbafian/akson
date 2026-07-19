@@ -29,6 +29,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub mod conformance;
+pub mod proxy;
 
 /// The in-sandbox root the approved inputs are bound at (design §13.1).
 const INPUT_ROOT: &str = "/inputs";
