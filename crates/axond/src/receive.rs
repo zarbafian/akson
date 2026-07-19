@@ -379,6 +379,54 @@ mod tests {
         assert_eq!(replay.response, first.response);
     }
 
+    // --- No-effect proofs (design §10.2, §19 Phase-1 gate) ---
+    //
+    // Structural: `dispatch_proposal` is handed a `&Store` and nothing else — no
+    // transport, no processor/broker, no filesystem — so the receive path *cannot*
+    // call a model, dial the network, run a worker, or read a file. Its only writes
+    // are the inert task head, the sealed inputs, and the idempotency record. These
+    // tests pin the observable half: receiving executes nothing, and rejecting
+    // mutates nothing but its own idempotency record.
+
+    #[test]
+    fn receiving_a_valid_proposal_executes_nothing() {
+        let store = store();
+        let task_id = match dispatch(&store, &covered("msg-1"), &message(&proposal_key())).outcome {
+            DispatchOutcome::Submitted { task_id } => task_id,
+            other => panic!("expected Submitted, got {other:?}"),
+        };
+        // The received task is inert: an OPEN head (not accepted), and — crucially —
+        // NO work order or attempt exists. No attempt means no worker ran and no
+        // processor call could have been made. Execution needs a separate decision.
+        assert!(matches!(
+            store.contract_head(&task_id).unwrap(),
+            axon_contract::HeadState::Open(_)
+        ));
+        assert!(
+            store.attempt_for_task(&task_id).unwrap().is_none(),
+            "receiving must not issue a work order or run anything"
+        );
+    }
+
+    #[test]
+    fn a_rejected_proposal_creates_no_task_and_is_replay_stable() {
+        let store = store();
+        // Signed by the WRONG proposal key → rejected at verification, before any
+        // Task is created.
+        let wrong = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[9u8; 32]);
+        let result = dispatch(&store, &covered("msg-1"), &message(&wrong));
+        assert!(matches!(result.outcome, DispatchOutcome::Rejected { .. }));
+
+        // A replay of the same rejected request returns the recorded rejection (no
+        // task id) — the rejection wrote only its own idempotency record, and never a
+        // Task head, so there is nothing to execute.
+        let replay = dispatch(&store, &covered("msg-1"), &message(&wrong));
+        match replay.outcome {
+            DispatchOutcome::Duplicate { task_id } => assert!(task_id.is_none()),
+            other => panic!("expected a Duplicate rejection replay, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_changed_covered_value_is_a_conflict() {
         let store = store();

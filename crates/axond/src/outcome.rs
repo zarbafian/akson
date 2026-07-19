@@ -257,6 +257,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.status, 409);
+        // No-effect: a refused result records no outcome (§19).
+        assert!(store.list_outcomes().unwrap().is_empty());
     }
 
     #[test]
@@ -277,6 +279,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.status, 422);
+        // No-effect: a manifest that fails to verify records no outcome (§19).
+        assert!(store.list_outcomes().unwrap().is_empty());
     }
 
     #[test]
