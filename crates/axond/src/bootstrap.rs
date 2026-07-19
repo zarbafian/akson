@@ -148,6 +148,12 @@ impl DaemonState {
             rollback_detectable: false,
         };
         let store = Store::open(&config.data_dir.join("state.db"), &kek, checkpoint)?;
+        // Crash recovery (§13.1, §15.5): any attempt or processor call left mid-flight
+        // by a crash is *uncertain* — a byte may have left. Mark it ambiguous once at
+        // startup; it is never silently retried, and never reported as completed.
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        store.resolve_crashed_attempts(now)?;
+        store.resolve_crashed_calls(now)?;
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             identity,
