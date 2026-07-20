@@ -642,6 +642,32 @@ anchored here so they are not lost:
   safety-critical enum values still reject, extension objects stay
   reject-unknown. Remaining: verify/forward over *original bytes* (not the
   typed re-serialization) on the M5 receive path (card_sig refinement).
+- **M6/M14 (endpoint certificate rotation)** — the daemon's endpoint
+  certificate is minted once at bootstrap for `ENDPOINT_CERT_VALIDITY` (365
+  days, `axond::bootstrap`) and persisted, because its SHA-256 is exactly what
+  peers pin at pairing (§8.1) — regenerating it moves the fingerprint and
+  breaks every pinned peer. There is **no rotation path**. Until 2026-07-20 the
+  TLS verifiers ignored the certificate's validity window, so an expired
+  certificate kept authenticating silently; now that
+  `axon_crypto::cert::check_cert_time_validity` is enforced by all three
+  verifiers, an endpoint simply **stops being reachable by every paired peer
+  one year after first start**, with no in-band recovery. Needed: mint a
+  successor before expiry, carry both (old + new fingerprint) through an
+  overlap window, distribute the new fingerprint over the existing
+  authenticated channel so peers re-pin without an out-of-band invitation, and
+  surface remaining validity in `axon doctor` / `axon peer list`. This is a
+  liveness cliff, not an authorization defect — it fails closed. (From the
+  M13-era security review, 2026-07-20.)
+- **M12 (operator-configurable operation ceiling)** — `approve.rs`
+  `MAX_OPERATIONS` is a hardcoded `const` (now 64, was 1_000_000 — a ceiling
+  that bounded nothing until the durable ledger landed). It is the aggregate
+  number of processor calls one approval may make, so it directly bounds
+  worst-case spend at `MAX_OPERATIONS × max_cost_microusd`; the right value is
+  policy, not a constant. Needed: carry it on the approval (a
+  `--max-operations` on `axon task approve`, defaulted by standing policy
+  §12.4) so an operator can raise it for a genuinely long task without
+  recompiling, and lower it for untrusted peers. (From the M13-era security
+  review, 2026-07-20.)
 
 ### Tracer bullet checkpoint (after M7 + a minimal M8)
 
