@@ -36,9 +36,17 @@ const ISSUER_ASSURANCE: &str = "local-human";
 const EXECUTOR: &str = "axon-worker";
 /// The standing-policy version this decision was made under.
 const POLICY_VERSION: u32 = 1;
-/// The operation ceiling the worker's cgroup enforces (a resource limit, not a
-/// contract field). A generous interim default.
-const MAX_OPERATIONS: u32 = 1_000_000;
+/// The aggregate number of processor calls one approved attempt may make (§12.1).
+/// Enforced durably at dispatch: past this, a NEW call is refused before any byte
+/// leaves (the worker's cgroup pid/memory caps are a separate resource limit, set
+/// on the sandbox spec).
+///
+/// This bounds the worst-case spend of a single approval to
+/// `MAX_OPERATIONS × max_cost_microusd`. It must stay small enough that the bound
+/// is meaningful — a nominally-enforced ceiling of a million calls is no ceiling at
+/// all. 64 is far above what a real task needs (a review makes one model call, a
+/// handful with retries) and far below anything that could run up a bill.
+const MAX_OPERATIONS: u32 = 64;
 
 /// Approves a submitted Task: accept it and issue the one-shot work order (design
 /// §10.2 then §12.3). `local` is this endpoint's identity — the decider and the
