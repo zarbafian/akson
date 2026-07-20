@@ -106,6 +106,20 @@ pub fn finalize_result(
     // bytes the performer never signed for. Fail closed: one bad or missing
     // output refuses the whole delivery, so an accepted outcome always means the
     // complete, attested result is on hand.
+    // Two manifest outputs sharing an artifact_id would let one delivered part
+    // satisfy both entries, and only one row would survive storage — so an
+    // accepted outcome could claim two artifacts the requester cannot both hold.
+    // Refuse a manifest that names an artifact_id twice (codex review).
+    let mut seen_ids = std::collections::BTreeSet::new();
+    for entry in &manifest.outputs {
+        if !seen_ids.insert(entry.artifact_id.as_str()) {
+            return Err(problem(
+                422,
+                "output-duplicate",
+                "the manifest names the same artifact more than once",
+            ));
+        }
+    }
     let mut staged: Vec<(usize, &akson_evidence::OutputEntry, &[u8])> = Vec::new();
     for (ordinal, entry) in manifest.outputs.iter().enumerate() {
         let Some(part) = delivered
@@ -163,43 +177,48 @@ pub fn finalize_result(
     let envelope_bytes = serde_json::to_vec(&envelope)
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
 
-    // The bytes first, so an outcome is never recorded for a result whose outputs
-    // this endpoint failed to keep — the requester-side mirror of §14.1's staging
-    // rule. Each was checked against the manifest above.
-    for (ordinal, entry, bytes) in staged {
-        store
-            .put_task_output(
-                &manifest.header.task_id,
-                &entry.artifact_id,
-                ordinal as i64,
-                &entry.role,
-                &entry.media_type,
-                entry.byte_length as i64,
-                &entry.sha256,
-                bytes,
-                now,
-            )
-            .map_err(store_problem)?;
-    }
-    store
-        .put_outcome(
+    // Write the outputs and the outcome together (§14.1, requester mirror). One
+    // transaction, so an outcome is never recorded for a result whose bytes this
+    // endpoint did not durably keep, and a crash cannot leave committed bytes for
+    // a later, differently-signed manifest to attach to. Idempotent on a
+    // redelivery: the stored disposition wins and its digest is reported, so the
+    // acknowledgement never claims a digest that is not on disk.
+    let new_outputs: Vec<akson_store::NewTaskOutput<'_>> = staged
+        .iter()
+        .map(|(ordinal, entry, bytes)| akson_store::NewTaskOutput {
+            artifact_id: &entry.artifact_id,
+            ordinal: *ordinal as i64,
+            role: &entry.role,
+            media_type: &entry.media_type,
+            byte_length: entry.byte_length as i64,
+            sha256: &entry.sha256,
+            payload: bytes,
+        })
+        .collect();
+    let write = store
+        .record_outcome_with_outputs(
             &manifest.header.contract_digest,
             &manifest.header.task_id,
             &bundle_digest,
             &outcome_digest,
             "accepted",
             &envelope_bytes,
+            &new_outputs,
             signed_at,
             now,
         )
         .map_err(store_problem)?;
+    let recorded_digest = match write {
+        akson_store::OutcomeWrite::Recorded => outcome_digest,
+        akson_store::OutcomeWrite::AlreadyRecorded { outcome_digest } => outcome_digest,
+    };
 
     Ok(serde_json::json!({
         "finalized": true,
         "task_id": manifest.header.task_id,
         "state": "accepted",
         "bundle_digest": bundle_digest,
-        "outcome_digest": outcome_digest,
+        "outcome_digest": recorded_digest,
     }))
 }
 
@@ -475,6 +494,150 @@ mod tests {
         assert_eq!(err.status, 422);
         // No-effect: a manifest that fails to verify records no outcome (§19).
         assert!(store.list_outcomes().unwrap().is_empty());
+    }
+
+    /// A signed manifest whose two outputs share one artifact_id, delivered by two
+    /// identical parts. Without the duplicate guard, one part satisfies both entries
+    /// and one stored row backs an outcome that claims two artifacts (codex review).
+    #[test]
+    fn a_manifest_naming_the_same_artifact_twice_is_refused() {
+        let store = store();
+        record_sent(&store, "task-1");
+        let manifest = ResultManifest::assemble(
+            ManifestHeader {
+                task_id: "task-1".to_owned(),
+                context_id: "ctx-1".to_owned(),
+                contract_id: "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718".to_owned(),
+                contract_revision: 0,
+                contract_digest: CONTRACT_DIGEST.to_owned(),
+                attempt_digest: "b".repeat(64),
+                work_order_receipt_digest: "c".repeat(64),
+            },
+            vec![
+                OutputEntry {
+                    role: "a".to_owned(),
+                    artifact_id: "dup".to_owned(),
+                    part_index: 0,
+                    media_type: "text/plain".to_owned(),
+                    byte_length: RESPONSE.len() as u64,
+                    sha256: crate::result::hex_sha256(RESPONSE),
+                },
+                OutputEntry {
+                    role: "b".to_owned(),
+                    artifact_id: "dup".to_owned(),
+                    part_index: 1,
+                    media_type: "text/plain".to_owned(),
+                    byte_length: RESPONSE.len() as u64,
+                    sha256: crate::result::hex_sha256(RESPONSE),
+                },
+            ],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let envelope = manifest.sign(&performer_task_result_key()).unwrap();
+        let delivered = vec![
+            DeliveredOutput {
+                artifact_id: "dup".to_owned(),
+                bytes: RESPONSE.to_vec(),
+            },
+            DeliveredOutput {
+                artifact_id: "dup".to_owned(),
+                bytes: RESPONSE.to_vec(),
+            },
+        ];
+        let err = finalize_result(
+            &store,
+            &ident("requester"),
+            &ident("performer"),
+            &outcome_key(),
+            &performer_task_result_key().verifying(),
+            &envelope,
+            &delivered,
+            SIGNED_AT,
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 422);
+        assert!(store.list_outcomes().unwrap().is_empty());
+        assert!(store.list_task_outputs("task-1").unwrap().is_empty());
+    }
+
+    /// A redelivery for a settled task must not overwrite the stored bytes with a
+    /// second, differently-signed manifest, and must report the digest that is on
+    /// disk — not a freshly minted one (codex review A1/A6). Models the window a
+    /// crash could open: the first delivery recorded, a second arrives with the
+    /// same artifact_id but different content.
+    #[test]
+    fn a_redelivery_with_different_bytes_neither_overwrites_nor_reports_a_phantom_digest() {
+        let store = store();
+        record_sent(&store, "task-1");
+
+        // First delivery: accepted, bytes stored.
+        let first = finalize_result(
+            &store,
+            &ident("requester"),
+            &ident("performer"),
+            &outcome_key(),
+            &performer_task_result_key().verifying(),
+            &signed_manifest("task-1"),
+            &delivered(),
+            SIGNED_AT,
+            NOW,
+        )
+        .unwrap();
+        let first_digest = first["outcome_digest"].as_str().unwrap().to_owned();
+
+        // A second, genuinely-signed manifest for the SAME contract/task, but over
+        // different bytes with the same artifact_id.
+        const OTHER: &[u8] = b"reviewed: SHIP IT NOW";
+        let manifest = ResultManifest::assemble(
+            ManifestHeader {
+                task_id: "task-1".to_owned(),
+                context_id: "ctx-1".to_owned(),
+                contract_id: "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718".to_owned(),
+                contract_revision: 0,
+                contract_digest: CONTRACT_DIGEST.to_owned(),
+                attempt_digest: "b".repeat(64),
+                work_order_receipt_digest: "c".repeat(64),
+            },
+            vec![OutputEntry {
+                role: "response".to_owned(),
+                artifact_id: "a-1".to_owned(),
+                part_index: 0,
+                media_type: "text/plain".to_owned(),
+                byte_length: OTHER.len() as u64,
+                sha256: crate::result::hex_sha256(OTHER),
+            }],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let envelope = manifest.sign(&performer_task_result_key()).unwrap();
+        let second = finalize_result(
+            &store,
+            &ident("requester"),
+            &ident("performer"),
+            &outcome_key(),
+            &performer_task_result_key().verifying(),
+            &envelope,
+            &[DeliveredOutput {
+                artifact_id: "a-1".to_owned(),
+                bytes: OTHER.to_vec(),
+            }],
+            "2026-07-19T00:00:00Z",
+            NOW + 1,
+        )
+        .unwrap();
+
+        // The acknowledgement reports the FIRST (stored) digest, not the second.
+        assert_eq!(second["outcome_digest"].as_str().unwrap(), first_digest);
+        // The stored disposition and bytes are the first delivery's, untouched.
+        let (stored_digest, _) = store.get_outcome(CONTRACT_DIGEST).unwrap().unwrap();
+        assert_eq!(stored_digest, first_digest);
+        let outputs = store.list_task_outputs("task-1").unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].payload, RESPONSE, "the first bytes still stand");
     }
 
     #[test]

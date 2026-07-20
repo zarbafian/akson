@@ -75,5 +75,25 @@ authority is never touched by Akson; a **separate, additive** layer governs only
   adapter.)
 - **Denial of service by a peer** (flooding pairing/receive) is rate-limited and
   body-capped, but sustained resource pressure is not fully modeled here.
+- **The broker enforces a per-work-order *operation count*, an *egress allowlist*,
+  the *exact* approved processor, a *response-size* cap, and a *wall-clock* limit —
+  but not a monetary ceiling.** `max_cost_microusd` is recorded, not enforced:
+  pricing is per-provider and depends on token usage the broker does not parse, so a
+  prompt-injected adapter granted `processor_use` can still request an expensive
+  model or a large completion within the operation count. The count and size caps
+  bound the blast radius; a true cost ceiling needs per-provider usage accounting
+  (follow-up). The credential itself never reaches the adapter.
+- **Peer key-binding expiry (`not_after`) is not enforced.** A paired peer is
+  gated by operator-confirmed `active` status and certificate pinning; the receive
+  resolver does not additionally reject a contract-proposal or task-result key past
+  its declared `not_after` (the `peer_keys` table does not retain it). Key rotation
+  is by re-pairing, which now fully revokes the prior certificate's keys. Enforcing
+  binding expiry is a follow-up (needs a schema column + a resolve-time clock check).
+- **The audit log detects tampering *within* the chain but not truncation of its
+  *tail*.** `verify_chain` follows the hash links, so any edit to a retained record
+  is caught, but deleting the most recent records leaves a shorter valid chain. A
+  durable high-water sequence/terminal-hash anchor (tied to the T13 external
+  checkpoint) is the follow-up; until then tail-truncation resistance rests on the
+  same at-rest custody as the rest of the store.
 - **Physical access, kernel/hypervisor compromise, and side channels** are out of
   scope for v1.

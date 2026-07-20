@@ -243,6 +243,29 @@ pub struct TaskOutput {
     pub payload: Vec<u8>,
 }
 
+/// One output to persist alongside an accepted outcome — the borrowing input to
+/// [`Store::record_outcome_with_outputs`], already checked against the manifest.
+pub struct NewTaskOutput<'a> {
+    pub artifact_id: &'a str,
+    pub ordinal: i64,
+    pub role: &'a str,
+    pub media_type: &'a str,
+    pub byte_length: i64,
+    pub sha256: &'a str,
+    pub payload: &'a [u8],
+}
+
+/// Whether [`Store::record_outcome_with_outputs`] wrote a new disposition or
+/// found the task already settled (a redelivery).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutcomeWrite {
+    /// The outputs and outcome were committed together.
+    Recorded,
+    /// An outcome for this contract already existed; nothing was written. The
+    /// stored digest is returned so the acknowledgement matches disk.
+    AlreadyRecorded { outcome_digest: String },
+}
+
 /// A recorded requester outcome's listing summary (design §14.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutcomeSummary {
@@ -545,6 +568,14 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         let removed = tx.execute("DELETE FROM peers WHERE agent_id = ?1", [agent_id])?;
         if removed == 1 {
+            // Delete the peer's verification keys too. peer_keys is keyed by TLS
+            // fingerprint; if a removed peer's rows survive, then re-pairing the same
+            // agent with a NEW certificate leaves the OLD fingerprint pointing at an
+            // agent that is once again Active — and the receive resolver, which checks
+            // the agent's status but not which fingerprint is current, would admit a
+            // holder of the revoked certificate. Removing the rows closes that
+            // re-pairing bypass (codex review).
+            tx.execute("DELETE FROM peer_keys WHERE agent_id = ?1", [agent_id])?;
             audit::append(&tx, now, "peer.removed", agent_id)?;
         }
         tx.commit()?;
@@ -1920,6 +1951,89 @@ impl Store {
         Ok(())
     }
 
+    /// Records an accepted requester outcome together with every output it
+    /// covers, in a **single transaction** (design §14.1, requester mirror).
+    ///
+    /// The outputs and the outcome commit together or not at all. That is what
+    /// makes "accepted" mean "I hold exactly the bytes I signed for": a crash
+    /// can never leave committed output bytes that a *later*, differently-signed
+    /// manifest then attaches itself to (`put_task_output` alone commits each
+    /// output in its own transaction, and `ON CONFLICT DO NOTHING` would keep the
+    /// stale bytes — codex review).
+    ///
+    /// Idempotent on `contract_digest`: a redelivery for a task whose disposition
+    /// is already final does not re-stage outputs or mint a fresh outcome; it
+    /// returns the stored digest so the acknowledgement matches what is on disk.
+    /// The outputs are plain inserts (not `DO NOTHING`): a duplicate artifact_id
+    /// within one manifest raises a constraint error and rolls the whole thing
+    /// back, rather than silently coalescing two signed entries into one row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_outcome_with_outputs(
+        &self,
+        contract_digest: &str,
+        task_id: &str,
+        bundle_digest: &str,
+        outcome_digest: &str,
+        state: &str,
+        outcome_envelope: &[u8],
+        outputs: &[NewTaskOutput<'_>],
+        signed_at: &str,
+        now: i64,
+    ) -> Result<OutcomeWrite, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT outcome_digest FROM outcomes WHERE contract_digest = ?1",
+                [contract_digest],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(outcome_digest) = existing {
+            return Ok(OutcomeWrite::AlreadyRecorded { outcome_digest });
+        }
+        for o in outputs {
+            let sealed = self.dek.seal(TASK_OUTPUT_CONTEXT, o.payload);
+            tx.execute(
+                "INSERT INTO task_outputs
+                     (task_id, artifact_id, ordinal, role, media_type, byte_length, sha256, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    task_id,
+                    o.artifact_id,
+                    o.ordinal,
+                    o.role,
+                    o.media_type,
+                    o.byte_length,
+                    o.sha256,
+                    sealed
+                ],
+            )?;
+        }
+        let sealed_outcome = self.dek.seal(OUTCOME_CONTEXT, outcome_envelope);
+        tx.execute(
+            "INSERT INTO outcomes
+                 (contract_digest, task_id, bundle_digest, outcome_digest, state,
+                  outcome, signed_at, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                contract_digest,
+                task_id,
+                bundle_digest,
+                outcome_digest,
+                state,
+                sealed_outcome,
+                signed_at,
+                now
+            ],
+        )?;
+        if !outputs.is_empty() {
+            audit::append(&tx, now, "task.output_stored", task_id)?;
+        }
+        audit::append(&tx, now, "outcome.signed", outcome_digest)?;
+        tx.commit()?;
+        Ok(OutcomeWrite::Recorded)
+    }
+
     /// The output payloads of a task, unsealed, in manifest order.
     pub fn list_task_outputs(&self, task_id: &str) -> Result<Vec<TaskOutput>, StoreError> {
         let mut stmt = self.conn.prepare(
@@ -3043,6 +3157,33 @@ mod tests {
         // An unknown fingerprint resolves to nothing.
         assert!(store
             .peer_key("other", "contract-proposal")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn removing_a_peer_also_drops_its_verification_keys() {
+        // A revoked peer's key rows must not survive removal. If they did, then
+        // re-pairing the same agent with a NEW certificate would leave the OLD
+        // fingerprint pointing at an again-active agent, and a holder of the
+        // revoked certificate could still be resolved (codex review).
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // sample_peer's agent is "agent-a"; give it a proposal key under some fp.
+        store.put_peer(&sample_peer("to be removed")).unwrap();
+        let key = [7u8; 32];
+        store
+            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, 100)
+            .unwrap();
+        assert!(store
+            .peer_key("old-fp", "contract-proposal")
+            .unwrap()
+            .is_some());
+
+        assert!(store.remove_peer("agent-a", 101).unwrap());
+
+        // The old fingerprint no longer resolves to any key — the bypass is closed.
+        assert!(store
+            .peer_key("old-fp", "contract-proposal")
             .unwrap()
             .is_none());
     }

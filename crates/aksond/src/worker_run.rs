@@ -112,7 +112,7 @@ impl Invocation {
 /// lock → submit under the lock. Fails closed at every gate.
 pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Value, Problem> {
     // Phase 1 — gather everything the run needs, then release the lock.
-    let (work_order_id, capabilities, inputs, invocation) = {
+    let (work_order_id, capabilities, inputs, invocation, deadline) = {
         let store = state.store();
         let store = store.lock().map_err(|_| internal())?;
         let work_order_id = store
@@ -131,8 +131,23 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
                 "no worker is configured (set AKSON_WORKER_CMD or AKSON_WORKER_EXEC)",
             )
         })?;
-        (work_order_id, issued.order.capabilities, inputs, invocation)
+        (
+            work_order_id,
+            issued.order.capabilities,
+            inputs,
+            invocation,
+            issued.order.deadline.clone(),
+        )
     };
+
+    // The wall-clock budget for the run. The cgroup caps memory and pids, but
+    // nothing bounded CPU time or a plain hang: a prompt-injected worker could spin
+    // a core forever, since `cpu.max` is unset and the launcher blocks on the child
+    // (codex review, converged with the liveness model). Bound it two ways: never
+    // run past the work order's deadline, and never past a hard ceiling regardless
+    // of how far that deadline is. A deadline already in the past is refused before
+    // the worker starts.
+    let run_budget = worker_wall_clock(&deadline)?;
 
     // Phase 2 — stage, launch fully confined, and gate. No store lock is held.
     let run_dir = state.config().data_dir.join("run").join(task_id);
@@ -232,17 +247,43 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
 
     let program = invocation.program().to_owned();
     let args = invocation.args();
+    // Launch on a helper thread and enforce the wall-clock ceiling from this one:
+    // if the worker outlasts `run_budget`, kill its whole cgroup (bwrap and every
+    // descendant, atomically) so the blocked launcher returns and the run ends as a
+    // timeout rather than hanging the daemon.
     let launch = |spec: &_| {
-        BubblewrapLauncher
-            .launch(spec, &program, &args, &seccomp, &cgroup)
-            .map_err(|e| {
-                problem_detail(
-                    500,
-                    "worker-failed",
-                    "the worker did not run to completion",
-                    e,
-                )
-            })
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                BubblewrapLauncher
+                    .launch(spec, &program, &args, &seccomp, &cgroup)
+                    .map_err(|e| {
+                        problem_detail(
+                            500,
+                            "worker-failed",
+                            "the worker did not run to completion",
+                            e,
+                        )
+                    })
+            });
+            let start = std::time::Instant::now();
+            loop {
+                if handle.is_finished() {
+                    return handle.join().unwrap_or_else(|_| Err(internal()));
+                }
+                if start.elapsed() >= run_budget {
+                    // Kill the cgroup, then join the (now-returning) launcher and
+                    // report the timeout regardless of the exit it observed.
+                    let _ = cgroup.kill();
+                    let _ = handle.join();
+                    return Err(problem(
+                        504,
+                        "worker-timeout",
+                        "the worker exceeded its wall-clock limit",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
     };
     // Durable-before-effect: mark the attempt Running *before* the sandbox launches.
     // The launch is the effect — it may reach a model and spend budget — so the mark
@@ -485,6 +526,32 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// The hard wall-clock ceiling for any single worker run. Bounds a hostile or
+/// hung worker even when the work order's `deadline` is far in the future (a task
+/// with a 2030 deadline must still not be able to spin a core for years).
+const WORKER_WALL_CLOCK_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The wall-clock budget for a run: the sooner of the work order's `deadline` and
+/// [`WORKER_WALL_CLOCK_MAX`]. A deadline already in the past is refused (`504`)
+/// before the worker starts — arrival is not a licence to run late.
+fn worker_wall_clock(deadline: &str) -> Result<std::time::Duration, Problem> {
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
+    let deadline_unix = OffsetDateTime::parse(deadline, &Rfc3339)
+        .map(|t| t.unix_timestamp())
+        .map_err(|_| problem(422, "bad-deadline", "the work order deadline is not valid"))?;
+    let remaining = deadline_unix - now_unix();
+    if remaining <= 0 {
+        return Err(problem(
+            504,
+            "deadline-passed",
+            "the work order deadline has already passed",
+        ));
+    }
+    let remaining = std::time::Duration::from_secs(remaining as u64);
+    Ok(remaining.min(WORKER_WALL_CLOCK_MAX))
 }
 
 fn store_problem(_e: StoreError) -> Problem {

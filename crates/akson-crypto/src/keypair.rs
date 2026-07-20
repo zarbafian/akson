@@ -81,7 +81,15 @@ impl PurposeKey {
     /// key's bound purpose. This is the single door to the secret key, and it
     /// is gated: cross-purpose use returns [`KeyError::Purpose`] and `f` never
     /// runs. Returning the closure's value keeps callers (JWS, DSSE) able to
-    /// reuse the underlying primitive without the key escaping.
+    /// reuse the underlying primitive.
+    ///
+    /// This gates *access*, not *containment*: `f` receives a `&SigningKey` and
+    /// could clone it out (`sign_with(p, |sk| sk.clone())`), escaping the purpose
+    /// binding. No in-tree caller does — every one signs and returns a signature
+    /// or envelope — and a lint could enforce that, but the type does not. Callers
+    /// MUST NOT let the key outlive `f`. (A narrower `sign(intended, msg)` that
+    /// removes the footgun is tracked as a follow-up; it needs JWS/DSSE to sign
+    /// over bytes they pre-compute rather than borrowing the key — codex review.)
     pub fn sign_with<T>(
         &self,
         intended: KeyPurpose,

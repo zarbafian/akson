@@ -92,6 +92,24 @@ impl CgroupScope {
         &self.path
     }
 
+    /// Kills every process in the cgroup, immediately and atomically. Used to
+    /// enforce the worker's wall-clock ceiling: killing the cgroup (rather than
+    /// one pid) reaps bubblewrap *and* everything it launched, with no race for a
+    /// forked grandchild to escape. Prefers cgroup v2's `cgroup.kill` (one write
+    /// SIGKILLs the whole subtree); falls back to SIGKILL over `cgroup.procs` on a
+    /// kernel without it (< 5.14). Best-effort — a process already exiting is fine.
+    pub fn kill(&self) -> Result<(), CgroupError> {
+        if self.write("cgroup.kill", "1").is_ok() {
+            return Ok(());
+        }
+        let procs = fs::read_to_string(self.path.join("cgroup.procs")).map_err(io("read procs"))?;
+        for pid in procs.lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
+            // SAFETY: kill(2) with SIGKILL on a pid parsed from our own cgroup.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        Ok(())
+    }
+
     /// A scope naming `path` without creating or owning any real cgroup — only for
     /// unit tests of launch paths that fail (probe/not-wired) before the cgroup is
     /// ever used. Drop's `remove_dir` is best-effort and harmless on such a path.

@@ -335,8 +335,18 @@ pub fn open_and_migrate(conn: &Connection) -> rusqlite::Result<String> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     for (target, ddl) in MIGRATIONS {
         if version < *target {
-            conn.execute_batch(ddl)?;
-            conn.pragma_update(None, "user_version", *target)?;
+            // The DDL and the user_version bump must commit together. As two
+            // separate autocommit statements, a crash in between leaves the schema
+            // changed but the version not advanced; on restart the same migration
+            // runs again and fails (e.g. "duplicate column name"), leaving a database
+            // that cannot open. SQLite DDL and `PRAGMA user_version` are both
+            // transactional, so one transaction makes the step all-or-nothing (codex
+            // review). `user_version` must be set via the SQL form, not
+            // `pragma_update`, to run inside the transaction.
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(ddl)?;
+            tx.execute_batch(&format!("PRAGMA user_version = {target}"))?;
+            tx.commit()?;
         }
     }
     Ok(mode)
