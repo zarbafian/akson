@@ -2,15 +2,15 @@
   "name": "dsse/hello-world",
   "description": "single Ed25519 signature over a small JSON payload",
   "input": {
-    "payload_type": "application/vnd.axon.test+json",
+    "payload_type": "application/vnd.akson.test+json",
     "payload_utf8": "{\"hello\":\"world\"}",
     "private_key_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
   },
   "expected": {
-    "pae_utf8": "DSSEv1 30 application/vnd.axon.test+json 17 {\"hello\":\"world\"}",
+    "pae_utf8": "DSSEv1 31 application/vnd.akson.test+json 17 {\"hello\":\"world\"}",
     "keyid": "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
     "payload_base64": "eyJoZWxsbyI6IndvcmxkIn0=",
-    "sig_base64": "F9GAexIa8s/I7ygfZ2q+rdE+HtS3ljs9BPEj3ah28bcKP4ogRUrzgW3w+zqO3dKBN6/LdZx1Cj+ZHmkcUWcABg=="
+    "sig_base64": "TvjZw/b3Bo/JFyIipsap1e1jCUUhDAFvH9hM2unAmFy2kuhiYNWJ2lEp+bn/2aa8B+4+KWHthBbyRUuEf+49Dw=="
   }
 }

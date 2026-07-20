@@ -1,11 +1,11 @@
 {
   "name": "a2a-profile/agent-card-missing-extension",
-  "description": "every required Axon extension must be advertised",
+  "description": "every required Akson extension must be advertised",
   "kind": "agent-card",
   "input": {
     "card": {
       "name": "reviewer",
-      "description": "Axon endpoint",
+      "description": "Akson endpoint",
       "version": "0.0.1",
       "supportedInterfaces": [
         {
@@ -20,19 +20,19 @@
         "extendedAgentCard": true,
         "extensions": [
           {
-            "uri": "https://axon.invalid/ext/key-binding/v1",
+            "uri": "https://akson.invalid/ext/key-binding/v1",
             "required": true
           },
           {
-            "uri": "https://axon.invalid/ext/delivery/v1",
+            "uri": "https://akson.invalid/ext/delivery/v1",
             "required": true
           },
           {
-            "uri": "https://axon.invalid/ext/result-evidence/v1",
+            "uri": "https://akson.invalid/ext/result-evidence/v1",
             "required": true
           },
           {
-            "uri": "https://axon.invalid/ext/outcome/v1",
+            "uri": "https://akson.invalid/ext/outcome/v1",
             "required": true
           }
         ]
@@ -62,11 +62,11 @@
       "skills": []
     },
     "required_extensions": [
-      "https://axon.invalid/ext/contract/v1",
-      "https://axon.invalid/ext/key-binding/v1",
-      "https://axon.invalid/ext/delivery/v1",
-      "https://axon.invalid/ext/result-evidence/v1",
-      "https://axon.invalid/ext/outcome/v1"
+      "https://akson.invalid/ext/contract/v1",
+      "https://akson.invalid/ext/key-binding/v1",
+      "https://akson.invalid/ext/delivery/v1",
+      "https://akson.invalid/ext/result-evidence/v1",
+      "https://akson.invalid/ext/outcome/v1"
     ]
   },
   "expected": {

@@ -1,5 +1,5 @@
 [package]
-name = "axon-adapter-gemini"
+name = "akson-adapter-gemini"
 publish = false
 description = "A Google Gemini (generateContent API) worker adapter via the broker"
 version.workspace = true
@@ -9,16 +9,16 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "axon-adapter-gemini"
+name = "akson-adapter-gemini"
 path = "src/main.rs"
 
 [dependencies]
-axon-adapter-sdk = { workspace = true }
-axon-evidence = { workspace = true }
+akson-adapter-sdk = { workspace = true }
+akson-evidence = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-axon-sandbox = { workspace = true }
+akson-sandbox = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 

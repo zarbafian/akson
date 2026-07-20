@@ -20,7 +20,7 @@ goal before the first stable release.
 - The design document is normative; changing a normative statement requires a
   dated revision of the design plus an ADR when standards disposition is
   affected.
-- Axon-specific wire formats are added only under the rule in design §3.1
+- Akson-specific wire formats are added only under the rule in design §3.1
   (documented standards gap, versioned schema, golden vectors, security
   review, two independent adapters).
 

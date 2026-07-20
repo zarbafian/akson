@@ -7,11 +7,11 @@
     "value": {
       "schema_version": 1,
       "verifier": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "validator.example"
       },
       "subjects": [],
-      "check_profile": "axon-evidence-validate/v1",
+      "check_profile": "akson-evidence-validate/v1",
       "result": "passed",
       "produced_at": "2026-07-16T12:00:00Z"
     }

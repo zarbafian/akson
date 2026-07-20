@@ -15,14 +15,14 @@ The pinned A2A 1.0 protobuf definitions are vendored into `spec/a2a/`
 together with a `PIN` file recording the upstream repository, tag, and commit
 hash. Rust types are generated at build time with `prost` from the vendored
 files only — never from a network fetch. The HTTP+JSON binding uses the A2A
-standard JSON mapping; Axon's profile restrictions (required extensions,
+standard JSON mapping; Akson's profile restrictions (required extensions,
 nonblocking operation, disabled streaming/push) are validation layered on
-top in `axon-proto`, not edits to the vendored definitions.
+top in `akson-proto`, not edits to the vendored definitions.
 
 ## Consequences
 
 - Upgrading A2A is an explicit diff of `spec/a2a/` plus re-run conformance
   vectors, governed by design §18.
-- JSON Schema is used only for Axon extension objects (`spec/ext/`), never
+- JSON Schema is used only for Akson extension objects (`spec/ext/`), never
   for standard A2A objects.
-- `axon-proto` is the single crate allowed to expose generated A2A types.
+- `akson-proto` is the single crate allowed to expose generated A2A types.

@@ -10,13 +10,13 @@ Rules:
 - Every file under `proto/` is a **byte-exact upstream copy**. Never edit one;
   upgrading A2A is an explicit re-vendor plus a `PIN` diff reviewed under the
   design §18 compatibility rules.
-- `crates/axon-proto` compiles these files at build time with `protox`
+- `crates/akson-proto` compiles these files at build time with `protox`
   (pure-Rust, no system protoc, no network) and generates types with `prost`
   and the standard proto3 JSON mapping with `pbjson`.
 - The A2A HTTP+JSON binding is this JSON mapping over HTTPS with
-  `application/a2a+json` (design §3); Axon's v1 profile restrictions
+  `application/a2a+json` (design §3); Akson's v1 profile restrictions
   (required extensions, nonblocking operation, disabled streaming/push) are
   validation layered on top, never edits to these definitions.
 
-The Axon v1 profile mapping document and A2A conformance vectors land here
+The Akson v1 profile mapping document and A2A conformance vectors land here
 with the rest of milestone M2.

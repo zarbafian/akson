@@ -2,7 +2,7 @@
 //! the performer's worker; the operator configures it as the worker command, e.g.
 //!
 //! ```text
-//! AXON_WORKER_CMD='axon-adapter-openai --processor reviewer --model gpt-4o'
+//! AKSON_WORKER_CMD='akson-adapter-openai --processor reviewer --model gpt-4o'
 //! ```
 //!
 //! It reads the approved input, asks the granted model (through the broker — never
@@ -10,14 +10,14 @@
 
 use std::process::ExitCode;
 
-use axon_adapter_openai::{chat_request, extract_content, validate_sarif};
-use axon_adapter_sdk::Task;
+use akson_adapter_openai::{chat_request, extract_content, validate_sarif};
+use akson_adapter_sdk::Task;
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("axon-adapter-openai: {e}");
+            eprintln!("akson-adapter-openai: {e}");
             ExitCode::FAILURE
         }
     }

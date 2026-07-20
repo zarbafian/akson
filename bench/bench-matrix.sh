@@ -9,16 +9,16 @@
 # (so every processor is configured). This driver only switches the active worker.
 set -uo pipefail
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-export PATH="$HOME/axon/target/release:$PATH"
+export PATH="$HOME/akson/target/release:$PATH"
 BOB_PRIV="${BOB_PRIV:?}"; PROVIDERS="${PROVIDERS:-openai anthropic gemini}"; ITERS="${ITERS:-10}"
 KEY="$HOME/.ssh/bench_key"
 SSH=(-i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile="$HOME/.ssh/bench_known"
      -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm-%h" -o ControlPersist=300 -o BatchMode=yes)
-RENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus; export PATH=$HOME/axon/target/release:$PATH'
+RENV='export XDG_RUNTIME_DIR=/run/user/$(id -u); export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus; export PATH=$HOME/akson/target/release:$PATH'
 bobsh() { ssh "${SSH[@]}" "bench@$BOB_PRIV" "$RENV; $*"; }
-bob()   { bobsh "axon $*"; }
+bob()   { bobsh "akson $*"; }
 
-SCEN_DIR="$HOME/axon/bench/scenarios"
+SCEN_DIR="$HOME/akson/bench/scenarios"
 SCENARIOS=$(ls "$SCEN_DIR"/*.json | xargs -n1 basename | sed 's/\.json$//')
 now(){ date +%s.%N; }; el(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.4f",b-a}'; }
 TMP=$(mktemp -d)
@@ -26,14 +26,14 @@ bob whoami >/dev/null   # warm the control connection
 
 for prov in $PROVIDERS; do
   echo "== provider: $prov =="
-  bobsh "ROLE=performer SELF_IP=$BOB_PRIV PROVIDER=$prov bash \$HOME/axon/bench/serve.sh" >/dev/null 2>&1
+  bobsh "ROLE=performer SELF_IP=$BOB_PRIV PROVIDER=$prov bash \$HOME/akson/bench/serve.sh" >/dev/null 2>&1
   # wait for the restarted daemon
   for _ in $(seq 1 40); do bob whoami >/dev/null 2>&1 && break; sleep 0.25; done
   for scen in $SCENARIOS; do
     cell="$prov.$scen"; : > "$TMP/$cell"; ok=0
     for i in $(seq 1 "$ITERS"); do
       L0=$(now); good=1
-      for k in 1 2 3 4 5; do if OUT=$(axon task send "$SCEN_DIR/$scen.json" 2>&1); then break; fi; sleep 0.5; done
+      for k in 1 2 3 4 5; do if OUT=$(akson task send "$SCEN_DIR/$scen.json" 2>&1); then break; fi; sleep 0.5; done
       ID=$(printf '%s' "$OUT" | grep -oE 'task-[0-9A-Za-z_-]+' | head -1)
       [ -n "$ID" ] || { good=0; }
       if [ "$good" = 1 ]; then bob task approve "$ID" --processor "$prov" >/dev/null 2>&1 || good=0; fi

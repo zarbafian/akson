@@ -1,0 +1,52 @@
+[package]
+name = "aksond"
+publish = false
+description = "The Akson daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "aksond"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aksond"
+path = "src/main.rs"
+
+[dependencies]
+akson-sandbox = { workspace = true }
+akson-store = { workspace = true }
+akson-contract = { workspace = true }
+akson-authority = { workspace = true }
+akson-broker = { workspace = true }
+akson-evidence = { workspace = true }
+akson-worker = { workspace = true }
+akson-proto = { workspace = true }
+akson-crypto = { workspace = true }
+akson-ext = { workspace = true }
+akson-pairing = { workspace = true }
+akson-transport = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+libc = "0.2.186"
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+time = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+
+[lints]
+workspace = true

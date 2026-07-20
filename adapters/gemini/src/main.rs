@@ -3,9 +3,9 @@
 //! the model is named in the path — and points the worker command at this adapter:
 //!
 //! ```text
-//! axon processor add gemini google generativelanguage.googleapis.com 443 ca \
+//! akson processor add gemini google generativelanguage.googleapis.com 443 ca \
 //!     --path /v1beta/models/gemini-2.0-flash:generateContent --auth x-goog-api-key
-//! AXON_WORKER_EXEC='axon-adapter-gemini --processor gemini'
+//! AKSON_WORKER_EXEC='akson-adapter-gemini --processor gemini'
 //! ```
 //!
 //! It reads the approved input, asks the granted model (through the broker — never
@@ -14,14 +14,14 @@
 
 use std::process::ExitCode;
 
-use axon_adapter_gemini::{extract_content, generate_content_request, validate_sarif};
-use axon_adapter_sdk::Task;
+use akson_adapter_gemini::{extract_content, generate_content_request, validate_sarif};
+use akson_adapter_sdk::Task;
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("axon-adapter-gemini: {e}");
+            eprintln!("akson-adapter-gemini: {e}");
             ExitCode::FAILURE
         }
     }

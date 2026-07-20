@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interop scenario 1 — pairing over mTLS (design §8.2, the Layer-1 interop
-# checkpoint). Two Axon endpoints run as separate processes: endpoint-a mints an
+# checkpoint). Two Akson endpoints run as separate processes: endpoint-a mints an
 # invitation and serves the bootstrap endpoint; endpoint-b reads the invitation
 # and pairs, pinning endpoint-a over real TLS 1.3 with certificate pinning.
 #
@@ -12,9 +12,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'kill "${SERVE_PID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
-echo "building axon-harness..."
-cargo build -q -p axon-harness --manifest-path "$ROOT/Cargo.toml"
-BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/axon-harness"
+echo "building akson-harness..."
+cargo build -q -p akson-harness --manifest-path "$ROOT/Cargo.toml"
+BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/akson-harness"
 
 echo "endpoint-a: serving + minting invitation"
 "$BIN" serve \

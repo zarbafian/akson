@@ -8,16 +8,16 @@ Date: 2026-07-16
 Design §18 fixes the compatibility rule: readers **reject unknown
 safety-critical enum values** and **preserve non-critical unknown standard
 fields**; §4.2/§18 add that unknown extensions are preserved for forwarding
-when safe or ignored, and Axon tests with at least two SDKs. Lines 1222/1587
+when safe or ignored, and Akson tests with at least two SDKs. Lines 1222/1587
 add the mechanism constraint: "a parser's normalized representation never
 replaces the signed [original bytes]."
 
 The generated pbjson deserializers, by default, reject any unknown field
 (`_ => Err(unknown_field(...))`), which contradicts §18 for *standard* A2A
 objects (Codex review finding M13). A newer A2A minor version that adds a
-benign field would otherwise hard-fail an object Axon should still accept.
+benign field would otherwise hard-fail an object Akson should still accept.
 
-Axon **extension** objects are the opposite case: they are closed,
+Akson **extension** objects are the opposite case: they are closed,
 safety-critical schemas validated by the JSON Schema registry
 (`additionalProperties: false`) over strict I-JSON, and must keep
 reject-unknown.
@@ -32,7 +32,7 @@ while unknown values of a safety-critical enum still fail closed.
 Two further rules make the preservation faithful:
 
 - **Original bytes are the source of truth.** For dedup digest (RFC 9530
-  Content-Digest), signature coverage, and forwarding, Axon uses the exact
+  Content-Digest), signature coverage, and forwarding, Akson uses the exact
   received bytes — never a re-serialization of the typed model, which has
   dropped the ignored fields (design §1222). The reliable-delivery layer
   already retains the exact body (M5-core).

@@ -1,7 +1,7 @@
 # Interop scenario 1 (pairing over mTLS) as two containerised endpoints.
 # FOSS + runtime-agnostic: runs under `podman compose` (preferred — daemonless,
 # rootless, Apache-2.0) or `docker compose`. Build the image first:
-#   podman build -f harness/interop/Containerfile -t axon-harness .
+#   podman build -f harness/interop/Containerfile -t akson-harness .
 #   podman compose -f harness/interop/compose.yaml up --abort-on-container-exit
 #
 # endpoint-a serves and writes the invitation to the shared volume; endpoint-b
@@ -9,7 +9,7 @@
 # and exits 0.
 services:
   endpoint-a:
-    image: axon-harness
+    image: akson-harness
     command:
       - serve
       - --state=/state/a.db
@@ -22,22 +22,22 @@ services:
     volumes:
       - shared:/shared
       - state-a:/state
-    networks: [axon]
+    networks: [akson]
 
   endpoint-b:
-    image: axon-harness
+    image: akson-harness
     # Wait for the invitation the inviter writes, then pair.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
         for i in $(seq 1 100); do [ -s /shared/invitation.json ] && break; sleep 0.1; done;
         sleep 0.5;
-        exec axon-harness pair --state=/state/b.db --seed=2 --invitation=/shared/invitation.json --agent=endpoint-b
+        exec akson-harness pair --state=/state/b.db --seed=2 --invitation=/shared/invitation.json --agent=endpoint-b
     volumes:
       - shared:/shared
       - state-b:/state
     depends_on: [endpoint-a]
-    networks: [axon]
+    networks: [akson]
 
 volumes:
   shared:
@@ -45,4 +45,4 @@ volumes:
   state-b:
 
 networks:
-  axon:
+  akson:

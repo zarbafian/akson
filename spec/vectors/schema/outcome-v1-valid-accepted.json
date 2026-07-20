@@ -14,7 +14,7 @@
       "result_manifest_digest": "f0261aef49102a729dc38127501b2d7d6bee890ba02be5e490dbc9dfee63ba2c",
       "state": "accepted",
       "requester": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "requester.example"
       },
       "signed_at": "2026-07-17T12:00:00Z"
@@ -22,6 +22,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "cec11a0a0d7ce77e2b100a7ab9bdc6180ea0589fe5be837fe0497a55b58da623"
+    "canonical_sha256": "9b24f8685876d35d4f9db13bb41e935109373e735e15d721d74d6a460759b162"
   }
 }

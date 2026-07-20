@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = axon_ext::ijson::parse(data);
+    let _ = akson_ext::ijson::parse(data);
 });

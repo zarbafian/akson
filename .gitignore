@@ -1,4 +1,5 @@
-/target
+# Any Cargo build dir, including the out-of-workspace fuzz crate's.
+target/
 **/*.rs.bk
 *.pdb
 /xcheck/.venv

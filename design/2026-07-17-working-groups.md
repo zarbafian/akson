@@ -28,7 +28,7 @@ credentials, or all three humans' knowledge. They form a working group,
 Nobody handed over a repo, a credential, or control of their machine. They pooled
 *outputs and knowledge* over a shared coordination context. Everything smart — the
 decomposition, who to ask, how to merge — was done by the orchestrating agent.
-Everything Axon did was carry the coordination and keep the authority bounded.
+Everything Akson did was carry the coordination and keep the authority bounded.
 
 ## The principle
 
@@ -56,7 +56,7 @@ Every motivating case is an instance of *no single harness has it all*:
 - **Disjoint access / credentials** — each member can reach a system the others
   cannot (prod DB, a cloud account, hardware, a private repo). The group succeeds
   *without anyone handing over a credential*: you run it on your box, share the
-  result, not the secret. The most Axon-native case — authority never leaves the
+  result, not the secret. The most Akson-native case — authority never leaves the
   endpoint (§12).
 - **Disjoint / complementary information** — the stated case; each member holds a
   piece.
@@ -78,20 +78,20 @@ Every motivating case is an instance of *no single harness has it all*:
 A lifetime dimension cuts across these: **ad-hoc / per-task** groups vs **standing
 teams** that recur across many tasks.
 
-## Non-goals (the orchestrating agent's job, not Axon's)
+## Non-goals (the orchestrating agent's job, not Akson's)
 
-Axon carries coordination and bounds authority. It does **not** do the
+Akson carries coordination and bounds authority. It does **not** do the
 intelligence:
 
 - task **decomposition** and assignment (who does which part);
 - result **merging** / aggregation;
 - deciding **what to share**, **whom to invite**, or **what to ask** the humans.
 
-Those live in the orchestrating agent (a harness like Claude). Axon never
+Those live in the orchestrating agent (a harness like Claude). Akson never
 interprets a group's internal structure; slots and subtasks are opaque labels to
-it. This keeps Axon a thin, auditable communication + safety substrate.
+it. This keeps Akson a thin, auditable communication + safety substrate.
 
-## What Axon provides (thin)
+## What Akson provides (thin)
 
 Sketched here; the normative shapes land as schemas/ADRs once the forks below are
 settled.
@@ -139,7 +139,7 @@ evidence, and idempotency flow exactly as today.
   the default-permission accept step. "Assign" and "invite" differ only in framing
   (a role/policy places you vs a contact asks you); both end in the invitee's local
   accept.
-- **Public forums** is the one genuine architectural departure. Axon today is
+- **Public forums** is the one genuine architectural departure. Akson today is
   pairing-only — you pin exactly who you paired with. Forums add **discovery** and
   interaction with members you did *not* bilaterally pair. Desirable, but it makes
   the trust model the crux: forum-introduced members are **low-trust by default**,
@@ -284,9 +284,9 @@ Both forks are settled, so this is the standards-first order:
    request-for-self protocol (§12.1 vocabulary), plus the `paused /
    awaiting-authorization` attempt state and the worker authority-request channel
    (the fork-#1 follow-ons).
-4. **`delegate` capability** in `axon-authority` (roster / depth / fan-out /
+4. **`delegate` capability** in `akson-authority` (roster / depth / fan-out /
    budget).
 5. **Future:** discovery / forums, layered on the management API.
 
-The orchestration engine (decompose / assign / merge) is **not** an Axon
+The orchestration engine (decompose / assign / merge) is **not** an Akson
 deliverable — it lives in the harness.

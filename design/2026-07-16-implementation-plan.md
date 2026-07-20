@@ -1,4 +1,4 @@
-# Axon implementation plan
+# Akson implementation plan
 
 Status: proposed plan
 
@@ -16,7 +16,7 @@ make these work, honestly, on a fresh machine.
 Local evaluation (under five minutes, design §5.1):
 
 ~~~text
-$ axon demo review change.patch
+$ akson demo review change.patch
 demo: created endpoints "requester" and "reviewer" (same host, same UID — lower assurance, labeled)
 demo: paired
 demo: sent code_review.v1 proposal (84 KiB patch, 2 context parts)
@@ -34,8 +34,8 @@ Outcome? [accept/reject/dispute] accept
 demo: outcome signed and delivered. Done in 3m41s.
 ~~~
 
-Cross-host loop (under ten minutes, design §4.3): same flow via `axon init`,
-`axon serve`, `axon pair create|accept`, `axon review reviewer change.patch
+Cross-host loop (under ten minutes, design §4.3): same flow via `akson init`,
+`akson serve`, `akson pair create|accept`, `akson review reviewer change.patch
 --wait`, with the reviewer in the isolated profile.
 
 The six-state product spine (design §23) that every milestone serves:
@@ -61,7 +61,7 @@ Decisions made now (each gets a short ADR in `spec/adr/`):
 
 | # | Decision | Choice |
 |---|---|---|
-| ADR-0001 | Implementation language | Rust (workspace of small crates; two binaries: `axond`, `axon`) |
+| ADR-0001 | Implementation language | Rust (workspace of small crates; two binaries: `aksond`, `akson`) |
 | ADR-0002 | A2A source of truth | Vendor the pinned A2A 1.0 protobuf definitions into `spec/a2a/`; generate Rust types with `prost`; JSON mapping per the A2A standard mapping; never hand-maintain a competing schema (design §3) |
 | ADR-0003 | Storage | SQLite via `rusqlite` (bundled), WAL mode; c2c-style `CREATE TABLE IF NOT EXISTS` + explicit column-add migrations; sensitive columns encrypted at the application layer before persistence (design §15.1) |
 | ADR-0004 | Signing | Ed25519 via `ed25519-dalek` v2; JWK + RFC 7638 thumbprints; separate keys per purpose from day one (design §8.1 target, no temporary key reuse) |
@@ -100,7 +100,7 @@ Reuse (patterns):
   IF-NOT-EXISTS plus column-add migrations (`ocaml/relay_sqlite_support.ml`).
 - **Signed-request construction**: canonical blob = method, path, query,
   body-SHA256, timestamp, nonce with per-purpose signing context
-  (`ocaml/relay_signed_ops.mli`) — precursor to Axon's purpose-bound keys.
+  (`ocaml/relay_signed_ops.mli`) — precursor to Akson's purpose-bound keys.
 - **Secure worker launch**: capability token never in argv/disk/logs,
   fail-closed resume after crash, injectable backend seam for hermetic tests
   (`ocaml/c2c_codex_app_server.mli`).
@@ -117,41 +117,41 @@ Reuse (patterns):
 Avoid (documented dead ends):
 
 - PTY/bracketed-paste or history-file injection into running agent sessions
-  (`findings-pty.md`, `findings-ipc.md`). Axon's clean-worker model avoids
+  (`findings-pty.md`, `findings-ipc.md`). Akson's clean-worker model avoids
   this by construction — adapters run agents non-interactively from launch.
 - Mid-turn sideband injection without explicit queue semantics (c2c Codex
-  bugs 19637/19638). Axon adapters invoke agents per-task, never inject.
+  bugs 19637/19638). Akson adapters invoke agents per-task, never inject.
 - Unbounded relay/queue growth without backpressure (c2c B219: relay dies
-  under load). Axon v1 has no relay, but the same lesson applies to the
+  under load). Akson v1 has no relay, but the same lesson applies to the
   inbox/outbox: hard limits before allocation (design §9.1, §11.1).
 
 ## 4. Repository layout
 
 ~~~text
-axon/
+akson/
   Cargo.toml                 # workspace
   crates/
-    axon-proto/              # vendored-A2A generated types, JSON mapping, profile validation (§10.1)
-    axon-ext/                # Axon extension schemas, I-JSON checks, JCS, DSSE envelopes, golden vectors (§3.2, §10.2, §14)
-    axon-crypto/             # key lifecycle, purposes, thumbprints, JWS, keystore adapters — thin wrappers only (§8.1)
-    axon-store/              # encrypted SQLite state, outbox/inbox, tombstones, audit chain, generation checkpoint (§9.2, §15)
-    axon-transport/          # HTTP+JSON A2A server/client, mTLS profile, Content-Digest, delivery extension (§9)
-    axon-pairing/            # invitation, bootstrap endpoint, pending->active, re-pair/removal (§8.2, §8.4)
-    axon-contract/           # contract validation, revision chain, decisions, risk-card projection (§10.2–10.4)
-    axon-authority/          # policy (deny/allow-once), capability vector, one-shot work orders (§12)
-    axon-sandbox/            # Linux launcher: namespaces, seccomp, cgroups v2, Landlock; capability probing (§13.1)
-    axon-worker/             # clean worker protocol, output gate (§13.1, §7.2)
-    axon-broker/             # processor broker, durable sub-attempts (§13.1)
-    axon-evidence/           # result manifest, in-toto statements, SARIF profile, validation (§14)
-    axond/                   # daemon binary: wiring, local sockets, OpenAPI control API (§16.2)
-    axon-cli/                # `axon` binary: all §16.4 commands, risk card, doctor
-    axon-adapter-sdk/        # adapter contract (§16.3), fixtures, conformance tests
+    akson-proto/              # vendored-A2A generated types, JSON mapping, profile validation (§10.1)
+    akson-ext/                # Akson extension schemas, I-JSON checks, JCS, DSSE envelopes, golden vectors (§3.2, §10.2, §14)
+    akson-crypto/             # key lifecycle, purposes, thumbprints, JWS, keystore adapters — thin wrappers only (§8.1)
+    akson-store/              # encrypted SQLite state, outbox/inbox, tombstones, audit chain, generation checkpoint (§9.2, §15)
+    akson-transport/          # HTTP+JSON A2A server/client, mTLS profile, Content-Digest, delivery extension (§9)
+    akson-pairing/            # invitation, bootstrap endpoint, pending->active, re-pair/removal (§8.2, §8.4)
+    akson-contract/           # contract validation, revision chain, decisions, risk-card projection (§10.2–10.4)
+    akson-authority/          # policy (deny/allow-once), capability vector, one-shot work orders (§12)
+    akson-sandbox/            # Linux launcher: namespaces, seccomp, cgroups v2, Landlock; capability probing (§13.1)
+    akson-worker/             # clean worker protocol, output gate (§13.1, §7.2)
+    akson-broker/             # processor broker, durable sub-attempts (§13.1)
+    akson-evidence/           # result manifest, in-toto statements, SARIF profile, validation (§14)
+    aksond/                   # daemon binary: wiring, local sockets, OpenAPI control API (§16.2)
+    akson-cli/                # `akson` binary: all §16.4 commands, risk card, doctor
+    akson-adapter-sdk/        # adapter contract (§16.3), fixtures, conformance tests
   adapters/
     opencode/                # OpenCode + documented local-model path (§4.4)
     codex/                   # Codex via supported non-interactive interface (§4.4)
   spec/
     a2a/                     # pinned A2A version, vendored protos, mapping doc, conformance vectors
-    ext/                     # Axon extension registry: JSON Schemas, media types, versions
+    ext/                     # Akson extension registry: JSON Schemas, media types, versions
     vectors/                 # golden vectors: JCS, DSSE, digests, dedup, manifests
     adr/                     # ADRs
     threat-model.md
@@ -160,8 +160,8 @@ axon/
   design/
 ~~~
 
-Crate dependency rule: `axon-proto`, `axon-ext`, `axon-crypto` depend on
-nothing internal; `axond` is the only crate that wires everything. Trusted
+Crate dependency rule: `akson-proto`, `akson-ext`, `akson-crypto` depend on
+nothing internal; `aksond` is the only crate that wires everything. Trusted
 code (§7.1) — transport parse path, policy, authority, output gate, evidence
 validation — stays in dedicated crates with no dependency on adapter or
 worker-payload code.
@@ -173,7 +173,7 @@ worker-payload code.
 | async runtime / HTTP | `tokio`, `axum` (server), `reqwest` with rustls and redirects disabled (client) |
 | TLS | `rustls` + `tokio-rustls`; TLS 1.3 only, session tickets and 0-RTT off, custom pinned-peer verifier; `rcgen` for self-issued endpoint certs; `x509-parser` |
 | A2A types | `prost` from vendored protos |
-| JSON | `serde_json`; I-JSON + duplicate-key rejection in `axon-ext` |
+| JSON | `serde_json`; I-JSON + duplicate-key rejection in `akson-ext` |
 | JSON Schema 2020-12 | `jsonschema` |
 | RFC 8785 JCS | `json-canon` (`serde_jcs` rejected: sorts keys by code point, not UTF-16 code units — caught by the `jcs/utf16-key-sorting` golden vector) |
 | Signatures | `ed25519-dalek` v2; JWS per ADR-0007; DSSE/in-toto per ADR-0008 |
@@ -205,7 +205,7 @@ Workspace scaffold, CI (fmt, clippy, test, deny), `LICENSE`,
 skeleton, placeholder extension-namespace constant.
 *Exit:* CI green on empty crates; ADR-0001..0004 merged.
 
-**M1. Extension schemas and golden vectors (L)** — `axon-ext`, `xcheck/`
+**M1. Extension schemas and golden vectors (L)** — `akson-ext`, `xcheck/`
 JSON Schemas (2020-12) for: contract, decision, ordered input manifest,
 identity/key binding, passive delivery, result manifest, evidence reference,
 verifier summary, outcome (design §3.2, §10.2, §14.1). I-JSON validation,
@@ -215,7 +215,7 @@ cross-checker (`rfc8785`, `securesystemslib`, `in-toto`) run in CI.
 *Exit:* G0 gate "contract signatures and digests match independent
 implementations" (design §19 Phase 0) passes via xcheck.
 
-**M2. A2A profile (M)** — `axon-proto`, `spec/a2a/`
+**M2. A2A profile (M)** — `akson-proto`, `spec/a2a/`
 Vendor pinned A2A 1.0 protos; prost codegen; standard JSON mapping;
 profile validation: required-extension negotiation, `A2A-Version`,
 `A2A-Extensions` echo, nonblocking profile (`returnImmediately`, streaming
@@ -226,7 +226,7 @@ keys, invalid UTF-8, non-I-JSON numbers, unknown critical fields, downgrade).
 
 ### Track 2 — identity, state, transport (starts after M0; parallel to M1/M2 tail)
 
-**M3. Keys and identity (M)** — `axon-crypto` — **core done** (commit
+**M3. Keys and identity (M)** — `akson-crypto` — **core done** (commit
 `6d88b6f`)
 Key generation per purpose (TLS, Agent Card JWS, task-statement,
 local-authority, evidence), RFC 7638 thumbprints, purpose binding, keystore
@@ -240,7 +240,7 @@ already stands ready to fingerprint the DER.
 *Exit (met):* cross-purpose key use fails closed in tests; thumbprint/JWS
 vectors match xcheck.
 
-**M4. State store (L)** — `axon-store` — **core done** (commit `35dccc4`)
+**M4. State store (L)** — `akson-store` — **core done** (commit `35dccc4`)
 Encrypted SQLite. **Landed (M4-core):** the cross-cutting machinery — envelope
 sealing (ADR-0005, XChaCha20Poly1305, keystore-wrapped DEK), `user_version`
 migrations + `meta`, state-generation recovery (§15.5), trusted-time floor
@@ -254,7 +254,7 @@ as its own numbered migration when the engine that writes it lands.
 *Exit (met):* §20.7 storage scan finds no plaintext; restore of an old
 snapshot provably enters recovery and disables automatic authority.
 
-**M5. Transport and reliable delivery (L)** — `axon-transport` — **core done**
+**M5. Transport and reliable delivery (L)** — `akson-transport` — **core done**
 (commits `f078551`, `8e5a3c0`; delivery model in M5-core `d4656cd`)
 Landed: the pure-Rust TLS 1.3 mutual-auth layer with peer pinning (ADR-0011,
 verified end to end over tokio-rustls), and `ingress::admit` — the fail-closed
@@ -279,7 +279,7 @@ covered-value change; keyed replay tombstones outliving the retry horizon
 covered change rejected"; crash tests at every transaction boundary lose no
 acknowledged receipt and duplicate no task (§20.2).
 
-**M6. Pairing (L)** — `axon-pairing` + `axon-transport` — **bootstrap live**
+**M6. Pairing (L)** — `akson-pairing` + `akson-transport` — **bootstrap live**
 Landed (pure, tested): invitation create + verifier-only bearer secret
 (constant-time, expiry, attempt cap); mode-0600 file / stdin transfer;
 extended-card + key-binding verification (thumbprint==JWK, closes Codex M6;
@@ -289,7 +289,7 @@ transcript-conflict, `PairingLedger` trait + in-memory impl); composed
 inviter-side **verification** (`session::verify_accepter`, incl. TLS-cert
 binding) and the **handler**; the sender-side **`build_material`** (symmetric
 exchange). **Live:** the HTTP bootstrap endpoint over the M5 TLS layer
-(`axon-transport::bootstrap::serve` on `tls::bootstrap_server_config`), proven
+(`akson-transport::bootstrap::serve` on `tls::bootstrap_server_config`), proven
 end-to-end over mTLS — the **Layer-1 interop checkpoint**. Server is generic
 over the ledger. **Persistent ledger done:** `PairingLedger` is now fallible
 (`Result`, so `commit_consumed` cannot silently fail), and `impl PairingLedger
@@ -317,8 +317,8 @@ which audits `peer.confirmed`; `pending_peer_ids`/`peer_status` expose it);
 peer removal + explicit re-pair (`remove_peer` audits `peer.removed` and deletes,
 then a fresh pairing re-lands pending — the hijack guard is never bypassed).
 **Remaining (deferred to daemon-assembly milestone, both binaries still stubs):**
-QR invitation transfer; `axon pair confirm` / `axon endpoint check` /
-`axon pair diagnose` CLI.
+QR invitation transfer; `akson pair confirm` / `akson endpoint check` /
+`akson pair diagnose` CLI.
 *Exit:* §20.2 pairing suite: exact-transcript retry idempotent,
 changed-transcript rejected as attack, secret never logged, MITM/wrong-cert
 matrix fails closed. Demonstrated on two real machines (G0 pairing gate).
@@ -327,7 +327,7 @@ implementation handshake via the signed Agent Card fetch over mTLS.
 
 ### Track 3 — the decision and execution core
 
-**M7. Contract engine (L)** — `axon-contract`
+**M7. Contract engine (L)** — `akson-contract`
 Contract Part extraction (exactly one control Part), DSSE + schema + JCS
 digest validation, requester-identity == mTLS origin check, input-manifest
 binding of every Part (unmanifested/duplicate/kind/digest mismatch rejects),
@@ -359,7 +359,7 @@ property is structurally guaranteed by `receive_proposal` doing zero I/O).
 `submitted` Task and provably invokes no model, tool, file, URL, or
 credential (no-effect harness, below).
 
-**M8. Local authority (M)** — `axon-authority` — **DONE** (core library)
+**M8. Local authority (M)** — `akson-authority` — **DONE** (core library)
 Capability vector (all components typed now; only v1's four are grantable:
 respond, read_supplied_inputs, processor_use, artifact_export §12.1),
 deny / allow-once policy, one-shot work order with every §12.3 binding,
@@ -384,7 +384,7 @@ is M12 assembly.
 *Exit:* §20.3 authority suite: work order binds exact task/revision/inputs/
 processor/nonce; crash-after-claim resolves ambiguous, never auto-retries.
 
-**M9. Sandbox and clean worker (XL)** — `axon-sandbox`, `axon-worker` — **DONE (isolation)**; worker-run composition is M12
+**M9. Sandbox and clean worker (XL)** — `akson-sandbox`, `akson-worker` — **DONE (isolation)**; worker-run composition is M12
 Spike S2 first (ADR-0006, ~1 week, timeboxed): build the candidate launcher,
 run the §13.1 checklist as tests, publish profile. Then: namespaces (user,
 mount, PID, net, IPC, UTS), `no_new_privs`, default-deny seccomp, cgroups v2
@@ -405,10 +405,10 @@ inherited-fd allowlist, heavy alloc between fork/exec.)* `BubblewrapLauncher`
 probes then execs bwrap. `NativeLauncher`/`build_plan` (`SandboxPlan` as data;
 validated user+net entry + `pivot_root` filesystem isolation) is retained behind
 the trait as **experimental**, promoted only after independent review + the
-review's structural fixes. `axon-worker::gate_outputs`
+review's structural fixes. `akson-worker::gate_outputs`
 (the output gate — every result held to the granted §12.1 scope: channel grant,
 recipient, artifact media type, byte budget, response/artifact count; rejection
-carries the offending index). `axon-sandbox`: fail-closed capability probe
+carries the offending index). `akson-sandbox`: fail-closed capability probe
 (`detect` reads /proc+/sys honouring Ubuntu's AppArmor userns restriction,
 `ensure` refuses a launch when any required feature is missing — validated live:
 on this host userns is restricted so it correctly REFUSES); `SandboxSpec` +
@@ -430,7 +430,7 @@ for the session, and by CI's `isolation` job on push):
   binds (locked-flag-preserving remount) + tmpfs scratch, `pivot_root`s in, detaches
   the old root; a fork test proves ro-bind read-but-not-write, writable scratch, and
   the host filesystem gone. Plus the `NativeLauncher`/`SandboxPlan` policy and the
-  fail-closed probe. `axon-sandbox` carries a documented crate-level
+  fail-closed probe. `akson-sandbox` carries a documented crate-level
   `#![allow(unsafe_code)]` (it is the workspace OS-syscall boundary; every `unsafe`
   block has a `SAFETY:` note).
 **Clean-worker launch FUNCTIONALLY COMPLETE via the reviewed backend, validated
@@ -441,11 +441,11 @@ probe → bubblewrap namespace/mount/`pivot_root`/exec isolation → the seccomp
 subtree with memory/pids/cpu limits; the worker moved in via a no-alloc `pre_exec`)
 → the output gate. Live tests confirm each layer from inside a real worker: host
 `/etc` gone + env cleared + scratch writable; `Seccomp: 2`; a 64 MiB/16-pid cgroup
-enforced. `diagnose()` backs `axon doctor` (every capability + fail-closed gate).
-**Input staging + doctor + the full-stack seam are done.** `axon-worker::stage_inputs`
+enforced. `diagnose()` backs `akson doctor` (every capability + fail-closed gate).
+**Input staging + doctor + the full-stack seam are done.** `akson-worker::stage_inputs`
 materialises exactly the approved inputs into a directory (with a `manifest.json`
 of in-sandbox paths + SHA-256) the daemon read-only-binds — fails closed on unsafe
-(slug-only, no traversal) / duplicate ids (§7.2 step 9, §13.1). `axon doctor` (the
+(slug-only, no traversal) / duplicate ids (§7.2 step 9, §13.1). `akson doctor` (the
 M9 exit surface) renders `diagnose()` with a fail-closed exit code. An adversarial
 review flagged that isolation lived in side-path helpers, so `SandboxLauncher::launch`
 is now the *only* public launch entry and requires both a `SeccompPolicy` and a
@@ -461,7 +461,7 @@ a bind, write the tmpfs, no access outside) and by a pure-derivation unit test.
 **§20.5 EXIT CRITERIA MET (validated live under bwrap + userns):** empty environment,
 no host reach (`/etc` gone), **no generic network** (the worker's `/proc/net/dev`
 lists only loopback — fresh net namespace), deadline/resource enforcement (64 MiB /
-16-pid cgroup), probing fails closed, and `axon doctor` reports every capability.
+16-pid cgroup), probing fails closed, and `akson doctor` reports every capability.
 **M9 clean-worker isolation is COMPLETE.**
 **Deferred (properly M12 daemon assembly, not M9):** the worker protocol tail — the
 runtime composition that stages the approved inputs, ro-binds them, launches via the
@@ -472,18 +472,18 @@ against, for a marginal gain). The experimental `NativeLauncher` (validated user
 entry + `pivot_root` fs isolation) awaits independent review + the review's
 structural fixes before it could ever be default.
 *Exit:* §20.5 suite: empty environment, no host reach, no generic network,
-deadline/resource enforcement, probing fails closed; `axon doctor` reports
+deadline/resource enforcement, probing fails closed; `akson doctor` reports
 every capability. **— all met.**
 
-**M10. Processor broker (M)** — `axon-broker` — **CORE + DURABLE STATE DONE**
+**M10. Processor broker (M)** — `akson-broker` — **CORE + DURABLE STATE DONE**
 Only egress path for approved plaintext. Durable sub-attempt
 (`prepared → dispatching → completed|failed|ambiguous|cancelled`), stored
 provider/origin/config digest/request digest/idempotency key/cost bound
 before dispatch, no redirects or ambient proxies, DNS/address-class checks,
 credentials never leave the broker; ambiguous never auto-retries (§13.1).
-`axon processor add|list|test` with local/remote disclosure recording
+`akson processor add|list|test` with local/remote disclosure recording
 (§4.4, §15.2).
-**Done** (standards-first, all unit+doctested): `axon-broker` pure core —
+**Done** (standards-first, all unit+doctested): `akson-broker` pure core —
 `subattempt.rs` (the state machine; `dispatching` is durable-before-effect, a crash
 or cancel while dispatching → `ambiguous` never auto-retried, same crash/cancel
 honesty as the attempt machine); `call.rs` `ProcessorCall::prepare` (the pre-dispatch
@@ -495,23 +495,23 @@ routable unicast only; loopback/private/link-local/unique-local/multicast/ipv4-m
 inward refused — anti-SSRF/rebinding; local processors opt in); `processor.rs`
 `ProcessorConfig` + `Disclosure` (local/remote, operator/region/retention/training/
 subprocessors §15.2) with `config_digest` binding the exact approved provider/origin/
-model. Durable in `axon-store` schema V7: sealed `processors` (put/get/list) +
+model. Durable in `akson-store` schema V7: sealed `processors` (put/get/list) +
 `processor_calls` (`prepare_call` idempotent-before-dispatch, `advance_call` self-CAS,
 `resolve_crashed_calls` → ambiguous — the kill-during-dispatch exit criterion).
 **Remaining (M12 assembly):** the live HTTPS dispatch (redirect-disabled reqwest/hyper
 client, connection-time DNS validation calling `check_resolved_address`, credential
 injection that never leaves the broker); credential storage (sealed, keyed by
 processor); the duplicate-disclosure operator prompt on `ambiguous`; and the
-`axon processor add|list|test` CLI verbs.
+`akson processor add|list|test` CLI verbs.
 *Exit:* §20.5 broker suite; kill-during-dispatch yields ambiguous with the
 duplicate-disclosure prompt path.
 
-**M11. Evidence and outcome (L)** — `axon-evidence` — **STANDARDS CORE DONE**
+**M11. Evidence and outcome (L)** — `akson-evidence` — **STANDARDS CORE DONE**
 `result-manifest-v1` build + JCS + DSSE; staged-then-atomic completion
 (never partial completed §14.1); in-toto Statement v1 authorization and
 execution attestations; SARIF 2.1.0 Errata 01 profile parser (hostile-input
 limits, byte preservation, no URI fetch); required evidence slots with
-orthogonal result × disclosure; `axon evidence validate|export` including
+orthogonal result × disclosure; `akson evidence validate|export` including
 the portable personal verification pack; requester outcome as task-less
 SendMessage with fixed receipt (§14.5); trust-class labeling from local
 policy only.
@@ -530,22 +530,22 @@ count). `Statement` (§14.2) — in-toto Statement v1 (payloadType
 exactly the outputs; authorization/execution predicate types pinned. Each object
 uses a *distinct* purpose key, so keys can't cross-sign.
 **Remaining:** trust-class derivation (§14.4, from validated identities not
-self-asserted fields); the composed `axon evidence validate` (the §14.2 V1 check
+self-asserted fields); the composed `akson evidence validate` (the §14.2 V1 check
 list); golden vectors + xcheck cross-check (the exit's "independent validator
-validates a bundle"); durable staged-then-atomic completion in `axon-store`; and
-`axon evidence export` + the portable verification pack + the CLI verbs (M12).
+validates a bundle"); durable staged-then-atomic completion in `akson-store`; and
+`akson evidence export` + the portable verification pack + the CLI verbs (M12).
 *Exit:* §20.6 suite; an independent validator (xcheck) validates a real
 bundle without the producer's database (design §4.3).
 
 ### Track 4 — product surface
 
-**M12. CLI and daemon assembly (L)** — `axond`, `axon-cli` — **CONTROL-PLANE SPINE DONE**
+**M12. CLI and daemon assembly (L)** — `aksond`, `akson-cli` — **CONTROL-PLANE SPINE DONE**
 Local admin socket vs worker socket separation with peer-credential checks
 (§16.2); OpenAPI 3.1 control API + RFC 9457; every §16.4 command; risk card
 rendering (concrete approval sentence, expandable detail); quiet arrival
-(no foregrounding, bounded inbox, local block/rate-limit §5.3); `axon
+(no foregrounding, bounded inbox, local block/rate-limit §5.3); `akson
 doctor` (§17.3); personal vs isolated profile wiring.
-**Done** (the §16.2 security spine, all unit+integration-tested): `axond` is now a
+**Done** (the §16.2 security spine, all unit+integration-tested): `aksond` is now a
 lib+bin. `control.rs` — the two surfaces + `authorize`; every op declares its minimum
 surface so the worker surface can never pair/policy/approve/issue/sign/export (the
 exact §16.2 prohibitions); refusals are structure-free RFC 9457 `Problem`s.
@@ -553,28 +553,28 @@ exact §16.2 prohibitions); refusals are structure-free RFC 9457 `Problem`s.
 (scoped `unsafe`, socketpair-tested). `socket.rs` — `bind_socket` (0600),
 `handle_connection` (authenticate → read → authorize-by-surface → dispatch →
 respond), the `serve` loop, and the `send_request` client (newline-delimited JSON).
-`axond serve` binds admin+worker sockets on a 0700 runtime dir; `axon status`
-queries the daemon over the admin socket (`axon doctor` stays a daemon-free host
+`aksond serve` binds admin+worker sockets on a 0700 runtime dir; `akson status`
+queries the daemon over the admin socket (`akson doctor` stays a daemon-free host
 check). Validated LIVE: status → sandbox_ready/exit 0, fail-closed with no daemon,
 sockets 0600, worker-surface admin op → 403.
-The **A2A receive-dispatch logic is done**: `axond::dispatch_proposal` composes the
+The **A2A receive-dispatch logic is done**: `aksond::dispatch_proposal` composes the
 deferred M5/M7 receive path (idempotency peek → `receive_proposal` validation →
 durable rev-0 open head → durable-before-response idempotency commit) into
 `DispatchOutcome {Submitted|Duplicate|Conflict|Rejected}` — a rejection never creates
 a Task. Tested in-memory (valid→Submitted+persisted, replay→Duplicate, changed-covered
-→Conflict, wrong-key→Rejected). Added `axon_contract::expires_at_unix`.
+→Conflict, wrong-key→Rejected). Added `akson_contract::expires_at_unix`.
 **Remaining (the bulk of assembly, on these gates):** the OpenAPI 3.1 description +
 generated clients; the HTTP/mTLS **receive server** that parses the A2A SendMessage +
 runs `ingress::admit` + feeds `dispatch_proposal` + builds the A2A Task response
-(follows the `axon-transport::bootstrap::serve` pattern); the broker live HTTPS
-dispatch (M10); `axon processor`/`evidence`/`pair`/`task`/`outcome` verbs; durable
+(follows the `akson-transport::bootstrap::serve` pattern); the broker live HTTPS
+dispatch (M10); `akson processor`/`evidence`/`pair`/`task`/`outcome` verbs; durable
 staged-then-atomic completion (M11); risk-card rendering (over M7 `project_risk_card`);
 quiet arrival (bounded inbox, local block/rate-limit §5.3); personal vs isolated
-profile wiring; and the full `axon demo review` receive half.
+profile wiring; and the full `akson demo review` receive half.
 *Exit:* full loop driveable by CLI alone on one host; doctor output reviewed
 against §17.3 list.
 
-**M13. Adapters (L)** — `axon-adapter-sdk`, `adapters/*`
+**M13. Adapters (L)** — `akson-adapter-sdk`, `adapters/*`
 Adapter contract + conformance fixtures (§16.3): input manifest in, bounded
 artifacts out, no recipient/network selection, passive-arrival and
 duplicate-delivery tests. OpenCode adapter with a documented fully local
@@ -587,10 +587,10 @@ both adapters without semantic loss; both complete the code-review fixture
 
 **M14. Packaging and profiles (M)**
 Signed .deb/.rpm, systemd user service (personal) and dedicated system
-service (isolated), guided installer recommending isolated, `axon init`,
+service (isolated), guided installer recommending isolated, `akson init`,
 key/db bootstrap, migration + rollback-tested backups (§4.4, §17.3). SBOM +
 dependency provenance in CI (§17.2).
-*Exit:* fresh-VM install from package to working `axon init` with no manual
+*Exit:* fresh-VM install from package to working `akson init` with no manual
 steps.
 
 **M15. Hardening, gates, and release (XL)**
@@ -610,18 +610,18 @@ genuine gaps whose implementation belongs to later milestones. They are
 anchored here so they are not lost:
 
 - **M3** — JWS Agent Card signature verification (ADR-0007): **done** —
-  `axon_proto::card_sig::verify_card` over `axon_crypto::jws` (EdDSA/JOSE,
+  `akson_proto::card_sig::verify_card` over `akson_crypto::jws` (EdDSA/JOSE,
   RFC 7638 `kid`, header allowlist), golden vector `jws/agent-card-eddsa`
   cross-checked. Pinning the verification key at pairing remains M6.
 - **M5** — outbound `validate_task`/`validate_artifact`/response-echo profile
   checks; couple Message validation to the negotiated extension set.
 - **M5/M6** — self-issued X.509 endpoint certificate generation (moved from
-  M3): **done** — `axon_crypto::cert::self_signed_endpoint` (pure-Rust
+  M3): **done** — `akson_crypto::cert::self_signed_endpoint` (pure-Rust
   `x509-cert` + `ed25519-dalek`, ADR-0011), purpose-gated to `tls-endpoint`,
   self-signature verified, fingerprint via `identity::Fingerprint::cert_sha256`.
   Remaining: wire it into the rustls mTLS listener (M5 transport).
 - **M6** — at pairing, verify each transported key-binding thumbprint equals
-  its JWK: **done** — `axon_pairing::key_binding::verify` (schema gate +
+  its JWK: **done** — `akson_pairing::key_binding::verify` (schema gate +
   thumbprint==RFC 7638(JWK) + validity).
 - **M7** — input-manifest ↔ exact Message-Part binding and per-field
   uniqueness; contract timestamp ordering and TTL maxima (with M8 trusted
@@ -644,18 +644,18 @@ anchored here so they are not lost:
   typed re-serialization) on the M5 receive path (card_sig refinement).
 - **M6/M14 (endpoint certificate rotation)** — the daemon's endpoint
   certificate is minted once at bootstrap for `ENDPOINT_CERT_VALIDITY` (365
-  days, `axond::bootstrap`) and persisted, because its SHA-256 is exactly what
+  days, `aksond::bootstrap`) and persisted, because its SHA-256 is exactly what
   peers pin at pairing (§8.1) — regenerating it moves the fingerprint and
   breaks every pinned peer. There is **no rotation path**. Until 2026-07-20 the
   TLS verifiers ignored the certificate's validity window, so an expired
   certificate kept authenticating silently; now that
-  `axon_crypto::cert::check_cert_time_validity` is enforced by all three
+  `akson_crypto::cert::check_cert_time_validity` is enforced by all three
   verifiers, an endpoint simply **stops being reachable by every paired peer
   one year after first start**, with no in-band recovery. Needed: mint a
   successor before expiry, carry both (old + new fingerprint) through an
   overlap window, distribute the new fingerprint over the existing
   authenticated channel so peers re-pin without an out-of-band invitation, and
-  surface remaining validity in `axon doctor` / `axon peer list`. This is a
+  surface remaining validity in `akson doctor` / `akson peer list`. This is a
   liveness cliff, not an authorization defect — it fails closed. (From the
   M13-era security review, 2026-07-20.)
 - **M12 (operator-configurable operation ceiling)** — `approve.rs`
@@ -664,7 +664,7 @@ anchored here so they are not lost:
   number of processor calls one approval may make, so it directly bounds
   worst-case spend at `MAX_OPERATIONS × max_cost_microusd`; the right value is
   policy, not a constant. Needed: carry it on the approval (a
-  `--max-operations` on `axon task approve`, defaulted by standing policy
+  `--max-operations` on `akson task approve`, defaulted by standing policy
   §12.4) so an operator can raise it for a genuinely long task without
   recompiling, and lower it for untrusted peers. (From the M13-era security
   review, 2026-07-20.)
@@ -679,9 +679,9 @@ bounded result → gate that result against the work order's respond grant (and 
 an over-budget one). The worker is a dev-only pure-shell echo (non-shippable, §4.4).
 Runs in CI's isolation job. **Remaining (receive half, M12):** the proposal →
 contract → decision → work-order-issue path over the live HTTP dispatch, and exposing
-it as the `axon demo review` CLI verb behind a `dev-insecure-worker` feature.
+it as the `akson demo review` CLI verb behind a `dev-insecure-worker` feature.
 
-As soon as contract + authority exist, wire `axon demo review` end-to-end on
+As soon as contract + authority exist, wire `akson demo review` end-to-end on
 localhost using the real schemas, real signing, real store — with a dev-only
 subprocess worker (clearly non-shippable, behind a `dev-insecure-worker`
 feature that release builds cannot enable) and a dev-only echo processor.
@@ -722,8 +722,8 @@ a re-run of the same Rust.
   each speaking through a conformant transport — is meaningful here.
 
 The interop peer at Layers 1–2 should include a reference A2A SDK, because the
-bug worth finding is "axon vs. the reference", not "axon vs. a second axon that
-shares axon's assumptions".
+bug worth finding is "akson vs. the reference", not "akson vs. a second akson that
+shares akson's assumptions".
 
 ### Dependency sketch
 

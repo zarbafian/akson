@@ -3,9 +3,9 @@
 //! points a processor at the Messages API:
 //!
 //! ```text
-//! axon processor add claude anthropic api.anthropic.com 443 ca \
+//! akson processor add claude anthropic api.anthropic.com 443 ca \
 //!     --path /v1/messages --auth x-api-key --header anthropic-version:2023-06-01
-//! AXON_WORKER_CMD='axon-adapter-anthropic --processor claude --model claude-3-5-sonnet-latest'
+//! AKSON_WORKER_CMD='akson-adapter-anthropic --processor claude --model claude-3-5-sonnet-latest'
 //! ```
 //!
 //! It reads the approved input, asks the granted model (through the broker — never
@@ -13,14 +13,14 @@
 
 use std::process::ExitCode;
 
-use axon_adapter_anthropic::{extract_content, messages_request, validate_sarif};
-use axon_adapter_sdk::Task;
+use akson_adapter_anthropic::{extract_content, messages_request, validate_sarif};
+use akson_adapter_sdk::Task;
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("axon-adapter-anthropic: {e}");
+            eprintln!("akson-adapter-anthropic: {e}");
             ExitCode::FAILURE
         }
     }

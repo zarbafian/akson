@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/result-manifest/v1/schema.json",
-  "title": "Axon canonical result manifest v1 (design §14.1)",
+  "$id": "https://akson.invalid/ext/result-manifest/v1/schema.json",
+  "title": "Akson canonical result manifest v1 (design §14.1)",
   "description": "Array ordering is normative (bytewise by role, object identifier, part index, digest) but enforced by code, not schema.",
   "type": "object",
   "additionalProperties": false,
@@ -118,8 +118,8 @@
     },
     "evidencePayloadType": {
       "type": "string",
-      "description": "Evidence is an in-toto attestation or an Axon DSSE statement (design §14.2).",
-      "pattern": "^(application/vnd\\.in-toto\\+json|application/vnd\\.axon-dev\\.[a-z0-9-]+\\.v[0-9]+\\+json)$"
+      "description": "Evidence is an in-toto attestation or an Akson DSSE statement (design §14.2).",
+      "pattern": "^(application/vnd\\.in-toto\\+json|application/vnd\\.akson-dev\\.[a-z0-9-]+\\.v[0-9]+\\+json)$"
     }
   }
 }

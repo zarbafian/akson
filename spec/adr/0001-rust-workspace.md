@@ -14,8 +14,8 @@ Go, OCaml (continuity with the prior c2c system).
 
 ## Decision
 
-Axon is implemented in Rust as a Cargo workspace of small crates with two
-binaries, `axond` and `axon`. Rationale: rustls gives the exact TLS profile
+Akson is implemented in Rust as a Cargo workspace of small crates with two
+binaries, `aksond` and `akson`. Rationale: rustls gives the exact TLS profile
 control the design requires (1.3-only, resumption and 0-RTT off, custom
 pinned-peer verification); maintained crates exist for every mandated
 standard (`jsonschema`, `json-canon`, `ed25519-dalek`, `serde-sarif`,

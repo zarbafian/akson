@@ -24,28 +24,28 @@ PERFORMER_IP="${PERFORMER_IP:?the reachable VPC IP of the performer}"
 EXCHANGES="${EXCHANGES:-25}"
 PERFORMER_RECV="${PERFORMER_RECV:-18444}"
 
-SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/axon-ka-%r@%h:%p" -o ControlPersist=120)
+SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/akson-ka-%r@%h:%p" -o ControlPersist=120)
 ra() { ssh "${SSHOPTS[@]}" "$REQUESTER_SSH" "$@"; }
 pf() { ssh "${SSHOPTS[@]}" "$PERFORMER_SSH" "$@"; }
 
 echo "==> Reading the performer's endpoint certificate fingerprint…"
 # What the requester must pin. It is exactly the SHA-256 over the persisted DER.
-PEER_CERT=$(pf "sha256sum \$HOME/.axon-bench-performer/endpoint.der | cut -d' ' -f1")
+PEER_CERT=$(pf "sha256sum \$HOME/.akson-bench-performer/endpoint.der | cut -d' ' -f1")
 [ -n "$PEER_CERT" ] || { echo "could not read the performer's endpoint.der" >&2; exit 1; }
 echo "    $PEER_CERT"
 
 echo "==> Driving $EXCHANGES exchanges over ONE connection, from the requester…"
-ra "export PATH=\$HOME/.cargo/bin:\$PATH; cd \$HOME/axon && \
-    AXON_WAN_DATA_DIR=\$HOME/.axon-bench-requester \
-    AXON_WAN_PEER_ADDR=$PERFORMER_IP:$PERFORMER_RECV \
-    AXON_WAN_PEER_CERT=$PEER_CERT \
-    AXON_WAN_REQUESTER=orgA/alice \
-    AXON_WAN_PERFORMER=orgB/bob \
-    AXON_WAN_EXCHANGES=$EXCHANGES \
-    CARGO_INCREMENTAL=0 cargo test --release -p axond --test wan_keepalive -- --ignored --nocapture"
+ra "export PATH=\$HOME/.cargo/bin:\$PATH; cd \$HOME/akson && \
+    AKSON_WAN_DATA_DIR=\$HOME/.akson-bench-requester \
+    AKSON_WAN_PEER_ADDR=$PERFORMER_IP:$PERFORMER_RECV \
+    AKSON_WAN_PEER_CERT=$PEER_CERT \
+    AKSON_WAN_REQUESTER=orgA/alice \
+    AKSON_WAN_PERFORMER=orgB/bob \
+    AKSON_WAN_EXCHANGES=$EXCHANGES \
+    CARGO_INCREMENTAL=0 cargo test --release -p aksond --test wan_keepalive -- --ignored --nocapture"
 
 echo
 echo "==> Submitted tasks now queued on the performer:"
-pf "export PATH=\$HOME/.cargo/bin:\$HOME/axon/target/release:\$PATH; \
+pf "export PATH=\$HOME/.cargo/bin:\$HOME/akson/target/release:\$PATH; \
     export XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}; \
-    axon inbox | tail -5"
+    akson inbox | tail -5"

@@ -14,18 +14,18 @@ ITERS="${ITERS:-20}"
 # Persistent ssh connections so per-call channel overhead is ~ms, not a full
 # handshake. (The fast phases still include a little ssh cost — for exact protocol
 # timing, run this driver ON alice and ssh only to bob.)
-SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/axon-bench-%r@%h:%p" -o ControlPersist=120)
+SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/akson-bench-%r@%h:%p" -o ControlPersist=120)
 # Remote preamble: find the release binaries and this host's runtime dir.
-PRE='export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; export PATH=$HOME/.cargo/bin:$HOME/axon/target/release:$PATH'
+PRE='export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; export PATH=$HOME/.cargo/bin:$HOME/akson/target/release:$PATH'
 
-ra() { ssh "${SSHOPTS[@]}" "$REQUESTER_SSH" "$PRE; axon $*"; }
-pf() { ssh "${SSHOPTS[@]}" "$PERFORMER_SSH" "$PRE; axon $*"; }
+ra() { ssh "${SSHOPTS[@]}" "$REQUESTER_SSH" "$PRE; akson $*"; }
+pf() { ssh "${SSHOPTS[@]}" "$PERFORMER_SSH" "$PRE; akson $*"; }
 
 echo "==> Warming ssh control connections…"
 ra whoami >/dev/null; pf whoami >/dev/null
 
 echo "==> Copying the task spec to alice…"
-scp "${SSHOPTS[@]}" "$(dirname "$0")/task.json" "$REQUESTER_SSH:/tmp/axon-task.json" >/dev/null
+scp "${SSHOPTS[@]}" "$(dirname "$0")/task.json" "$REQUESTER_SSH:/tmp/akson-task.json" >/dev/null
 
 echo "==> Pairing (once)…"
 ra pair invite /tmp/inv.json >/dev/null
@@ -45,7 +45,7 @@ echo "==> $ITERS iterations…"
 for i in $(seq 1 "$ITERS"); do
   L0=$(now)
 
-  t=$(now); OUT=$(ra task send /tmp/axon-task.json); dur "$t" "$(now)" >>"$TMP/send"
+  t=$(now); OUT=$(ra task send /tmp/akson-task.json); dur "$t" "$(now)" >>"$TMP/send"
   ID=$(printf '%s' "$OUT" | grep -oE 'task-[0-9A-Za-z_-]+' | head -1)
   [ -n "$ID" ] || { echo "could not parse task id from: $OUT" >&2; exit 1; }
 

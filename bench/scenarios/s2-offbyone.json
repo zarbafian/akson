@@ -1,5 +1,5 @@
 { "performer": "bob",
-  "task_type": "https://axon.invalid/task/code-review/v1",
+  "task_type": "https://akson.invalid/task/code-review/v1",
   "objective": "Review this diff for bugs.",
   "inputs": [{ "id": "diff", "media_type": "text/x-diff",
     "text": "--- a/sum.c\n+++ b/sum.c\n@@ -1,6 +1,6 @@\n int sum(const int *a, int n) {\n     int s = 0;\n-    for (int i = 0; i < n; i++)\n+    for (int i = 0; i <= n; i++)\n         s += a[i];\n     return s;\n }\n" }],

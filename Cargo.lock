@@ -61,61 +61,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.103"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
-
-[[package]]
-name = "atomic-waker"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "autocfg"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
-name = "axon-adapter-anthropic"
+name = "akson-adapter-anthropic"
 version = "0.0.1"
 dependencies = [
- "axon-adapter-sdk",
- "axon-evidence",
- "axon-sandbox",
+ "akson-adapter-sdk",
+ "akson-evidence",
+ "akson-sandbox",
  "hex",
  "serde_json",
  "sha2",
 ]
 
 [[package]]
-name = "axon-adapter-gemini"
+name = "akson-adapter-gemini"
 version = "0.0.1"
 dependencies = [
- "axon-adapter-sdk",
- "axon-evidence",
- "axon-sandbox",
+ "akson-adapter-sdk",
+ "akson-evidence",
+ "akson-sandbox",
  "hex",
  "serde_json",
  "sha2",
 ]
 
 [[package]]
-name = "axon-adapter-openai"
+name = "akson-adapter-openai"
 version = "0.0.1"
 dependencies = [
- "axon-adapter-sdk",
- "axon-evidence",
- "axon-sandbox",
+ "akson-adapter-sdk",
+ "akson-evidence",
+ "akson-sandbox",
  "hex",
  "serde_json",
  "sha2",
 ]
 
 [[package]]
-name = "axon-adapter-sdk"
+name = "akson-adapter-sdk"
 version = "0.0.1"
 dependencies = [
  "hex",
@@ -127,10 +109,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-authority"
+name = "akson-authority"
 version = "0.0.1"
 dependencies = [
- "axon-contract",
+ "akson-contract",
  "hex",
  "hmac",
  "json-canon",
@@ -142,7 +124,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-broker"
+name = "akson-broker"
 version = "0.0.1"
 dependencies = [
  "hex",
@@ -154,22 +136,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-cli"
+name = "akson-cli"
 version = "0.0.1"
 dependencies = [
- "axon-sandbox",
- "axond",
+ "akson-sandbox",
+ "aksond",
  "base64",
  "serde_json",
 ]
 
 [[package]]
-name = "axon-contract"
+name = "akson-contract"
 version = "0.0.1"
 dependencies = [
- "axon-crypto",
- "axon-ext",
- "axon-proto",
+ "akson-crypto",
+ "akson-ext",
+ "akson-proto",
  "base64",
  "ed25519-dalek",
  "hex",
@@ -181,7 +163,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-crypto"
+name = "akson-crypto"
 version = "0.0.1"
 dependencies = [
  "base64",
@@ -197,12 +179,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-evidence"
+name = "akson-evidence"
 version = "0.0.1"
 dependencies = [
- "axon-contract",
- "axon-crypto",
- "axon-ext",
+ "akson-contract",
+ "akson-crypto",
+ "akson-ext",
  "hex",
  "serde",
  "serde_json",
@@ -211,10 +193,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-ext"
+name = "akson-ext"
 version = "0.0.1"
 dependencies = [
- "axon-crypto",
+ "akson-crypto",
  "base64",
  "ed25519-dalek",
  "hex",
@@ -227,18 +209,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-harness"
+name = "akson-harness"
 version = "0.0.1"
 dependencies = [
- "axon-authority",
- "axon-contract",
- "axon-crypto",
- "axon-pairing",
- "axon-proto",
- "axon-sandbox",
- "axon-store",
- "axon-transport",
- "axon-worker",
+ "akson-authority",
+ "akson-contract",
+ "akson-crypto",
+ "akson-pairing",
+ "akson-proto",
+ "akson-sandbox",
+ "akson-store",
+ "akson-transport",
+ "akson-worker",
  "serde_json",
  "time",
  "tokio",
@@ -246,12 +228,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-pairing"
+name = "akson-pairing"
 version = "0.0.1"
 dependencies = [
- "axon-crypto",
- "axon-ext",
- "axon-proto",
+ "akson-crypto",
+ "akson-ext",
+ "akson-proto",
  "base64",
  "ed25519-dalek",
  "hex",
@@ -267,10 +249,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-proto"
+name = "akson-proto"
 version = "0.0.1"
 dependencies = [
- "axon-crypto",
+ "akson-crypto",
  "hex",
  "json-canon",
  "pbjson",
@@ -286,7 +268,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-sandbox"
+name = "akson-sandbox"
 version = "0.0.1"
 dependencies = [
  "landlock",
@@ -296,14 +278,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-store"
+name = "akson-store"
 version = "0.0.1"
 dependencies = [
- "axon-authority",
- "axon-broker",
- "axon-contract",
- "axon-crypto",
- "axon-pairing",
+ "akson-authority",
+ "akson-broker",
+ "akson-contract",
+ "akson-crypto",
+ "akson-pairing",
  "base64",
  "chacha20poly1305",
  "ed25519-dalek",
@@ -320,13 +302,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-transport"
+name = "akson-transport"
 version = "0.0.1"
 dependencies = [
- "axon-crypto",
- "axon-pairing",
- "axon-proto",
- "axon-store",
+ "akson-crypto",
+ "akson-pairing",
+ "akson-proto",
+ "akson-store",
  "base64",
  "bytes",
  "ed25519-dalek",
@@ -347,10 +329,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axon-worker"
+name = "akson-worker"
 version = "0.0.1"
 dependencies = [
- "axon-authority",
+ "akson-authority",
  "hex",
  "serde",
  "serde_json",
@@ -359,21 +341,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "axond"
+name = "aksond"
 version = "0.0.1"
 dependencies = [
- "axon-authority",
- "axon-broker",
- "axon-contract",
- "axon-crypto",
- "axon-evidence",
- "axon-ext",
- "axon-pairing",
- "axon-proto",
- "axon-sandbox",
- "axon-store",
- "axon-transport",
- "axon-worker",
+ "akson-authority",
+ "akson-broker",
+ "akson-contract",
+ "akson-crypto",
+ "akson-evidence",
+ "akson-ext",
+ "akson-pairing",
+ "akson-proto",
+ "akson-sandbox",
+ "akson-store",
+ "akson-transport",
+ "akson-worker",
  "base64",
  "bytes",
  "hex",
@@ -391,6 +373,24 @@ dependencies = [
  "tokio-rustls",
  "url",
 ]
+
+[[package]]
+name = "anyhow"
+version = "1.0.103"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+
+[[package]]
+name = "atomic-waker"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "base16ct"

@@ -1,5 +1,5 @@
 [package]
-name = "axon-fuzz"
+name = "akson-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -10,9 +10,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-axon-ext = { path = "../crates/axon-ext" }
-axon-contract = { path = "../crates/axon-contract" }
-axon-evidence = { path = "../crates/axon-evidence" }
+akson-ext = { path = "../crates/akson-ext" }
+akson-contract = { path = "../crates/akson-contract" }
+akson-evidence = { path = "../crates/akson-evidence" }
 
 [[bin]]
 name = "ijson"

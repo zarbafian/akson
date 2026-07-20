@@ -21,7 +21,7 @@ encryption, ADR-0005, lands with the store in M4).
 
 ## Decision
 
-`axon-crypto` exposes a **`KeyStore` trait** — the single seam pairing, the
+`akson-crypto` exposes a **`KeyStore` trait** — the single seam pairing, the
 store, and rotation use — with two responsibilities:
 
 1. Purpose-addressed custody of secret key material: `put`/`get`/`list` keyed

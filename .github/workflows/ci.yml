@@ -32,7 +32,7 @@ jobs:
       # Mozilla CA roots; these #[ignore] tests need outbound network, which the
       # runner has (the local dev host may not).
       - name: Broker CA path (network)
-        run: cargo test -p axon-transport --test ca_tls --locked -- --ignored
+        run: cargo test -p akson-transport --test ca_tls --locked -- --ignored
 
   deny:
     runs-on: ubuntu-latest
@@ -72,16 +72,16 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true && echo "user namespaces available"
       - name: seccomp + Landlock enforcement
-        run: cargo test -p axon-sandbox --locked
+        run: cargo test -p akson-sandbox --locked
       - name: live namespace/mount checklist (#[ignore] tests)
-        run: cargo test -p axon-sandbox --locked -- --ignored
+        run: cargo test -p akson-sandbox --locked -- --ignored
       - name: clean-worker end-to-end (work order → sandbox → gate)
-        run: cargo test -p axon-harness --locked --test clean_worker_e2e -- --ignored --nocapture
+        run: cargo test -p akson-harness --locked --test clean_worker_e2e -- --ignored --nocapture
       - name: daemon worker-run (receive → approve → run in sandbox → manifest)
-        run: cargo test -p axond --locked --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
+        run: cargo test -p aksond --locked --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
       - name: build the OpenAI adapter (for the confined e2e)
-        run: cargo build -p axon-adapter-openai --locked
+        run: cargo build -p akson-adapter-openai --locked
       - name: confined OpenAI adapter e2e (adapter → broker → mock model)
-        run: cargo test -p axond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
+        run: cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh

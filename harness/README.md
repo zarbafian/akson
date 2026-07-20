@@ -1,6 +1,6 @@
-# Axon interop test harness
+# Akson interop test harness
 
-Runnable Axon endpoints for **multi-endpoint scenarios** — pairing, contract
+Runnable Akson endpoints for **multi-endpoint scenarios** — pairing, contract
 exchange, work-order flow, and (later) `codex ↔ claude`-style adapter runs — over
 real sockets, real mTLS, and real on-disk state. The harness exercises the shipped
 crates end to end; it is **not** the daemon (that is M12).
@@ -31,12 +31,12 @@ scenarios use the built-in endpoints with no model.
 
 ## Runner
 
-`harness/runner` builds the `axon-harness` binary — a thin wiring of the shipped
+`harness/runner` builds the `akson-harness` binary — a thin wiring of the shipped
 crates into a runnable endpoint (keys and the store KEK are derived from a
 `--seed`, so it is **test-only**):
 
-- `axon-harness serve --state <db> --seed <n> [--host H] [--advertise A] [--port P] --invitation-out <f> [--agent NAME]`
-- `axon-harness pair  --state <db> --seed <n> --invitation <f> [--agent NAME]`
+- `akson-harness serve --state <db> --seed <n> [--host H] [--advertise A] [--port P] --invitation-out <f> [--agent NAME]`
+- `akson-harness pair  --state <db> --seed <n> --invitation <f> [--agent NAME]`
 
 ## Scenarios
 
@@ -60,16 +60,16 @@ endpoint-b reads the invitation and pairs, pinning endpoint-a. Prints
 ### Run scenario 1 in containers
 
 ```sh
-podman build -f harness/interop/Containerfile -t axon-harness .
+podman build -f harness/interop/Containerfile -t akson-harness .
 podman compose -f harness/interop/compose.yaml up --abort-on-container-exit
 ```
 
 ## Running the sandbox (§13.1) in a container — read this first
 
-The clean-worker sandbox (`axon-sandbox`, ADR-0006) needs **unprivileged user
+The clean-worker sandbox (`akson-sandbox`, ADR-0006) needs **unprivileged user
 namespaces, mount, and `pivot_root`** — exactly the operations a **stock**
 container's default seccomp/AppArmor/no-userns profile *blocks*. A naive
-`podman run axon-tests` will fail the sandbox checklist the same way a restricted
+`podman run akson-tests` will fail the sandbox checklist the same way a restricted
 host does, and it will look like the sandbox is broken when it is not
 (sandbox-inside-sandbox: the outer runtime must be permissive enough for the inner
 one). Run sandbox-validation scenarios with a deliberately permissive runtime —

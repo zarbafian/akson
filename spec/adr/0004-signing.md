@@ -18,7 +18,7 @@ Separate Ed25519 keys per purpose from the first commit — no temporary
 reuse. Purposes are a closed enum: `tls-endpoint` (X.509 key), `agent-card`
 (JWS), `contract-proposal`, `contract-decision`, `task-result`, `evidence`,
 `local-authority` (never leaves the endpoint). Signing goes through
-`ed25519-dalek` v2 behind one thin `axon-crypto` API that takes a purpose and
+`ed25519-dalek` v2 behind one thin `akson-crypto` API that takes a purpose and
 refuses cross-purpose use; verification requires the pinned (key, purpose)
 pair. Public keys serialize as JWKs (`kty: OKP`, `crv: Ed25519`); key IDs are
 RFC 7638 thumbprints computed over the required members only. Local-authority

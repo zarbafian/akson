@@ -55,7 +55,7 @@ pub fn extract_content(reply: &serde_json::Value) -> Result<String, String> {
 /// under the standard limits before it is emitted as evidence — a model that
 /// returns malformed or oversized SARIF fails closed rather than shipping garbage.
 pub fn validate_sarif(bytes: &[u8]) -> Result<usize, String> {
-    let report = axon_evidence::parse_sarif(bytes, &axon_evidence::SarifLimits::default())
+    let report = akson_evidence::parse_sarif(bytes, &akson_evidence::SarifLimits::default())
         .map_err(|e| format!("the model did not return valid SARIF: {e}"))?;
     Ok(report.findings.len())
 }

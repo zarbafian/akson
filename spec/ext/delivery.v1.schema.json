@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/delivery/v1/schema.json",
-  "title": "Axon passive-delivery receipt v1 (design §9.2): durable-receipt metadata under the required delivery extension",
+  "$id": "https://akson.invalid/ext/delivery/v1/schema.json",
+  "title": "Akson passive-delivery receipt v1 (design §9.2): durable-receipt metadata under the required delivery extension",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "message_id", "content_digest_sha256"],

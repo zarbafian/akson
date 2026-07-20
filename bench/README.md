@@ -22,7 +22,7 @@ the happy loop.
 | Host | Role | Needs |
 |---|---|---|
 | **bob** | performer | bwrap + unprivileged userns + a delegated cgroup v2; the OpenAI key; outbound 443 to `api.openai.com` |
-| **alice** | requester | just `axond` |
+| **alice** | requester | just `aksond` |
 
 Run the driver (`run-bench.sh`) from your **laptop**, which `ssh`es into both.
 
@@ -34,12 +34,12 @@ are not logged in):
 
 ```
 sudo loginctl enable-linger "$USER"
-rsync -a --exclude target/ ./axon/ bob:~/axon/     # and → alice
-ssh bob  'cd ~/axon/bench && ./provision.sh'        # installs deps, builds, runs axon doctor
-ssh alice 'cd ~/axon/bench && ./provision.sh'
+rsync -a --exclude target/ ./akson/ bob:~/akson/     # and → alice
+ssh bob  'cd ~/akson/bench && ./provision.sh'        # installs deps, builds, runs akson doctor
+ssh alice 'cd ~/akson/bench && ./provision.sh'
 ```
 
-`provision.sh` ends by printing `axon doctor`. On **bob** it must report the sandbox
+`provision.sh` ends by printing `akson doctor`. On **bob** it must report the sandbox
 is usable. The usual blocker on a fresh Ubuntu 24.04 droplet is AppArmor gating
 unprivileged userns — fix with:
 
@@ -55,11 +55,11 @@ The keys are stored sealed on bob and never leave it.
 
 ```
 # bob (performer): pass whichever keys you have; PROVIDER picks the initial worker.
-ssh bob 'cd ~/axon/bench && ROLE=performer SELF_IP=10.0.0.2 PROVIDER=openai \
+ssh bob 'cd ~/akson/bench && ROLE=performer SELF_IP=10.0.0.2 PROVIDER=openai \
          OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... ./serve.sh'
 
 # alice (requester): SELF_IP is alice's IP.
-ssh alice 'cd ~/axon/bench && ROLE=requester SELF_IP=10.0.0.1 ./serve.sh'
+ssh alice 'cd ~/akson/bench && ROLE=requester SELF_IP=10.0.0.1 ./serve.sh'
 ```
 
 Open the two ports between the droplets (a DO firewall / VPC rule): each host's
@@ -81,8 +81,8 @@ p50/p95/max plus the whole-loop total.
 **Matrix** — every back-end × every scenario in `scenarios/`, run *on alice*:
 
 ```
-scp -i <key> bench/bench-matrix.sh bench/scenarios alice:~/axon/bench/   # if not already synced
-ssh alice 'cd ~/axon/bench && BOB_PRIV=10.0.0.2 PROVIDERS="openai anthropic gemini" ITERS=10 ./bench-matrix.sh'
+scp -i <key> bench/bench-matrix.sh bench/scenarios alice:~/akson/bench/   # if not already synced
+ssh alice 'cd ~/akson/bench && BOB_PRIV=10.0.0.2 PROVIDERS="openai anthropic gemini" ITERS=10 ./bench-matrix.sh'
 ```
 
 For each provider it switches bob's active worker (processors persist, so no key
@@ -92,7 +92,7 @@ re-enters), then times the full round trip for every scenario, and prints a
 
 ## Reading the numbers
 
-`run` includes the OpenAI call (~1–2 s), which dominates. To separate axon's own
+`run` includes the OpenAI call (~1–2 s), which dominates. To separate akson's own
 overhead from model latency, run a second pass against a **local** model on bob
 (same adapter, different processor):
 
@@ -102,11 +102,11 @@ overhead from model latency, run a second pass against a **local** model on bob
 # and the egress policy only permits a loopback address for a *local* processor
 # (broker.rs `if config.is_local() { policy.allow_local() }`). The broker always
 # dials TLS, so front the plain-HTTP Ollama port with a TLS terminator.
-ssh bob 'axon processor add local openai 127.0.0.1 11434 <cert-sha256> --path /v1/chat/completions --auth none'
-# point AXON_WORKER_EXEC at --processor local --model qwen2.5-coder:7b and re-run.
+ssh bob 'akson processor add local openai 127.0.0.1 11434 <cert-sha256> --path /v1/chat/completions --auth none'
+# point AKSON_WORKER_EXEC at --processor local --model qwen2.5-coder:7b and re-run.
 ```
 
 The delta between the OpenAI pass and the local pass is roughly the model latency;
-what remains is axon's protocol + sandbox + signing overhead. Add `tc netem` on one
+what remains is akson's protocol + sandbox + signing overhead. Add `tc netem` on one
 NIC (or put the droplets in different regions) to see how the loop behaves under WAN
 latency/loss.

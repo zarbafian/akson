@@ -1,4 +1,4 @@
-//! Interop test-harness runner: a minimal runnable Axon endpoint that exercises
+//! Interop test-harness runner: a minimal runnable Akson endpoint that exercises
 //! the real crates over real sockets, for multi-endpoint scenarios.
 //!
 //! This is **not** the daemon (that is M12); it is a thin wiring of the shipped
@@ -20,20 +20,20 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axon_crypto::cert::self_signed_endpoint;
-use axon_crypto::keypair::PurposeKey;
-use axon_crypto::purpose::KeyPurpose;
-use axon_pairing::handler::BootstrapMaterial;
-use axon_pairing::invitation::Invitation;
-use axon_pairing::state_machine::PairingLedger;
-use axon_pairing::transfer::{read_invitation_file, write_invitation_file};
-use axon_proto::card_sig;
-use axon_proto::v1::AgentCard;
-use axon_store::envelope::Kek;
-use axon_store::{ExternalCheckpoint, Store};
-use axon_transport::bootstrap::{serve, BootstrapState};
-use axon_transport::client::accept_invitation;
-use axon_transport::tls::bootstrap_server_config;
+use akson_crypto::cert::self_signed_endpoint;
+use akson_crypto::keypair::PurposeKey;
+use akson_crypto::purpose::KeyPurpose;
+use akson_pairing::handler::BootstrapMaterial;
+use akson_pairing::invitation::Invitation;
+use akson_pairing::state_machine::PairingLedger;
+use akson_pairing::transfer::{read_invitation_file, write_invitation_file};
+use akson_proto::card_sig;
+use akson_proto::v1::AgentCard;
+use akson_store::envelope::Kek;
+use akson_store::{ExternalCheckpoint, Store};
+use akson_transport::bootstrap::{serve, BootstrapState};
+use akson_transport::client::accept_invitation;
+use akson_transport::tls::bootstrap_server_config;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -168,7 +168,7 @@ async fn run_pair(args: Args) -> Result<(), Err> {
 async fn main() -> Result<(), Err> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() {
-        return Err("usage: axon-harness <serve|pair> [--flag value]...".into());
+        return Err("usage: akson-harness <serve|pair> [--flag value]...".into());
     }
     let cmd = argv.remove(0);
     let args = Args(argv);

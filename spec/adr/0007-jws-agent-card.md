@@ -25,7 +25,7 @@ already vendor (`ed25519-dalek`, `base64`, `serde_json`, `json-canon`).
 
 ## Decision
 
-Implement a **minimal EdDSA JWS** in `axon-crypto::jws`, a thin frame over
+Implement a **minimal EdDSA JWS** in `akson-crypto::jws`, a thin frame over
 `ed25519-dalek` (design §3.3: thin wrappers over reviewed libraries). It signs
 and verifies exactly one profile and rejects everything else:
 
@@ -42,7 +42,7 @@ and verifies exactly one profile and rejects everything else:
 
 The Agent-Card-specific mapping (serialize the card via the proto3 JSON
 mapping, drop `signatures`, JCS to payload bytes) lives one layer up in
-`axon-proto::card_sig`, beside the structural card validator. `none`,
+`akson-proto::card_sig`, beside the structural card validator. `none`,
 symmetric, `RS*`/`ES*`/`HS*`, and any `jku`/`x5u`/`x5c` member are rejected
 before signature math. No key URL is ever dereferenced.
 
@@ -59,7 +59,7 @@ own vectors (design §14.2), not a change to this default.
 - Golden vectors `spec/vectors/jws/` freeze the canonical header bytes, the
   JCS payload, the signing input, and the (deterministic, RFC 8032) signature;
   `xcheck/` reproduces them with `rfc8785` + `cryptography`.
-- Closes the tracked Codex finding H6: `axon-proto::card_sig::verify_card`
+- Closes the tracked Codex finding H6: `akson-proto::card_sig::verify_card`
   performs signature verification (the pinned key comes from pairing, M6).
 - Any future non-EdDSA card algorithm requires a new ADR and vectors; the
   header allowlist is the single enforcement point.

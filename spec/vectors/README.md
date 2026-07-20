@@ -1,7 +1,7 @@
 # Golden vectors
 
 Implementation-independent test vectors for every canonical byte sequence,
-digest, and signature Axon produces: JCS canonicalization, JWK thumbprints,
+digest, and signature Akson produces: JCS canonicalization, JWK thumbprints,
 DSSE pre-authentication encoding and signatures, Agent Card JWS signatures
 (`jws/`), reliable-delivery Content-Digest and covered-value commitments
 (`delivery/`), pairing verifier/transcript/proof-of-possession (`pairing/`),

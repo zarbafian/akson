@@ -8,7 +8,7 @@ Date: 2026-07-16
 Design §15.1 requires sensitive columns and blobs to be encrypted before they
 reach SQLite, with an audited envelope-encryption library and a key protected
 by the OS keystore or HSM, so that WAL files, temp files, crash dumps, and
-backups never contain plaintext task bodies. Axon "adopts the library's
+backups never contain plaintext task bodies. Akson "adopts the library's
 reviewed ciphertext format; it does not create one." ADR-0003 already fixed
 the storage boundary at the application layer (not SQLCipher/full-db).
 

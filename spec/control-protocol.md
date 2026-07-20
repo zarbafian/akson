@@ -1,6 +1,6 @@
 # Local control protocol
 
-How the `axon` CLI (and any alternate client) drives a running `axond`. This is the
+How the `akson` CLI (and any alternate client) drives a running `aksond`. This is the
 local operator/worker surface — distinct from the peer-facing A2A wire in
 [`a2a/profile.md`](a2a/profile.md). Design references: §16.2 (control socket) and
 §16.4 (control operations).
@@ -11,11 +11,11 @@ One newline-terminated JSON request in, one newline-terminated JSON reply out. A
 the daemon who it is:
 
 ~~~text
-$ printf '{"op":"who_am_i"}\n' | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/axon/admin.sock"
+$ printf '{"op":"who_am_i"}\n' | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/akson/admin.sock"
 {"outcome":"ok","result":{"issuer":"orgB","agent":"bob","interface_url":"https://127.0.0.1:18444/a2a","receive_addr":"127.0.0.1:18444","pair_addr":"127.0.0.1:19444","endpoint_fingerprint":"9f86d0…","data_dir":"/tmp/bob-data"}}
 ~~~
 
-That is the whole shape of every exchange. `axon whoami` is exactly this request; the
+That is the whole shape of every exchange. `akson whoami` is exactly this request; the
 CLI is a thin front end that builds the request object, writes one line, and prints
 `result` (or the `problem`).
 
@@ -42,7 +42,7 @@ Every connection is checked twice before the request runs:
 1. **Peer credentials.** The connecting process's UID (from `SO_PEERCRED`) must equal
    the daemon's UID. A foreign UID is refused before the request is even read. The
    socket file itself is bound `0600` in a `0700` per-user directory
-   (`$XDG_RUNTIME_DIR/axon`, else a UID-scoped temp dir).
+   (`$XDG_RUNTIME_DIR/akson`, else a UID-scoped temp dir).
 2. **Surface.** The daemon exposes two sockets; a request is refused unless the socket
    it arrived on is privileged enough for that op.
 
@@ -50,8 +50,8 @@ Every connection is checked twice before the request runs:
 
 | Socket | Path | For |
 |---|---|---|
-| **admin** | `$XDG_RUNTIME_DIR/axon/admin.sock` | Authority-bearing operator ops (pair, approve, run, deliver, send, configure). |
-| **worker** | `$XDG_RUNTIME_DIR/axon/worker.sock` | The narrow surface the sandboxed worker/adapter uses: submit a result, request a brokered processor call. |
+| **admin** | `$XDG_RUNTIME_DIR/akson/admin.sock` | Authority-bearing operator ops (pair, approve, run, deliver, send, configure). |
+| **worker** | `$XDG_RUNTIME_DIR/akson/worker.sock` | The narrow surface the sandboxed worker/adapter uses: submit a result, request a brokered processor call. |
 
 Admin dominates worker: an admin-socket connection may invoke any op; a worker-socket
 connection may invoke **only** the worker ops. This is why a confined worker that is
@@ -62,11 +62,11 @@ problem that names only the surface, never the op's internals.
 ## Operations
 
 `Surface` is the *minimum* socket an op needs (`worker` ops also work from admin). The
-`axon …` column is the CLI that issues the op.
+`akson …` column is the CLI that issues the op.
 
-| `op` | Args | Surface | `axon …` | Result (on `ok`) |
+| `op` | Args | Surface | `akson …` | Result (on `ok`) |
 |---|---|---|---|---|
-| `diagnose` | — | admin | `doctor` / `status` | `{daemon:"axond", capabilities:[…]}` — sandbox/host health |
+| `diagnose` | — | admin | `doctor` / `status` | `{daemon:"aksond", capabilities:[…]}` — sandbox/host health |
 | `who_am_i` | — | admin | `whoami` | `{issuer, agent, interface_url, receive_addr, pair_addr, endpoint_fingerprint, data_dir}` |
 | `peer_list` | — | admin | `peer list` | `{peers:[{agent_id, endpoint, status}]}` |
 | `peer_confirm` | `agent_id` | admin | `peer confirm <agent>` | `{confirmed:bool, agent_id}` |
@@ -89,19 +89,19 @@ problem that names only the surface, never the op's internals.
 | `request_processor_call` | `processor_id, work_order_id, request` | **worker** | — (the worker SDK) | the broker reply: `{state, status, response}` or `{error}` |
 
 > The confined worker does **not** speak this protocol directly for a model call — a
-> `processor_use` grant hands it one already-connected fd (`AXON_BROKER_FD`) and the
+> `processor_use` grant hands it one already-connected fd (`AKSON_BROKER_FD`) and the
 > daemon services `request_processor_call` on the other end. See §13.1 and the
-> `axon-adapter-*` crates.
+> `akson-adapter-*` crates.
 
 ## Problems
 
 A failure is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem object:
 
 ~~~json
-{"type":"urn:axon:error:forbidden-surface","title":"operation not permitted on this surface","status":403}
+{"type":"urn:akson:error:forbidden-surface","title":"operation not permitted on this surface","status":403}
 ~~~
 
-- `type` — a stable `urn:axon:error:<kind>` tag (not dereferenced).
+- `type` — a stable `urn:akson:error:<kind>` tag (not dereferenced).
 - `title` — a short human summary.
 - `status` — an HTTP-style code (`403` surface, `404` no such task, `409` already
   running, `422` unprocessable, `500` internal, `503` cannot confine, …).
@@ -114,5 +114,5 @@ Result objects are **additive**: a newer daemon may add fields to a `result`, so
 client must ignore unknown fields rather than fail (matching the unknown-field policy
 in [ADR 0010](adr/0010-unknown-fields.md)). The `op` tags, argument names, and the
 `{outcome, …}` envelope are the stable contract. This document tracks the
-`ControlRequest` surface in `crates/axond/src/socket.rs`; that enum is the source of
+`ControlRequest` surface in `crates/aksond/src/socket.rs`; that enum is the source of
 truth.

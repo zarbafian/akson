@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/verifier-summary/v1/schema.json",
-  "title": "Axon verifier summary v1 (design §3.2, §14.2): what one named verifier checked and found",
+  "$id": "https://akson.invalid/ext/verifier-summary/v1/schema.json",
+  "title": "Akson verifier summary v1 (design §3.2, §14.2): what one named verifier checked and found",
   "description": "Trust class is derived by the recipient's local policy from validated identities (design §14.4); this object never self-asserts it.",
   "type": "object",
   "additionalProperties": false,

@@ -14,21 +14,21 @@
 //! Needs bwrap + unprivileged user namespaces + a delegated cgroup v2 subtree, so
 //! it is `#[ignore]`d and runs in CI's isolation job (or locally once userns is
 //! enabled). Run it as a narrated demo with:
-//!   cargo test -p axon-harness --test clean_worker_e2e -- --ignored --nocapture
+//!   cargo test -p akson-harness --test clean_worker_e2e -- --ignored --nocapture
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 
-use axon_authority::{
+use akson_authority::{
     Audience, Budgets, CapabilityVector, Grant, RequestOrigin, RespondScope, WorkOrder,
     WorkOrderKey,
 };
-use axon_contract::Identity;
-use axon_sandbox::{
+use akson_contract::Identity;
+use akson_sandbox::{
     BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher, SandboxSpec,
     SeccompPolicy,
 };
-use axon_worker::{
+use akson_worker::{
     gate_outputs, stage_inputs, GateReject, OutputChannel, ProposedOutput, StageItem,
 };
 
@@ -46,7 +46,7 @@ fn work_order() -> WorkOrder {
         issuer: id("authority"),
         issuer_assurance: "local-human".to_owned(),
         audience: Audience {
-            daemon: "axond".to_owned(),
+            daemon: "aksond".to_owned(),
             executor: "worker-1".to_owned(),
         },
         request_origin: RequestOrigin {
@@ -90,7 +90,7 @@ fn work_order() -> WorkOrder {
 #[test]
 #[ignore = "needs bwrap + unprivileged userns + a delegated cgroup; runs in CI's isolation job"]
 fn clean_worker_runs_and_its_output_is_gated_end_to_end() {
-    let tmp = std::env::temp_dir().join(format!("axon-e2e-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("akson-e2e-{}", std::process::id()));
     let staging = tmp.join("inputs");
     let output = tmp.join("output");
     std::fs::create_dir_all(&output).unwrap();
@@ -146,7 +146,7 @@ fn clean_worker_runs_and_its_output_is_gated_end_to_end() {
     );
     let seccomp = SeccompPolicy::clean_worker_baseline(DenyAction::KillProcess);
     let cgroup = match CgroupScope::create(
-        &format!("axon-e2e-{}", std::process::id()),
+        &format!("akson-e2e-{}", std::process::id()),
         &CgroupLimits {
             max_memory_bytes: Some(64 * 1024 * 1024),
             max_pids: Some(16),

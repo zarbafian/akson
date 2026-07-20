@@ -7,7 +7,7 @@
     "value": {
       "schema_version": 1,
       "subject": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "reviewer.example"
       },
       "tls_certificate_sha256": "0a1bb31085a4ae34473de9206876723889ab2f24b7b5280b79f290b631d3d835",
@@ -72,6 +72,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "777704978bd6d3d6dfb4301d07b588453d63b32678a6779eb6229eec4d147852"
+    "canonical_sha256": "11a77bdfc668d9a40612e8fb3e8a5f4a02bebd6e7f6a58cbc768768cab39d2f6"
   }
 }

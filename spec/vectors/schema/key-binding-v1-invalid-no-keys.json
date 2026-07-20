@@ -7,7 +7,7 @@
     "value": {
       "schema_version": 1,
       "subject": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "reviewer.example"
       },
       "tls_certificate_sha256": "0a1bb31085a4ae34473de9206876723889ab2f24b7b5280b79f290b631d3d835",

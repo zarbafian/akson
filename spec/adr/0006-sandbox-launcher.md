@@ -35,7 +35,7 @@ reasons that survive scrutiny where the native-launcher justifications did not:
 - **Concrete evidence.** The review found real latent escapes in the native code
   that bubblewrap already handles: no inherited-fd allowlist (a leaked dirfd makes
   `pivot_root` cosmetic — §13.1 mandates the allowlist); a predictable
-  `/tmp/.axon-root-<pid>` root with `mkdir`-accepts-`EEXIST` (a symlink attack on a
+  `/tmp/.akson-root-<pid>` root with `mkdir`-accepts-`EEXIST` (a symlink attack on a
   shared host); and heavy allocation between `fork()` and `execve()` in a
   multithreaded daemon (async-signal-safety hazard). Bubblewrap's fork→exec-a-tiny-
   init model and fd handling avoid this class.
@@ -49,7 +49,7 @@ Use **bubblewrap (`bwrap`) for the namespace / mount / `pivot_root` / exec
 boundary, and keep the pure-Rust `seccomp` (`seccompiler`) and `Landlock`
 (`landlock` crate) policies** — all behind the existing `SandboxLauncher` trait.
 
-- Axon **authors the isolation policy** (namespaces, no-network, `--clearenv` +
+- Akson **authors the isolation policy** (namespaces, no-network, `--clearenv` +
   explicit env, `--die-with-parent`, `--new-session`, `--cap-drop ALL`, private
   `/proc`/`/dev`, read-only digest-pinned runtime binds, tmpfs scratch/output, the
   **fd allowlist**, `--chdir`) and hands bubblewrap the compiled seccomp BPF via
@@ -75,7 +75,7 @@ where a bug is game-over, and §13.1/§13.4/§19 call for it.
 
 ## Consequences
 
-- `axon-sandbox` exposes `SandboxLauncher`, a `BubblewrapLauncher` (default v1),
+- `akson-sandbox` exposes `SandboxLauncher`, a `BubblewrapLauncher` (default v1),
   and the experimental `NativeLauncher`. The pure-Rust `SeccompPolicy` and
   `LandlockPolicy` are backend-independent and used with either.
 - The two CRITICAL native gaps (fd leak, fork/alloc) are dissolved for the shipping

@@ -1,4 +1,4 @@
-# Axon
+# Akson
 
 ![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)
@@ -9,7 +9,7 @@
 > Connect an agent, approve exactly what it may do, and receive a result whose
 > inputs, producer, limits, and verification can be checked independently.
 
-Axon is an open-source, local-first gateway that lets independently operated
+Akson is an open-source, local-first gateway that lets independently operated
 agents exchange tasks, messages, artifacts, and evidence — without sharing
 credentials or giving a peer ambient access to the local machine. It speaks
 standard [A2A 1.0](https://a2a-protocol.org/latest/specification/) over
@@ -39,17 +39,17 @@ authenticated request -> inert durable task -> explicit local decision
 
 ## 🔒 Security, privacy & safety
 
-Axon carries one core principle:
+Akson carries one core principle:
 
 > A peer's commands run in a **separate, enforced, reduced-authority domain**.
 > The agent's own user-granted authority is never touched.
 
-Everything below is how that line holds, stated as what axon does. Each property
+Everything below is how that line holds, stated as what akson does. Each property
 is grounded in the [threat model](design/2026-07-19-threat-model.md) and the
 [design](design/2026-07-16-threads-enterprise-agent-communication.md) (§ marks
 the section).
 
-| Guarantee | How axon holds it |
+| Guarantee | How akson holds it |
 |---|---|
 | **Direct and local-first** | Two endpoints pair with no hosted account and no relay, over mutually-authenticated TLS 1.3, pinning each other's certificate by fingerprint at pairing — not by CA or DNS. (§8.2, §9.1) |
 | **Arrival is not execution** | Receiving any message, task, artifact, or control frame never starts a model, mints authority, touches a workspace, invokes a tool, or fetches a URL. Arrival is quiet and abuse-resistant. (§6.3) |
@@ -61,52 +61,52 @@ the section).
 | **Inert evidence** | Rendered artifacts (SVG, HTML, Graphviz, Markdown, Mermaid) are scanned for active content — scripts, event handlers, external fetches — and refused before delivery. (§20.4) |
 | **Hardened parsing & storage** | Bounded, canonical inputs (I-JSON caps, JCS) fail closed at every gate, backed by fuzz and hostile-input suites; the durable store is envelope-encrypted at rest under a trusted-time floor. (§11.1, §15.1) |
 
-These are the properties axon is built to hold. Key custody is still interim and
+These are the properties akson is built to hold. Key custody is still interim and
 a few residual risks remain open — the
 [threat model](design/2026-07-19-threat-model.md) tracks each one, honestly.
 
 ## Try it
 
 A full two-party round trip between two local daemons — `alice` (requester) and
-`bob` (performer) — driven entirely by the `axon` CLI. Everything stays on the
+`bob` (performer) — driven entirely by the `akson` CLI. Everything stays on the
 loopback interface over mutually authenticated TLS; no hosted account is
 involved.
 
 Build the daemon and CLI:
 
 ~~~text
-cargo build -p axond -p axon-cli   # produces target/debug/{axond,axon}
+cargo build -p aksond -p akson-cli   # produces target/debug/{aksond,akson}
 ~~~
 
-**Terminal A — start `bob`, the performer.** `AXON_WORKER_CMD` is the worker the
+**Terminal A — start `bob`, the performer.** `AKSON_WORKER_CMD` is the worker the
 sandbox runs for an approved task; here it is a pure-shell stand-in that reads the
 supplied input and writes a response.
 
 ~~~text
-export XDG_RUNTIME_DIR=/tmp/bob AXON_DATA_DIR=/tmp/bob-data
-export AXON_ISSUER=orgB AXON_AGENT=bob
-export AXON_INTERFACE_URL=https://127.0.0.1:18444/a2a
-export AXON_RECEIVE_ADDR=127.0.0.1:18444 AXON_PAIR_ADDR=127.0.0.1:19444
-export AXON_WORKER_CMD='[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" > /output/response'
-mkdir -p "$XDG_RUNTIME_DIR"; target/debug/axond serve
+export XDG_RUNTIME_DIR=/tmp/bob AKSON_DATA_DIR=/tmp/bob-data
+export AKSON_ISSUER=orgB AKSON_AGENT=bob
+export AKSON_INTERFACE_URL=https://127.0.0.1:18444/a2a
+export AKSON_RECEIVE_ADDR=127.0.0.1:18444 AKSON_PAIR_ADDR=127.0.0.1:19444
+export AKSON_WORKER_CMD='[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" > /output/response'
+mkdir -p "$XDG_RUNTIME_DIR"; target/debug/aksond serve
 ~~~
 
 **Terminal B — start `alice`, the requester.**
 
 ~~~text
-export XDG_RUNTIME_DIR=/tmp/alice AXON_DATA_DIR=/tmp/alice-data
-export AXON_ISSUER=orgA AXON_AGENT=alice
-export AXON_INTERFACE_URL=https://127.0.0.1:18443/a2a
-export AXON_RECEIVE_ADDR=127.0.0.1:18443 AXON_PAIR_ADDR=127.0.0.1:19443
-mkdir -p "$XDG_RUNTIME_DIR"; target/debug/axond serve
+export XDG_RUNTIME_DIR=/tmp/alice AKSON_DATA_DIR=/tmp/alice-data
+export AKSON_ISSUER=orgA AKSON_AGENT=alice
+export AKSON_INTERFACE_URL=https://127.0.0.1:18443/a2a
+export AKSON_RECEIVE_ADDR=127.0.0.1:18443 AKSON_PAIR_ADDR=127.0.0.1:19443
+mkdir -p "$XDG_RUNTIME_DIR"; target/debug/aksond serve
 ~~~
 
 **Terminal C — pair them, send a task, approve it, run it, deliver the result.**
 Point the CLI at whichever daemon it should command with `XDG_RUNTIME_DIR`.
 
 ~~~text
-alice() { XDG_RUNTIME_DIR=/tmp/alice target/debug/axon "$@"; }
-bob()   { XDG_RUNTIME_DIR=/tmp/bob   target/debug/axon "$@"; }
+alice() { XDG_RUNTIME_DIR=/tmp/alice target/debug/akson "$@"; }
+bob()   { XDG_RUNTIME_DIR=/tmp/bob   target/debug/akson "$@"; }
 
 # 1. Pair (alice invites, bob accepts), then each confirms the new peer.
 alice pair invite /tmp/inv.json
@@ -117,7 +117,7 @@ bob   peer confirm alice
 # 2. alice sends a code-review task to bob.
 cat > /tmp/task.json <<'JSON'
 { "performer": "bob",
-  "task_type": "https://axon.invalid/task/code-review/v1",
+  "task_type": "https://akson.invalid/task/code-review/v1",
   "objective": "Review the supplied diff.",
   "inputs": [{ "id": "diff", "media_type": "text/x-diff", "text": "--- a\n+++ b\n" }],
   "deliverables": [{ "role": "review", "media_type": "text/plain" }],
@@ -144,8 +144,8 @@ alice task output task-<id>              # role, media type, size, digest
 alice task output task-<id> --role response   # just the bytes, ready to pipe
 ~~~
 
-`axon whoami` prints a daemon's own identity and endpoint fingerprint;
-`axon doctor` reports whether the host can run the clean-worker sandbox. The
+`akson whoami` prints a daemon's own identity and endpoint fingerprint;
+`akson doctor` reports whether the host can run the clean-worker sandbox. The
 sandboxed `task run` needs Linux with unprivileged user namespaces and a
 delegated cgroup v2 subtree; without them the daemon refuses to run the worker
 rather than run it unconfined.
@@ -159,15 +159,15 @@ call on its behalf. Build an adapter and make it `bob`'s worker command (needs a
 reachable model endpoint and an API key, so this steps outside the loopback demo):
 
 ~~~text
-cargo build -p axon-adapter-openai        # or -p axon-adapter-anthropic
+cargo build -p akson-adapter-openai        # or -p akson-adapter-anthropic
 
-# AXON_WORKER_EXEC runs the adapter DIRECTLY — no wrapping shell — under the strict
+# AKSON_WORKER_EXEC runs the adapter DIRECTLY — no wrapping shell — under the strict
 # adapter seccomp profile: a single confined process that cannot create another
 # process (no fork/clone) and cannot open a socket. --sarif emits findings as a
 # validated application/sarif+json artifact instead of a plain response. (Use an
 # absolute path, or a name on PATH inside the sandbox.)
-export AXON_WORKER_EXEC="$PWD/target/debug/axon-adapter-openai --processor gpt --model gpt-4o --sarif"
-#   ...then start bob's `axond serve` so it picks up this worker.
+export AKSON_WORKER_EXEC="$PWD/target/debug/akson-adapter-openai --processor gpt --model gpt-4o --sarif"
+#   ...then start bob's `aksond serve` so it picks up this worker.
 
 # Register the model endpoint as a pinned processor and store its credential.
 bob processor add gpt openai api.openai.com 443 ca --path /v1/chat/completions --auth bearer
@@ -211,8 +211,8 @@ Neither side ever sees the other's source: the only thing that crosses is a sign
 task and its signed result. Both endpoints send *and* perform, so each pins the
 other's proposal and task-result keys at pairing.
 
-- `crates/axond/tests/cooperation_e2e.rs` runs the whole scenario hermetically
-  (`cargo test -p axond --test cooperation_e2e`). Its closing assertion is the
+- `crates/aksond/tests/cooperation_e2e.rs` runs the whole scenario hermetically
+  (`cargo test -p aksond --test cooperation_e2e`). Its closing assertion is the
   point: every round's input digest equals the previous round's output digest, so
   the six exchanges form one unbroken chain.
 - `bench/cooperate.sh` runs the same six rounds across two hosts with a real
@@ -220,13 +220,13 @@ other's proposal and task-result keys at pairing.
 
 ## Acknowledgments
 
-Axon's founding idea comes from **c2c**, a prior agent-communication system:
+Akson's founding idea comes from **c2c**, a prior agent-communication system:
 inbound message content can never satisfy an approval or trigger a privileged
 action — *arrival is not execution*. c2c showed that this invariant holds up
-under real dogfooding, and it is the spine of axon's security model (§6.3). Axon
+under real dogfooding, and it is the spine of akson's security model (§6.3). Akson
 reuses c2c's hard-won patterns — durable-before-effect writes, per-purpose nonce
 separation, capability tokens that never touch argv or logs — as patterns and
-lessons, not code. Axon is an independent Rust implementation. With gratitude to
+lessons, not code. Akson is an independent Rust implementation. With gratitude to
 c2c for the groundwork.
 
 ## Documents
@@ -240,8 +240,8 @@ c2c for the groundwork.
   and decisions for the v1 build.
 - [Threat model](design/2026-07-19-threat-model.md) — assets, actors, and how each
   defense is realized in the build.
-- [Control protocol](spec/control-protocol.md) — the local socket the `axon` CLI
-  speaks to a running `axond` (framing, surfaces, operations).
+- [Control protocol](spec/control-protocol.md) — the local socket the `akson` CLI
+  speaks to a running `aksond` (framing, surfaces, operations).
 - [ADRs](spec/adr/) — recorded decisions.
 - [SECURITY.md](SECURITY.md) — reporting vulnerabilities.
 

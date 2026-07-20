@@ -1,4 +1,4 @@
-# Axon: private, reliable connections between agents
+# Akson: private, reliable connections between agents
 
 Status: proposed design
 
@@ -6,23 +6,23 @@ Date: 2026-07-16
 
 Scope: open-source, local-first agent communication and bounded delegation
 
-The filename is historical. The product and public vocabulary are **Axon**, not
+The filename is historical. The product and public vocabulary are **Akson**, not
 Threads.
 
 ## 1. Executive decision
 
-Axon is an open-source, local-first gateway that lets independently operated
+Akson is an open-source, local-first gateway that lets independently operated
 agents exchange tasks, messages, artifacts, and evidence without sharing
 credentials or giving a peer ambient access to the local machine.
 
-Axon is not a new agent language, general orchestration framework, remote shell,
+Akson is not a new agent language, general orchestration framework, remote shell,
 identity system, marketplace, or rich-media renderer. Its product value is the
 secure boundary between an authenticated remote request and a locally
 authorized, bounded worker, followed by a portable evidence-backed result.
 
 The first complete product slice is a two-party code-review task:
 
-1. two endpoints pair without an Axon-hosted account or organization identity
+1. two endpoints pair without an Akson-hosted account or organization identity
    provider;
 2. a requester sends an A2A Message with an immutable change and proposed
    terms; the recipient durably creates the standard A2A Task;
@@ -41,7 +41,7 @@ operational surface. A sender keeps a durable outbox and retries when both
 endpoints are reachable.
 
 If a later relay is justified, content encryption through that relay must use
-an accepted end-to-end group-security scheme such as MLS 1.0. Axon will not
+an accepted end-to-end group-security scheme such as MLS 1.0. Akson will not
 invent a cryptographic transport or silently weaken the direct security
 profile.
 
@@ -58,7 +58,7 @@ profile.
    weaker-protocol fallback.
 6. Established formats and reviewed schemes are reused whenever they satisfy
    the requirement.
-7. Axon-specific formats are limited, versioned extensions with a documented
+7. Akson-specific formats are limited, versioned extensions with a documented
    standards gap and interoperability tests.
 8. Delivery, execution, verification, and requester acceptance are distinct
    states.
@@ -82,16 +82,16 @@ only when a named verifier actually checked the stated claim.
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are used as
 described by BCP 14.
 
-Axon uses the following public vocabulary:
+Akson uses the following public vocabulary:
 
 | Concept | Meaning |
 |---|---|
 | peer | An issuer-qualified, cryptographically pinned remote endpoint |
 | connection | The local record that authorizes communication with one peer |
-| task | The A2A Task and standard lifecycle; Axon’s required delivery extension adds durable receipt |
+| task | The A2A Task and standard lifecycle; Akson’s required delivery extension adds durable receipt |
 | message | The A2A Message used for conversational or task content |
 | artifact | An A2A Artifact containing a task output |
-| contract | A signed Axon extension describing one exact proposed task revision and its input Message Parts |
+| contract | A signed Akson extension describing one exact proposed task revision and its input Message Parts |
 | decision | A signed accept or reject decision about a contract |
 | policy ceiling | A reusable, local rule that limits what may be approved |
 | work order | A local, one-shot authorization for one executor and exact task |
@@ -105,7 +105,7 @@ Organization integrations are described as the optional managed profile.
 
 ## 3. Standards-first policy
 
-Axon must not create a new envelope, message model, identity token, attachment
+Akson must not create a new envelope, message model, identity token, attachment
 container, signature convention, or transport when a suitable established
 format exists.
 
@@ -113,13 +113,13 @@ format exists.
 |---|---|
 | agent semantics | A2A 1.0 Agent Card, Message, Task, Part, Artifact, operations, lifecycle, and extension mechanism |
 | direct network transport | A2A 1.0 HTTP+JSON with <code>application/a2a+json</code> over TLS 1.3 |
-| HTTP body integrity/deduplication | RFC 9530 <code>Content-Digest</code> plus the required Axon delivery profile |
+| HTTP body integrity/deduplication | RFC 9530 <code>Content-Digest</code> plus the required Akson delivery profile |
 | standard A2A validation | A2A’s normative Protocol Buffer definitions and standard JSON mapping |
 | endpoint authentication | X.509 certificates and mutual TLS |
 | Agent Card signatures | A2A AgentCardSignature using JWS and the A2A canonicalization rules |
 | managed workload identity | SPIFFE X.509-SVID where workload federation is needed |
 | managed human identity | OIDC; SCIM only for organization lifecycle input |
-| identifiers | A2A identifier rules; UUIDv4 under RFC 9562 for Axon-created extension IDs |
+| identifiers | A2A identifier rules; UUIDv4 under RFC 9562 for Akson-created extension IDs |
 | times | RFC 3339 UTC timestamps |
 | content types | Registered IANA media types when one exists |
 | structured extension validation | JSON Schema Draft 2020-12 |
@@ -134,17 +134,17 @@ format exists.
 | operational telemetry | OpenTelemetry, with content disabled |
 
 JUnit XML MAY be imported for compatibility, but it is a family of de facto
-dialects rather than one normative format. Axon must define and test a narrow
+dialects rather than one normative format. Akson must define and test a narrow
 parser profile while preserving the original bytes.
 
 Sigstore bundles MAY be used as an evidence signer/verifier provider. Upload to
 a public transparency service is never automatic because names, artifact
-digests, and timing can cross Axon’s privacy boundary. Private deployments do
+digests, and timing can cross Akson’s privacy boundary. Private deployments do
 not need a public log to exchange valid DSSE/in-toto evidence.
 
-### 3.1 Rule for an Axon-specific extension
+### 3.1 Rule for an Akson-specific extension
 
-An Axon-specific wire field or schema may be added only when all of the
+An Akson-specific wire field or schema may be added only when all of the
 following are true:
 
 1. an ADR states the exact unmet requirement;
@@ -161,10 +161,10 @@ No provisional private URI or unregistered collision-prone name may ship in a
 stable release. The project domain and extension registry are Phase 0 release
 gates.
 
-### 3.2 Intentional Axon extension surface
+### 3.2 Intentional Akson extension surface
 
 A2A already defines the agent, task, message, part, artifact, and operation
-model. Axon adds only the semantics A2A does not provide:
+model. Akson adds only the semantics A2A does not provide:
 
 - a bilateral task contract and revision chain;
 - a contract decision;
@@ -175,7 +175,7 @@ model. Axon adds only the semantics A2A does not provide:
 - a requester outcome decision distinct from task completion.
 
 These objects travel in standard A2A Message Parts or output Artifacts as
-appropriate. Axon does not wrap the whole A2A object in a second message
+appropriate. Akson does not wrap the whole A2A object in a second message
 schema.
 
 Grants, policies, work orders, sandbox descriptors, and local audit records are
@@ -183,11 +183,11 @@ endpoint-private and are never A2A objects.
 
 ### 3.3 Dependency discipline
 
-Each external protocol and library is pinned to a reviewed version. Axon
+Each external protocol and library is pinned to a reviewed version. Akson
 publishes:
 
 - the supported A2A version and binding;
-- required and optional Axon extension versions;
+- required and optional Akson extension versions;
 - the TLS and signature algorithm profile;
 - conformance vectors;
 - dependency provenance, SBOMs, and vulnerability response policy.
@@ -197,11 +197,11 @@ may be evaluated as a later secure-session provider, and MIMI should be
 monitored for group interoperability, but neither is normative for the direct
 v1 path.
 
-Axon generates standard A2A types from A2A’s normative Protocol Buffer
+Akson generates standard A2A types from A2A’s normative Protocol Buffer
 definitions instead of maintaining a competing schema. JSON Schema is used
-only for the Axon extension objects.
+only for the Akson extension objects.
 
-Axon never implements cryptographic primitives, TreeKEM, HPKE, AEAD framing, or
+Akson never implements cryptographic primitives, TreeKEM, HPKE, AEAD framing, or
 certificate validation itself. It uses maintained, reviewed libraries and
 tests their configuration.
 
@@ -212,7 +212,7 @@ tests their configuration.
 The v1 product includes:
 
 - one-to-one local and cross-host pairing;
-- no-Axon-account personal use and an isolated service profile;
+- no-Akson-account personal use and an isolated service profile;
 - an authenticated A2A Agent Card;
 - direct A2A Messages, Tasks, Parts, and Artifacts;
 - a complete <code>code_review.v1</code> contract, decision, execution,
@@ -266,9 +266,9 @@ requests return a stable, non-sensitive error and create no effect.
 The first release is successful when:
 
 - two independent users on two directly reachable machines with supported
-  processors already configured complete fresh Axon installation and the
+  processors already configured complete fresh Akson installation and the
   code-review loop in under ten minutes;
-- neither user needs an Axon-hosted account, organization IdP, public
+- neither user needs an Akson-hosted account, organization IdP, public
   directory, or shared secret copied into a command-line argument;
 - the recipient can understand the exact disclosure and local operations from
   one risk card;
@@ -283,7 +283,7 @@ The first release is successful when:
 
 Phase 1 execution support is Linux on x86-64 and arm64 with the isolation
 features in Section 13.1. Other operating systems may support communication,
-inbox, and evidence validation only; Axon does not advertise worker execution
+inbox, and evidence validation only; Akson does not advertise worker execution
 until an equivalent backend passes the same suite.
 
 Signed native packages are the Phase 1 installation. They install a per-user
@@ -296,7 +296,7 @@ the personal quick start.
 The guided installer recommends the isolated service when the operator can
 authorize it. Personal mode is an explicit lower-local-assurance choice and
 never displays the same badge. The cross-host Phase 1 security gate runs the
-reviewer in the isolated profile; <code>axon demo review</code> may use personal
+reviewer in the isolated profile; <code>akson demo review</code> may use personal
 mode and labels the same-UID TCB.
 
 The two Phase 1 release adapters are OpenCode with a documented fully local
@@ -309,9 +309,9 @@ adapter, not a reason to delay the open local path.
 Processor setup is explicit:
 
 ~~~text
-axon processor add <adapter> --name <local-name>
-axon processor list
-axon processor test <local-name>
+akson processor add <adapter> --name <local-name>
+akson processor list
+akson processor test <local-name>
 ~~~
 
 A processor named <code>local</code> is a user-created alias, not an implicit
@@ -321,7 +321,7 @@ credentials are brokered. The OpenCode reference fixture uses a documented
 local model endpoint and no vendor account.
 
 The under-five-minute local and under-ten-minute cross-host metrics begin after
-a supported processor is installed and tested; they include fresh Axon
+a supported processor is installed and tested; they include fresh Akson
 installation, initialization, pairing, and the task loop. A separate setup
 benchmark records processor installation and model-download time so the quick
 metric cannot hide it.
@@ -334,18 +334,18 @@ Initial setup makes the network prerequisite explicit:
 
 | Reviewer/server | Requester/client |
 |---|---|
-| <code>axon init</code> | <code>axon init</code> |
-| <code>axon serve --listen &lt;address&gt;</code> | |
-| <code>axon endpoint check</code> | |
-| <code>axon pair create --invite-file invite.axon --expires 10m</code> | <code>axon pair accept --invite-file invite.axon --alias reviewer</code> |
+| <code>akson init</code> | <code>akson init</code> |
+| <code>akson serve --listen &lt;address&gt;</code> | |
+| <code>akson endpoint check</code> | |
+| <code>akson pair create --invite-file invite.akson --expires 10m</code> | <code>akson pair accept --invite-file invite.akson --alias reviewer</code> |
 
 After pairing, the normal product flow has three user moments:
 
 1. The requester runs
-   <code>axon review reviewer change.patch --wait</code>.
+   <code>akson review reviewer change.patch --wait</code>.
 2. The reviewer receives one risk card and chooses **Approve once** or
    **Deny**.
-3. Axon validates the returned identities, signatures, schemas, and digests,
+3. Akson validates the returned identities, signatures, schemas, and digests,
    presents the review, and asks the requester to **Accept**, **Reject**, or
    **Dispute**.
 
@@ -357,19 +357,19 @@ An invitation secret is accepted through a mode-0600 file, standard input, or a
 QR flow. The CLI MUST NOT encourage placing it in argv, a URL query string, a
 shell history entry, or logs.
 
-<code>axon serve</code> never opens a router port or publishes an address
+<code>akson serve</code> never opens a router port or publishes an address
 implicitly. It explains whether the listener is local-only, private-network, or
-public; <code>axon endpoint check</code> verifies the advertised address,
+public; <code>akson endpoint check</code> verifies the advertised address,
 certificate, Agent Card, and reachability from the intended network. The
 pairing invitation states the connection direction and which endpoint must be
-reachable. <code>axon pair diagnose</code> explains firewall, DNS, certificate,
+reachable. <code>akson pair diagnose</code> explains firewall, DNS, certificate,
 and private-network failures without printing the bearer invitation.
 
 The simple text-message path may exist for diagnostics and conversation, but it
 is not the release milestone. The evidence-backed task loop is the product
 milestone.
 
-For evaluation, <code>axon demo review change.patch</code> creates two
+For evaluation, <code>akson demo review change.patch</code> creates two
 separately keyed local endpoints and runs the same real adapter, contract,
 worker, evidence, and outcome path. It is clearly labeled a product
 demonstration: same-host use does not prove a cross-owner trust boundary or
@@ -377,13 +377,13 @@ cross-host transport. A local evaluation should complete in under five minutes.
 
 ### 5.2 Risk card
 
-Before local work, Axon groups the decision into five questions:
+Before local work, Akson groups the decision into five questions:
 
 1. **Who:** exact issuer-qualified peer and assurance, highlighting any key,
    Agent Card, endpoint, or processor change.
 2. **What leaves:** every input exposed to the worker or processor, plus the
    processor’s local/remote status, operator, region, retention, and training
-   policy known to Axon.
+   policy known to Akson.
 3. **What runs:** task type, requested operations, actual processor, and
    explicit denials for host files, generic network, secrets, and mutation.
 4. **Limits:** revision digest, time, byte, response, and cost bounds.
@@ -416,7 +416,7 @@ immediate.
 
 ### 6.1 Protected assets
 
-Axon protects:
+Akson protects:
 
 - endpoint identity and signing keys;
 - local policy and approval authority;
@@ -437,16 +437,16 @@ The design assumes:
 - an active network attacker;
 - a compromised future relay;
 - a compromised model or adapter process;
-- an untrusted local agent process outside <code>axond</code> in the isolated
+- an untrusted local agent process outside <code>aksond</code> in the isolated
   profile; same-UID processes are explicitly in the personal profile’s TCB;
 - a worker that crashes before, during, or after a side effect;
 - an operator who restores an old database snapshot;
 - a dependency or parser vulnerability.
 
-Axon does not claim to protect plaintext from the endpoint process that must use
+Akson does not claim to protect plaintext from the endpoint process that must use
 it, from an approved external processor that receives it, or from a fully
 compromised host kernel. These trust boundaries are visible in the risk card
-and <code>axon doctor</code>.
+and <code>akson doctor</code>.
 
 ### 6.3 Normative invariants
 
@@ -477,7 +477,7 @@ correlation information, and means durable receipt only.
 
 Agent Card fields, skills, display names, objectives, messages, metadata,
 filenames, paths, URLs, status text, artifacts, reports, and model output are
-data. Only a validated, supported Axon extension field may be considered by
+data. Only a validated, supported Akson extension field may be considered by
 policy, and it still cannot grant authority.
 
 Unknown extensions are preserved for forwarding when safe or ignored. They are
@@ -520,7 +520,7 @@ issuer or trust domain and current key binding.
 Remote cancellation is advisory unless the exact work order grants
 <code>remote_cancel</code> to the exact request origin and task. Cancellation
 cannot undo a committed result or change. In the A2A interface, “advisory”
-means Axon returns TaskNotCancelableError when that caveat is absent; it does
+means Akson returns TaskNotCancelableError when that caveat is absent; it does
 not acknowledge cancellation and then ignore it.
 
 #### Credentials remain local
@@ -552,7 +552,7 @@ remote A2A endpoint
         | HTTPS / TLS 1.3 / mutual authentication
         v
 +----------------------------------------------------------+
-| axond                                                    |
+| aksond                                                    |
 |                                                          |
 |  network endpoint -> bounded A2A parser -> inbox/dedupe  |
 |                                           |              |
@@ -586,10 +586,10 @@ separation recorded in the work order.
 1. The network endpoint authenticates the peer certificate before accepting an
    A2A request body.
 2. It enforces connection, content-length, rate, and parse limits.
-3. It validates the standard A2A object and recognized Axon extension.
+3. It validates the standard A2A object and recognized Akson extension.
 4. It stores the encrypted object and stable digest transactionally.
-5. Under the required Axon passive-delivery extension, it returns the standard
-   A2A Task shape only after the stronger Axon durability commit.
+5. Under the required Akson passive-delivery extension, it returns the standard
+   A2A Task shape only after the stronger Akson durability commit.
 6. A user or standing local policy evaluates the exact immutable contract
    revision.
 7. Contract acceptance is signed separately from local authorization.
@@ -677,7 +677,7 @@ Personal pairing uses standard TLS and X.509 with explicit pinning:
 4. It sends the 256-bit secret as an HTTP Bearer credential inside that pinned
    TLS connection and presents its generated endpoint certificate and signed
    extended Agent Card.
-5. The extended card’s required Axon identity/key-binding AgentExtension
+5. The extended card’s required Akson identity/key-binding AgentExtension
    carries the Agent Card JWS, task-statement, and evidence verification keys,
    their RFC 7638 thumbprints, allowed purposes, generation, and validity. The
    inviter verifies the card, key bindings, and proof of possession.
@@ -708,7 +708,7 @@ confidential channel or an in-person QR flow. For a remote channel whose
 authenticity is uncertain, users compare the displayed transcript fingerprint
 through a second trusted channel before activation.
 
-Axon does not invent a challenge-response protocol for a shorter human code. If
+Akson does not invent a challenge-response protocol for a shorter human code. If
 such a flow is later required, an ADR must select a standardized, reviewed PAKE
 and define its transcript and identity bindings.
 
@@ -718,11 +718,11 @@ public-PKI identities.
 
 The public <code>/.well-known/agent-card.json</code> is a minimal signed A2A
 card containing no private peer or processor data. It advertises mTLS and the
-required Axon extensions, and sets
+required Akson extensions, and sets
 <code>capabilities.extendedAgentCard: true</code>. The signed extended card
 exchanged during bootstrap and later retrieved through the standard
 authenticated GetExtendedAgentCard operation carries the purpose-bound
-identity/key projection. Axon never substitutes the public card for that
+identity/key projection. Akson never substitutes the public card for that
 authenticated projection.
 
 ### 8.3 Isolated and managed identities
@@ -741,7 +741,7 @@ labels.
 
 Personal v1 keeps rotation simple: changing a TLS, Agent Card JWS,
 task-statement, or evidence key requires explicit re-pairing. A later personal
-successor mechanism would be a registered Axon identity extension and require
+successor mechanism would be a registered Akson identity extension and require
 old-key authorization, new-key proof of possession, peer identity, purpose,
 monotonic generation, validity interval, and old/new thumbprints.
 
@@ -771,7 +771,7 @@ report and audit.
 ### 8.5 Time and expiry
 
 Expiry is an authority boundary. Within one boot, invitations, contracts, work
-orders, and processor calls use monotonic deadlines. Across boots, Axon stores
+orders, and processor calls use monotonic deadlines. Across boots, Akson stores
 the last trusted wall-clock checkpoint and database generation in the OS
 keystore or HSM, outside database backups.
 
@@ -788,7 +788,7 @@ tests.
 If wall time moves backward by more than five minutes, or by a lower
 operator-configured tolerance, the
 keystore/database checkpoint disagrees, or certificate validity cannot be
-established, Axon enters time-uncertain recovery. It refuses pairing, contract
+established, Akson enters time-uncertain recovery. It refuses pairing, contract
 acceptance, new work orders, automatic policy, and managed certificate renewal
 until an operator restores trusted time and acknowledges the audit event.
 Restart cannot extend an already issued TTL.
@@ -809,7 +809,7 @@ The v1 network profile is:
 - TLS session tickets/resumption disabled in v1;
 - no plaintext, anonymous, TLS-version, or certificate-validation fallback;
 - no automatic redirect to a different origin;
-- TLS termination inside <code>axond</code> by default.
+- TLS termination inside <code>aksond</code> by default.
 
 A deployment that terminates TLS in a proxy has added that proxy to its
 plaintext trusted computing base and cannot describe the hop as endpoint
@@ -827,7 +827,7 @@ or asynchronous store-and-forward.
 It also does not provide NAT traversal, automatic router changes, or a hidden
 rendezvous service. The receiving A2A server must be reachable through a local
 network, a user-managed private network such as WireGuard, or an explicitly
-configured public HTTPS address. Axon still uses mTLS over that network. A
+configured public HTTPS address. Akson still uses mTLS over that network. A
 connection can be directional: the client-only requester need not accept
 inbound traffic to poll the Task and send follow-up Messages. Both peers need
 reachable servers only when both must originate new tasks.
@@ -858,7 +858,7 @@ direct Message receipt defined in Section 14.5.
 
 Delivery is at least once with idempotent processing:
 
-- the required Axon delivery extension—not base A2A—defines
+- the required Akson delivery extension—not base A2A—defines
   durable-before-response and retry behavior;
 - same peer, Message identifier, body digest, interface/tenant, A2A version,
   extension set, content type, and HTTP method returns the byte-equivalent
@@ -881,7 +881,7 @@ commitment is not exported as a public content hash.
 
 ### 9.3 Ordering and state conflicts
 
-Axon does not require a global message order. Each Task has one local
+Akson does not require a global message order. Each Task has one local
 compare-and-swap contract head. A new revision is accepted only when its
 predecessor equals that head and the Task is awaiting input. A signed
 acceptance atomically locks that exact head before a work order can be issued.
@@ -914,7 +914,7 @@ close or revoke
 A production provider must demonstrate:
 
 - mandatory end-to-end encryption, including same-host paths;
-- authenticated binding from session membership to the Axon peer identity;
+- authenticated binding from session membership to the Akson peer identity;
 - no weaker-suite fallback;
 - replay rejection and stable application identifiers;
 - exact durability semantics proven by crash tests;
@@ -926,33 +926,33 @@ A production provider must demonstrate:
 - rate limits, backpressure, reproducible builds, and a vulnerability process.
 
 If a relay can read content, it is an endpoint/proxy deployment, not an
-end-to-end Axon relay.
+end-to-end Akson relay.
 
-For MLS, Axon uses an audited RFC 9420 implementation and a reviewed binding; it
+For MLS, Akson uses an audited RFC 9420 implementation and a reviewed binding; it
 does not implement TreeKEM or define a new group cryptosystem. If SLIM is used,
 MLS, TLS verification, authenticated identities, stable deduplication, and the
 advertised durability class are mandatory. Insecure or MLS-disabled modes are
-not compatible with the Axon profile. Nested MLS and two competing membership
+not compatible with the Akson profile. Nested MLS and two competing membership
 states are prohibited.
 
 ## 10. A2A profile and task contract
 
 ### 10.1 Standard A2A objects
 
-Axon uses:
+Akson uses:
 
-- Agent Card for supported skills, endpoint, bindings, and Axon extension
+- Agent Card for supported skills, endpoint, bindings, and Akson extension
   advertisement;
 - Message and Part for conversation and structured task input;
 - Task and its standard lifecycle for tracked work, with durability added only
-  by the required Axon delivery extension;
+  by the required Akson delivery extension;
 - Artifact and Part for outputs and evidence;
 - standard A2A operations and error semantics.
 
 Agent Card skills are advertisements, never grants. The card is fetched through
 the authenticated connection, signed with the standard A2A
 AgentCardSignature/JWS mechanism, and its digest and verification key are
-pinned. Axon does not invent another Agent Card signature field. A
+pinned. Akson does not invent another Agent Card signature field. A
 <code>jku</code> or other key URL is never fetched automatically; the
 verification key comes from pairing or a locally configured trust domain. A
 card change cannot widen standing local policy without review.
@@ -976,7 +976,7 @@ The Agent Card advertises:
   AgentInterface;
 - an A2A MutualTlsSecurityScheme and a mandatory security requirement for that
   interface;
-- each safety-critical Axon AgentExtension URI with
+- each safety-critical Akson AgentExtension URI with
   <code>required: true</code>;
 - <code>streaming: false</code> and
   <code>pushNotifications: false</code>.
@@ -992,8 +992,8 @@ Message. Missing, extra-conflicting, or unsupported required extensions fail
 before state lookup, Task creation, or content processing.
 
 Responses echo the activated <code>A2A-Extensions</code> set. Every status
-Message or Artifact containing Axon data lists the contributing URI in its
-standard <code>extensions</code> field. An Axon client never assumes extension
+Message or Artifact containing Akson data lists the contributing URI in its
+standard <code>extensions</code> field. An Akson client never assumes extension
 semantics from metadata whose URI was not successfully negotiated.
 
 The initiating SendMessage request sets
@@ -1011,15 +1011,15 @@ Signed accept, reject, and revision-request records are delivered in the
 agent-role Message attached to Task status/history and become visible through
 GetTask polling:
 
-| Axon event | A2A state/behavior |
+| Akson event | A2A state/behavior |
 |---|---|
-| durable inert proposal | <code>TASK_STATE_SUBMITTED</code> under the required Axon delivery extension |
+| durable inert proposal | <code>TASK_STATE_SUBMITTED</code> under the required Akson delivery extension |
 | accepted, awaiting work-order claim | remains <code>TASK_STATE_SUBMITTED</code> with signed accept Message |
 | revision requested | <code>TASK_STATE_INPUT_REQUIRED</code> with signed request Message |
 | locally rejected or proposal’s signed expiry reached | <code>TASK_STATE_REJECTED</code> |
 | authorized attempt actually running | <code>TASK_STATE_WORKING</code> |
 | result manifest, required slots, and outputs durably committed | <code>TASK_STATE_COMPLETED</code> |
-| failed or ambiguous attempt | <code>TASK_STATE_FAILED</code> with a non-sensitive Axon reason |
+| failed or ambiguous attempt | <code>TASK_STATE_FAILED</code> with a non-sensitive Akson reason |
 
 <code>TASK_STATE_AUTH_REQUIRED</code> is disabled in v1; local approval is not
 a credential request to the client. Without an exact
@@ -1028,12 +1028,12 @@ TaskNotCancelableError rather than accepting and ignoring the request.
 
 GetTask, ListTasks, CancelTask, and outcome references are scoped to the
 authenticated paired origin. A peer cannot enumerate or address another peer’s
-Tasks even if it learns an identifier; Axon returns the standard not-found
+Tasks even if it learns an identifier; Akson returns the standard not-found
 shape without creating an ownership oracle.
 
 ### 10.2 Contract revision
 
-The contract is a versioned Axon structured-data Part carried by the initiating
+The contract is a versioned Akson structured-data Part carried by the initiating
 A2A Message. The receiving endpoint associates it with the standard Task that
 the endpoint creates. It contains:
 
@@ -1152,7 +1152,7 @@ An absent or unknown component denies that operation.
 
 A2A Task state reports producer-side task progress. In particular:
 
-- submitted means durably inert only because the required Axon passive-delivery
+- submitted means durably inert only because the required Akson passive-delivery
   extension adds that stronger behavior to A2A;
 - working is reported only after a local work order is claimed and a worker
   actually starts;
@@ -1162,7 +1162,7 @@ A2A Task state reports producer-side task progress. In particular:
 - the exact failed, rejected, canceled, input-required, authentication, and
   cancellation behavior is the matrix in Section 10.1.
 
-Axon does not overload A2A completion to mean verification or business
+Akson does not overload A2A completion to mean verification or business
 acceptance. It separately records:
 
 ~~~text
@@ -1174,7 +1174,7 @@ outcome: accepted | rejected | disputed
 ~~~
 
 The Phase 0 profile contains an exact mapping to the pinned A2A version and
-conformance vectors. If a standard task-state name changes, Axon updates the
+conformance vectors. If a standard task-state name changes, Akson updates the
 profile instead of creating a competing lifecycle.
 
 ### 10.5 Code-review v1 profile
@@ -1195,7 +1195,7 @@ The first task profile uses existing representations:
 Git object IDs are unverified claims until a named repository or bundle
 verifier reconstructs and checks the objects. V1 does not make that claim. It
 records the Git hash algorithm and covers every transported output Artifact
-with a SHA-256 digest for Axon/in-toto integrity validation.
+with a SHA-256 digest for Akson/in-toto integrity validation.
 
 Git binary patches are rejected in text-only v1; <code>--binary</code> is not an
 accepted profile. A future binary profile treats its bytes as inert input and
@@ -1227,14 +1227,14 @@ original.
 
 ### 11.2 SVG and diagram source
 
-SVG rendering is not and has never been an Axon feature.
+SVG rendering is not and has never been an Akson feature.
 
 SVG output is transported only as bounded UTF-8 source text using standard A2A
 Part/Artifact fields. If preserving the exact artifact matters, its registered
-<code>image/svg+xml</code> media type is retained, but the Axon UI still shows
+<code>image/svg+xml</code> media type is retained, but the Akson UI still shows
 escaped source or offers an explicit save operation.
 
-Axon MUST NOT:
+Akson MUST NOT:
 
 - parse SVG into a browser or XML DOM;
 - execute or sanitize-and-render it;
@@ -1258,7 +1258,7 @@ decoded, previewed, indexed, executed, or passed to a model.
 
 Arbitrary binary and large-artifact transfer do not ship in v1. A later feature
 must select an established, independently reviewed container or secure-session
-facility. Axon will not design an <code>aes-*-chunks-v1</code> format or any
+facility. Akson will not design an <code>aes-*-chunks-v1</code> format or any
 other streaming AEAD construction.
 
 Filenames are display labels, not paths. They are length-bounded, normalized
@@ -1301,7 +1301,7 @@ The risk card always expands the effective vector.
 
 ### 12.2 Roles
 
-Axon keeps four roles distinct:
+Akson keeps four roles distinct:
 
 - request origin: authenticated peer plus exact A2A task/message and contract
   digest;
@@ -1404,7 +1404,7 @@ profile; Phase 1 cannot substitute an ordinary subprocess, working-directory
 change, or broadly privileged container.
 
 If the operating system cannot provide the selected isolation profile,
-execution fails closed. <code>axon doctor</code> reports every relevant kernel,
+execution fails closed. <code>akson doctor</code> reports every relevant kernel,
 keystore, socket, namespace, and sandbox capability.
 
 The personal profile’s same-user limitations remain visible: a malicious
@@ -1431,7 +1431,7 @@ Credentials remain in the broker.
 
 If the provider documents an idempotency facility with the required semantics,
 an exact retry may reuse its key. Otherwise, loss of a response after possible
-transmission marks the processor sub-attempt <code>ambiguous</code> and Axon
+transmission marks the processor sub-attempt <code>ambiguous</code> and Akson
 does not retry automatically. The operator may authorize a new attempt after
 seeing the possible duplicate disclosure and cost.
 
@@ -1534,13 +1534,13 @@ evidence failure produces <code>TASK_STATE_FAILED</code>, never a partial
 completed result.
 
 The requester outcome binds the canonical result-manifest digest. A “bundle
-digest” anywhere in Axon means this precisely defined digest, not an archive’s
+digest” anywhere in Akson means this precisely defined digest, not an archive’s
 incidental byte layout.
 
 ### 14.2 Evidence model
 
 Evidence uses a pinned version of the in-toto Attestation Framework in DSSE
-envelopes. Axon defines only the minimal predicate semantics required for its
+envelopes. Akson defines only the minimal predicate semantics required for its
 task and authorization facts.
 
 The v1 profile pins in-toto Statement v1 and DSSE v1. In-toto attestations use
@@ -1580,7 +1580,7 @@ V1 validates only objective integrity and provenance facts:
 These checks do not establish that the code review is correct. The UI says
 “Independent verifier: none” unless a separately trusted named verifier
 actually evaluated the exact outputs. The v1 command is
-<code>axon evidence validate</code>; “verified review” is reserved for the
+<code>akson evidence validate</code>; “verified review” is reserved for the
 later semantic-verifier path.
 
 SLSA Provenance is emitted only when the operation actually matches its build
@@ -1588,7 +1588,7 @@ provenance model. Merely serializing SLSA JSON does not grant a SLSA level.
 
 SARIF is an output report, not an authority record. It is parsed as hostile
 input with strict limits. Its original bytes are preserved and their SHA-256
-digest is covered by an attestation; SARIF is not assumed to sign itself. Axon
+digest is covered by an attestation; SARIF is not assumed to sign itself. Akson
 never fetches a SARIF <code>$schema</code>, artifact URI, help URI, or external
 property reference.
 
@@ -1660,7 +1660,7 @@ requester therefore sends the signed outcome in a new task-less SendMessage:
 
 - it uses the same A2A Context identifier;
 - <code>referenceTaskIds</code> contains the completed Task identifier;
-- it carries the signed Axon outcome Part;
+- it carries the signed Akson outcome Part;
 - it does not set <code>taskId</code>;
 - the producer durably records it and returns a fixed, direct Message receipt
   generated without a model or tool.
@@ -1689,7 +1689,7 @@ archive.
 
 Sensitive columns and blobs are encrypted before database persistence with an
 audited envelope-encryption library and a key protected by the OS keystore or
-configured HSM. Axon adopts the library’s reviewed ciphertext format; it does
+configured HSM. Akson adopts the library’s reviewed ciphertext format; it does
 not create one. WAL files, temporary files, crash dumps, and backups must not
 contain plaintext task bodies.
 
@@ -1737,7 +1737,7 @@ write-ahead protocol that cannot perform an unrecorded effect.
 ### 15.4 Telemetry
 
 Telemetry is disabled by default. When enabled it uses OpenTelemetry and a
-public low-cardinality <code>axon.*</code> attribute schema. It never exports
+public low-cardinality <code>akson.*</code> attribute schema. It never exports
 task objectives, prompts, content, artifact bytes, filenames, host paths,
 policy details, peer-provided trace parents, credentials, or keys.
 
@@ -1769,20 +1769,20 @@ The supported backup format excludes the live external checkpoint. An official
 restore therefore enters recovery, invalidates pending/claimed work and
 automatic policy, and requires operator review and re-pairing when identity
 freshness cannot be established. If a platform keystore cannot protect an
-independent generation, Axon reports rollback detection as unavailable and
+independent generation, Akson reports rollback detection as unavailable and
 does not support restoration of reusable authority on that profile.
 
 ## 16. Public interfaces and adapters
 
 ### 16.1 Network interface
 
-The canonical agent network interface is A2A. Axon publishes an Agent Card and
+The canonical agent network interface is A2A. Akson publishes an Agent Card and
 implements only the operations required by the pinned profile. MCP may be a
-convenience adapter for a local agent, but it is not Axon’s network
+convenience adapter for a local agent, but it is not Akson’s network
 interoperability or authority model.
 
 A2A parsing and validation are independent of any particular official SDK.
-Axon tests with at least two SDKs and preserves unknown standard fields when
+Akson tests with at least two SDKs and preserves unknown standard fields when
 safe.
 
 ### 16.2 Local interfaces
@@ -1835,20 +1835,20 @@ count.
 The initial command groups are:
 
 ~~~text
-axon init
-axon demo review
-axon serve
-axon endpoint check
-axon pair diagnose
-axon pair create|accept|list|remove
-axon peer show
-axon review
-axon task inbox|show|approve|deny|watch|cancel
-axon outcome accept|reject|dispute
-axon evidence validate|export
-axon processor add|list|test
-axon policy show
-axon doctor
+akson init
+akson demo review
+akson serve
+akson endpoint check
+akson pair diagnose
+akson pair create|accept|list|remove
+akson peer show
+akson review
+akson task inbox|show|approve|deny|watch|cancel
+akson outcome accept|reject|dispute
+akson evidence validate|export
+akson processor add|list|test
+akson policy show
+akson doctor
 ~~~
 
 Phase 2 may add narrowly scoped <code>policy allow|revoke</code> and verifier
@@ -1861,7 +1861,7 @@ until those designs pass their release gates.
 
 The complete secure connection path is open source and self-hostable:
 
-- A2A profile and Axon extensions;
+- A2A profile and Akson extensions;
 - daemon and direct transport;
 - pairing, policy, work-order, worker, and evidence engines;
 - official adapters and generated clients;
@@ -1906,19 +1906,19 @@ The default install has:
 - automatic local database migrations with rollback-tested backups;
 - a health report that separates availability from security posture.
 
-<code>axon doctor</code> reports certificate expiry, unexpected key/card
+<code>akson doctor</code> reports certificate expiry, unexpected key/card
 changes, keystore quality, database encryption, retention, socket exposure,
 processor disclosure, sandbox capabilities, version support, pending recovery,
 and whether any proxy can read plaintext.
 
 ## 18. Versioning and compatibility
 
-A2A, Axon extensions, evidence predicates, policy records, and local APIs are
+A2A, Akson extensions, evidence predicates, policy records, and local APIs are
 versioned independently.
 
 Rules:
 
-- the Agent Card advertises exact required and optional Axon extension
+- the Agent Card advertises exact required and optional Akson extension
   versions;
 - required-version negotiation is authenticated and downgrade-resistant;
 - unsupported required semantics fail before a contract can be accepted;
@@ -1973,13 +1973,13 @@ Gate:
 - unsupported or downgraded security profiles fail closed;
 - receiving every supported A2A object provably invokes no model, tool, file,
   URL, credential, or arbitrary reply;
-- maintainers explicitly approve the small Axon extension surface.
+- maintainers explicitly approve the small Akson extension surface.
 
 ### Phase 1 — Direct evidence-backed code review
 
 Deliver:
 
-- <code>axond</code>, CLI, local inbox/risk card, encrypted SQLite-backed state,
+- <code>aksond</code>, CLI, local inbox/risk card, encrypted SQLite-backed state,
   OS keystore integration, outbox, inbox, dedupe, and audit;
 - personal and isolated profiles;
 - invitation, pair, re-pair, key-change suspension, and removal;
@@ -1994,15 +1994,15 @@ Deliver:
 - signed native Linux packages, user/system services, and the normative worker
   sandbox;
 - export, retention, externally checkpointed official-restore behavior, and
-  <code>axon doctor</code>;
+  <code>akson doctor</code>;
 - maintained OpenCode/local-model and Codex adapters and conformance fixtures;
-- the same-host <code>axon demo review</code> evaluation path.
+- the same-host <code>akson demo review</code> evaluation path.
 
 Gate:
 
 - two independent, directly reachable fresh machines with documented
-  processors already configured complete fresh Axon setup and the full loop in
-  under ten minutes without an Axon account or organization IdP;
+  processors already configured complete fresh Akson setup and the full loop in
+  under ten minutes without an Akson account or organization IdP;
 - the reviewer uses the isolated service profile for the security gate;
 - the same-host evaluation path completes in under five minutes and is visibly
   labeled as lower assurance;
@@ -2091,7 +2091,7 @@ Groups require formal modeling and independent protocol review before release.
 - Cross-peer GetTask/ListTasks/CancelTask/outcome references reveal no Task
   existence or content.
 - Round trips through at least two independent SDKs/adapters.
-- Golden vectors for every Axon schema, canonical digest, DSSE signature, and
+- Golden vectors for every Akson schema, canonical digest, DSSE signature, and
   in-toto statement.
 - Reject duplicate JSON keys, invalid UTF-8, non-I-JSON numbers, unknown
   critical fields, and version downgrade.
@@ -2189,7 +2189,7 @@ Groups require formal modeling and independent protocol review before release.
   session or work-order issuance.
 - Retention and deletion behavior matches the UI and exported policy.
 - Telemetry is off by default and its enabled schema contains no content.
-- Every plaintext proxy and processor appears in <code>axon doctor</code>.
+- Every plaintext proxy and processor appears in <code>akson doctor</code>.
 - Restored state cannot silently resume automatic work.
 
 ### 20.8 Product verification
@@ -2201,7 +2201,7 @@ Groups require formal modeling and independent protocol review before release.
   evidence validation, optional semantic verification, and requester
   acceptance.
 - Two real adapters complete the same code-review fixture.
-- Maintainers dogfood Axon for review of Axon changes before Phase 1 release.
+- Maintainers dogfood Akson for review of Akson changes before Phase 1 release.
 
 ## 21. Decision gates for deferred features
 
@@ -2215,7 +2215,7 @@ A deferred feature enters implementation only when an ADR answers:
 5. What secure failure behavior and downgrade rule apply?
 6. How is the feature self-hosted and interoperable?
 7. What conformance, fuzz, fault, and adversarial tests gate release?
-8. How can an operator disable or remove it without losing base Axon use?
+8. How can an operator disable or remove it without losing base Akson use?
 
 This gate applies especially to relays, MLS groups, directories, rich media,
 large artifacts, secret brokerage, network egress, host apply, delegation,
@@ -2295,7 +2295,7 @@ managed recovery, and public transparency.
 
 ## 23. Final product boundary
 
-Axon is the open secure A2A gateway, local authority boundary, and portable
+Akson is the open secure A2A gateway, local authority boundary, and portable
 evidence loop.
 
 It succeeds by making one difficult path exceptionally clear:
@@ -2312,5 +2312,5 @@ authenticated request
 It does not become outstanding by owning every surrounding layer. Agent
 semantics stay A2A. Direct transport stays TLS. Later group security stays MLS.
 Software findings stay SARIF. Evidence stays DSSE/in-toto. Source formats stay
-Git. SVG stays text. Local authority and honest product UX are where Axon earns
+Git. SVG stays text. Local authority and honest product UX are where Akson earns
 its name.

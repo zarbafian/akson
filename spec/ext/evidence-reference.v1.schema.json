@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/evidence-reference/v1/schema.json",
-  "title": "Axon evidence reference v1 (design §3.2): a pointer to one DSSE evidence envelope by exact bytes and signer",
+  "$id": "https://akson.invalid/ext/evidence-reference/v1/schema.json",
+  "title": "Akson evidence reference v1 (design §3.2): a pointer to one DSSE evidence envelope by exact bytes and signer",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "role", "payload_type", "byte_length", "sha256", "signer_keyid"],
@@ -22,8 +22,8 @@
     "b64url32": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
     "evidencePayloadType": {
       "type": "string",
-      "description": "Evidence is an in-toto attestation or an Axon DSSE statement (design §14.2); arbitrary media types cannot be labeled evidence.",
-      "pattern": "^(application/vnd\\.in-toto\\+json|application/vnd\\.axon-dev\\.[a-z0-9-]+\\.v[0-9]+\\+json)$"
+      "description": "Evidence is an in-toto attestation or an Akson DSSE statement (design §14.2); arbitrary media types cannot be labeled evidence.",
+      "pattern": "^(application/vnd\\.in-toto\\+json|application/vnd\\.akson-dev\\.[a-z0-9-]+\\.v[0-9]+\\+json)$"
     }
   }
 }

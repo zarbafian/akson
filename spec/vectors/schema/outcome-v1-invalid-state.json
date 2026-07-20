@@ -14,7 +14,7 @@
       "result_manifest_digest": "f0261aef49102a729dc38127501b2d7d6bee890ba02be5e490dbc9dfee63ba2c",
       "state": "done",
       "requester": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "requester.example"
       },
       "signed_at": "2026-07-17T12:00:00Z"

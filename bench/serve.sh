@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start an axon endpoint for the bench under a delegated cgroup. For the performer,
+# Start an akson endpoint for the bench under a delegated cgroup. For the performer,
 # configure a processor for every model back-end whose API key is present, and run
 # the adapter selected by PROVIDER.
 #
@@ -38,39 +38,39 @@ case "$ROLE" in
   bob)       AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444; WORKER=1 ;;
   *) echo "ROLE must be requester|performer|alice|bob" >&2; exit 2 ;;
 esac
-DATA="$HOME/.axon-bench-$ROLE"
-UNIT="axon-$ROLE"
+DATA="$HOME/.akson-bench-$ROLE"
+UNIT="akson-$ROLE"
 
 # The worker command for the selected provider (runs directly, no shell, under the
 # strict adapter seccomp profile). The processor id == the provider name.
 worker_exec() {
   case "$1" in
-    openai)    echo "$BIN/axon-adapter-openai --processor openai --model $OPENAI_MODEL" ;;
-    anthropic) echo "$BIN/axon-adapter-anthropic --processor anthropic --model $ANTHROPIC_MODEL" ;;
-    gemini)    echo "$BIN/axon-adapter-gemini --processor gemini" ;;
+    openai)    echo "$BIN/akson-adapter-openai --processor openai --model $OPENAI_MODEL" ;;
+    anthropic) echo "$BIN/akson-adapter-anthropic --processor anthropic --model $ANTHROPIC_MODEL" ;;
+    gemini)    echo "$BIN/akson-adapter-gemini --processor gemini" ;;
     *) echo "unknown PROVIDER '$1' (openai|anthropic|gemini)" >&2; exit 2 ;;
   esac
 }
 
 ENV=(
-  "--setenv=AXON_DATA_DIR=$DATA"
-  "--setenv=AXON_ISSUER=$ISSUER"
-  "--setenv=AXON_AGENT=$AGENT"
-  "--setenv=AXON_INTERFACE_URL=https://$SELF_IP:$RECV/a2a"
-  "--setenv=AXON_RECEIVE_ADDR=$SELF_IP:$RECV"
-  "--setenv=AXON_PAIR_ADDR=$SELF_IP:$PAIRP"
+  "--setenv=AKSON_DATA_DIR=$DATA"
+  "--setenv=AKSON_ISSUER=$ISSUER"
+  "--setenv=AKSON_AGENT=$AGENT"
+  "--setenv=AKSON_INTERFACE_URL=https://$SELF_IP:$RECV/a2a"
+  "--setenv=AKSON_RECEIVE_ADDR=$SELF_IP:$RECV"
+  "--setenv=AKSON_PAIR_ADDR=$SELF_IP:$PAIRP"
 )
-[ "$WORKER" = 1 ] && ENV+=("--setenv=AXON_WORKER_EXEC=$(worker_exec "$PROVIDER")")
+[ "$WORKER" = 1 ] && ENV+=("--setenv=AKSON_WORKER_EXEC=$(worker_exec "$PROVIDER")")
 
 echo "==> Starting $UNIT (delegated cgroup) as $ISSUER/$AGENT on $SELF_IP:$RECV${ROLE:+ [provider=$PROVIDER]}…"
 systemctl --user stop "$UNIT" 2>/dev/null || true
 systemctl --user reset-failed "$UNIT" 2>/dev/null || true
-if ! systemd-run --user --unit="$UNIT" -p Delegate=yes --collect "${ENV[@]}" "$BIN/axond" serve; then
+if ! systemd-run --user --unit="$UNIT" -p Delegate=yes --collect "${ENV[@]}" "$BIN/aksond" serve; then
   echo "!! systemd-run --user failed (no user manager / linger?). Try: sudo loginctl enable-linger $USER" >&2
   exit 1
 fi
 
-SOCK="$XDG_RUNTIME_DIR/axon/admin.sock"
+SOCK="$XDG_RUNTIME_DIR/akson/admin.sock"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
 [ -S "$SOCK" ] || { echo "daemon socket did not appear: $SOCK" >&2; exit 1; }
 
@@ -78,18 +78,18 @@ if [ "$WORKER" = 1 ]; then
   # Configure a processor for every back-end whose key is present (`ca` = validate
   # the public endpoint against the CA roots). Re-adding is idempotent.
   if [ -n "${OPENAI_API_KEY:-}" ]; then
-    axon processor add openai openai api.openai.com 443 ca --path /v1/chat/completions --auth bearer
-    axon processor credential openai "$OPENAI_API_KEY"; echo "   + openai ($OPENAI_MODEL)"
+    akson processor add openai openai api.openai.com 443 ca --path /v1/chat/completions --auth bearer
+    akson processor credential openai "$OPENAI_API_KEY"; echo "   + openai ($OPENAI_MODEL)"
   fi
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    axon processor add anthropic anthropic api.anthropic.com 443 ca \
+    akson processor add anthropic anthropic api.anthropic.com 443 ca \
       --path /v1/messages --auth x-api-key --header anthropic-version:2023-06-01
-    axon processor credential anthropic "$ANTHROPIC_API_KEY"; echo "   + anthropic ($ANTHROPIC_MODEL)"
+    akson processor credential anthropic "$ANTHROPIC_API_KEY"; echo "   + anthropic ($ANTHROPIC_MODEL)"
   fi
   if [ -n "${GEMINI_API_KEY:-}" ]; then
-    axon processor add gemini google generativelanguage.googleapis.com 443 ca \
+    akson processor add gemini google generativelanguage.googleapis.com 443 ca \
       --path "/v1beta/models/$GEMINI_MODEL:generateContent" --auth x-goog-api-key
-    axon processor credential gemini "$GEMINI_API_KEY"; echo "   + gemini ($GEMINI_MODEL)"
+    akson processor credential gemini "$GEMINI_API_KEY"; echo "   + gemini ($GEMINI_MODEL)"
   fi
   # Guard: the selected worker's processor must have a key.
   case "$PROVIDER" in
@@ -99,5 +99,5 @@ if [ "$WORKER" = 1 ]; then
   esac
 fi
 
-echo "==> Up:"; axon whoami | grep -E 'agent:|interface:'
+echo "==> Up:"; akson whoami | grep -E 'agent:|interface:'
 echo "   logs: journalctl --user -u $UNIT -f"

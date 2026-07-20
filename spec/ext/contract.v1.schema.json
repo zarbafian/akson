@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/contract/v1/schema.json",
-  "title": "Axon task contract revision v1 (design §10.2)",
+  "$id": "https://akson.invalid/ext/contract/v1/schema.json",
+  "title": "Akson task contract revision v1 (design §10.2)",
   "type": "object",
   "additionalProperties": false,
   "required": [

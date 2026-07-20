@@ -1,6 +1,6 @@
 {
   "performer": "bob",
-  "task_type": "https://axon.invalid/task/code-review/v1",
+  "task_type": "https://akson.invalid/task/code-review/v1",
   "objective": "Review the supplied diff and report any correctness or security issues.",
   "inputs": [
     {

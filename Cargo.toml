@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/axon-proto",
-    "crates/axon-ext",
-    "crates/axon-crypto",
-    "crates/axon-store",
-    "crates/axon-transport",
-    "crates/axon-pairing",
-    "crates/axon-contract",
-    "crates/axon-authority",
-    "crates/axon-sandbox",
-    "crates/axon-worker",
-    "crates/axon-broker",
-    "crates/axon-evidence",
-    "crates/axond",
-    "crates/axon-cli",
-    "crates/axon-adapter-sdk",
+    "crates/akson-proto",
+    "crates/akson-ext",
+    "crates/akson-crypto",
+    "crates/akson-store",
+    "crates/akson-transport",
+    "crates/akson-pairing",
+    "crates/akson-contract",
+    "crates/akson-authority",
+    "crates/akson-sandbox",
+    "crates/akson-worker",
+    "crates/akson-broker",
+    "crates/akson-evidence",
+    "crates/aksond",
+    "crates/akson-cli",
+    "crates/akson-adapter-sdk",
     "adapters/openai",
     "adapters/anthropic",
     "adapters/gemini",
@@ -28,25 +28,25 @@ exclude = ["fuzz"]
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/zarbafian/axon"
+repository = "https://github.com/zarbafian/akson"
 rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal crates
-axon-proto = { path = "crates/axon-proto" }
-axon-ext = { path = "crates/axon-ext" }
-axon-crypto = { path = "crates/axon-crypto" }
-axon-store = { path = "crates/axon-store" }
-axon-transport = { path = "crates/axon-transport" }
-axon-pairing = { path = "crates/axon-pairing" }
-axon-contract = { path = "crates/axon-contract" }
-axon-authority = { path = "crates/axon-authority" }
-axon-sandbox = { path = "crates/axon-sandbox" }
-axon-worker = { path = "crates/axon-worker" }
-axon-broker = { path = "crates/axon-broker" }
-axon-evidence = { path = "crates/axon-evidence" }
-axon-adapter-sdk = { path = "crates/axon-adapter-sdk" }
-axond = { path = "crates/axond" }
+akson-proto = { path = "crates/akson-proto" }
+akson-ext = { path = "crates/akson-ext" }
+akson-crypto = { path = "crates/akson-crypto" }
+akson-store = { path = "crates/akson-store" }
+akson-transport = { path = "crates/akson-transport" }
+akson-pairing = { path = "crates/akson-pairing" }
+akson-contract = { path = "crates/akson-contract" }
+akson-authority = { path = "crates/akson-authority" }
+akson-sandbox = { path = "crates/akson-sandbox" }
+akson-worker = { path = "crates/akson-worker" }
+akson-broker = { path = "crates/akson-broker" }
+akson-evidence = { path = "crates/akson-evidence" }
+akson-adapter-sdk = { path = "crates/akson-adapter-sdk" }
+aksond = { path = "crates/aksond" }
 
 # External (pinned minor versions; exact pins live in Cargo.lock, committed)
 serde = { version = "1.0", features = ["derive"] }

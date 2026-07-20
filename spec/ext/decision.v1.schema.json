@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://axon.invalid/ext/decision/v1/schema.json",
-  "title": "Axon contract decision v1 (design §10.2): performer-signed accept, reject, or revision request",
+  "$id": "https://akson.invalid/ext/decision/v1/schema.json",
+  "title": "Akson contract decision v1 (design §10.2): performer-signed accept, reject, or revision request",
   "type": "object",
   "additionalProperties": false,
   "required": [

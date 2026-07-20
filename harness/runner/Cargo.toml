@@ -1,5 +1,5 @@
 [package]
-name = "axon-harness"
+name = "akson-harness"
 publish = false
 description = "Interop test harness: runnable endpoints for multi-endpoint scenarios (FOSS, container-agnostic)"
 version.workspace = true
@@ -9,15 +9,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "axon-harness"
+name = "akson-harness"
 path = "src/main.rs"
 
 [dependencies]
-axon-crypto = { workspace = true }
-axon-proto = { workspace = true }
-axon-pairing = { workspace = true }
-axon-transport = { workspace = true }
-axon-store = { workspace = true }
+akson-crypto = { workspace = true }
+akson-proto = { workspace = true }
+akson-pairing = { workspace = true }
+akson-transport = { workspace = true }
+akson-store = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 serde_json = { workspace = true }
@@ -26,10 +26,10 @@ time = { workspace = true }
 # The clean-worker end-to-end demo (tests/clean_worker_e2e.rs) composes the M8
 # authority + M9 sandbox/worker pipeline. Test-only, never shipped.
 [dev-dependencies]
-axon-authority = { workspace = true }
-axon-contract = { workspace = true }
-axon-sandbox = { workspace = true }
-axon-worker = { workspace = true }
+akson-authority = { workspace = true }
+akson-contract = { workspace = true }
+akson-sandbox = { workspace = true }
+akson-worker = { workspace = true }
 
 [lints]
 workspace = true

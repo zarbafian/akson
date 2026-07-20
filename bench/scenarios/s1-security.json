@@ -1,5 +1,5 @@
 { "performer": "bob",
-  "task_type": "https://axon.invalid/task/code-review/v1",
+  "task_type": "https://akson.invalid/task/code-review/v1",
   "objective": "Review this diff for correctness or security issues.",
   "inputs": [{ "id": "diff", "media_type": "text/x-diff",
     "text": "--- a/auth.py\n+++ b/auth.py\n@@ -1,5 +1,7 @@\n-def check(token):\n-    return token == SECRET\n+import hmac\n+def check(token):\n+    return hmac.compare_digest(token, SECRET)\n" }],

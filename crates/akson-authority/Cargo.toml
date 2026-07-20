@@ -1,0 +1,23 @@
+[package]
+name = "akson-authority"
+publish = false
+description = "Local policy, capability vector, one-shot work orders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+akson-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+json-canon = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

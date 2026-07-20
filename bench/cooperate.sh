@@ -2,7 +2,7 @@
 # Two agents, two components, many rounds — against REAL models.
 #
 # The hermetic version of this scenario lives in
-# crates/axond/tests/cooperation_e2e.rs, where both "agents" are pure functions.
+# crates/aksond/tests/cooperation_e2e.rs, where both "agents" are pure functions.
 # This is the same six-round loop with a model behind each side's worker:
 #
 #   alice owns the web UI          bob owns the API server
@@ -14,7 +14,7 @@
 #     6. bob   → alice confirm  "fixed — re-check against the shape"
 #
 # Round N+1's task inputs are the bytes round N delivered, read back with
-# `axon task output`. Nothing else crosses: neither side ever sees the other's
+# `akson task output`. Nothing else crosses: neither side ever sees the other's
 # source, only the signed result of a delegated task.
 #
 # Unlike run-bench.sh this needs BOTH hosts to be performers — each must have a
@@ -29,10 +29,10 @@ ALICE_SSH="${ALICE_SSH:?ssh target for alice (the web-UI agent)}"
 BOB_SSH="${BOB_SSH:?ssh target for bob (the API agent)}"
 PROCESSOR="${PROCESSOR:-openai}"
 
-SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/axon-coop-%r@%h:%p" -o ControlPersist=180)
-PRE='export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; export PATH=$HOME/.cargo/bin:$HOME/axon/target/release:$PATH'
-alice() { ssh "${SSHOPTS[@]}" "$ALICE_SSH" "$PRE; axon $*"; }
-bob()   { ssh "${SSHOPTS[@]}" "$BOB_SSH"   "$PRE; axon $*"; }
+SSHOPTS=(-o ControlMaster=auto -o ControlPath="$HOME/.ssh/akson-coop-%r@%h:%p" -o ControlPersist=180)
+PRE='export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; export PATH=$HOME/.cargo/bin:$HOME/akson/target/release:$PATH'
+alice() { ssh "${SSHOPTS[@]}" "$ALICE_SSH" "$PRE; akson $*"; }
+bob()   { ssh "${SSHOPTS[@]}" "$BOB_SSH"   "$PRE; akson $*"; }
 ssh_of() { case "$1" in alice) echo "$ALICE_SSH" ;; bob) echo "$BOB_SSH" ;; esac; }
 
 # One full exchange. Echoes the response bytes the requester ends up holding —
@@ -44,17 +44,17 @@ round() { # round <n> <requester> <performer> <objective> <input-json>
   # from there — the private key never leaves it.
   jq -nc --arg p "$perf" --arg o "$objective" --arg i "$input" '{
     performer: $p,
-    task_type: "https://axon.invalid/task/component-change/v1",
+    task_type: "https://akson.invalid/task/component-change/v1",
     objective: $o,
     inputs: [{ id: "context", media_type: "application/json", text: $i }],
     deliverables: [{ role: "response", media_type: "application/json" }],
     capabilities: ["respond", "read_supplied_inputs", "processor_use"],
     deadline: "2030-01-01T00:00:00Z",
     max_response_bytes: 8192
-  }' | ssh "${SSHOPTS[@]}" "$(ssh_of "$req")" "cat > /tmp/axon-coop-task.json"
+  }' | ssh "${SSHOPTS[@]}" "$(ssh_of "$req")" "cat > /tmp/akson-coop-task.json"
 
   local id
-  id=$("$req" task send /tmp/axon-coop-task.json | grep -oE 'task-[0-9A-Za-z_-]+' | head -1)
+  id=$("$req" task send /tmp/akson-coop-task.json | grep -oE 'task-[0-9A-Za-z_-]+' | head -1)
   [ -n "$id" ] || { echo "round $n: no task id" >&2; exit 1; }
 
   # The performing side's operator approves, granting processor_use for this one

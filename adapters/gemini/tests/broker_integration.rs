@@ -11,7 +11,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::Command;
 
-use axon_sandbox::broker_socketpair;
+use akson_sandbox::broker_socketpair;
 use sha2::{Digest, Sha256};
 
 fn stage_input(dir: &std::path::Path, id: &str, bytes: &[u8]) {
@@ -28,7 +28,7 @@ fn stage_input(dir: &std::path::Path, id: &str, bytes: &[u8]) {
 
 #[test]
 fn the_adapter_reviews_an_input_via_a_brokered_generate_call() {
-    let tmp = std::env::temp_dir().join(format!("axon-gemini-it-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("akson-gemini-it-{}", std::process::id()));
     let input_root = tmp.join("inputs");
     let output_root = tmp.join("output");
     std::fs::create_dir_all(&output_root).unwrap();
@@ -37,11 +37,11 @@ fn the_adapter_reviews_an_input_via_a_brokered_generate_call() {
     let (worker_end, daemon_end) = broker_socketpair().unwrap();
     let mock = std::thread::spawn(move || mock_daemon(daemon_end));
 
-    let status = Command::new(env!("CARGO_BIN_EXE_axon-adapter-gemini"))
+    let status = Command::new(env!("CARGO_BIN_EXE_akson-adapter-gemini"))
         .args(["--processor", "gemini", "--max-tokens", "256"])
-        .env("AXON_INPUT_ROOT", &input_root)
-        .env("AXON_OUTPUT_ROOT", &output_root)
-        .env("AXON_BROKER_FD", worker_end.as_raw_fd().to_string())
+        .env("AKSON_INPUT_ROOT", &input_root)
+        .env("AKSON_OUTPUT_ROOT", &output_root)
+        .env("AKSON_BROKER_FD", worker_end.as_raw_fd().to_string())
         .status()
         .expect("spawn adapter");
     drop(worker_end);
@@ -70,7 +70,7 @@ fn the_adapter_reviews_an_input_via_a_brokered_generate_call() {
 
 #[test]
 fn the_adapter_emits_validated_sarif_as_an_artifact() {
-    let tmp = std::env::temp_dir().join(format!("axon-gemini-sarif-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("akson-gemini-sarif-{}", std::process::id()));
     let input_root = tmp.join("inputs");
     let output_root = tmp.join("output");
     std::fs::create_dir_all(&output_root).unwrap();
@@ -81,11 +81,11 @@ fn the_adapter_emits_validated_sarif_as_an_artifact() {
     let sarif_owned = sarif.to_owned();
     let mock = std::thread::spawn(move || mock_daemon_returning(daemon_end, &sarif_owned));
 
-    let status = Command::new(env!("CARGO_BIN_EXE_axon-adapter-gemini"))
+    let status = Command::new(env!("CARGO_BIN_EXE_akson-adapter-gemini"))
         .args(["--processor", "gemini", "--sarif"])
-        .env("AXON_INPUT_ROOT", &input_root)
-        .env("AXON_OUTPUT_ROOT", &output_root)
-        .env("AXON_BROKER_FD", worker_end.as_raw_fd().to_string())
+        .env("AKSON_INPUT_ROOT", &input_root)
+        .env("AKSON_OUTPUT_ROOT", &output_root)
+        .env("AKSON_BROKER_FD", worker_end.as_raw_fd().to_string())
         .status()
         .expect("spawn adapter");
     drop(worker_end);

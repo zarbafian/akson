@@ -1,13 +1,13 @@
 # Contributing
 
-Thanks for your interest. Axon is early — the fastest way to help is to read
+Thanks for your interest. Akson is early — the fastest way to help is to read
 the [design](design/2026-07-16-threads-enterprise-agent-communication.md) and
 [implementation plan](design/2026-07-16-implementation-plan.md), then pick up
 a milestone task or file a focused issue.
 
 ## Ground rules
 
-- **Standards first.** Don't add an Axon-specific format when an established
+- **Standards first.** Don't add an Akson-specific format when an established
   one fits (design §3). New wire fields need an ADR (design §3.1).
 - **Fail closed.** Missing, malformed, or downgraded state resolves to no
   effect — never a warning-and-continue path.

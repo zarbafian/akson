@@ -12,7 +12,7 @@ reviewed TLS, X.509, ... libraries."
 
 `rustls` is the clear TLS choice (memory-safe, TLS 1.3, widely deployed). It
 requires a `CryptoProvider`, and the mature ones — `aws-lc-rs` (default) and
-`ring` — are C/assembly. The rest of Axon's crypto path (Ed25519 signing via
+`ring` — are C/assembly. The rest of Akson's crypto path (Ed25519 signing via
 `ed25519-dalek`, sealing via RustCrypto `chacha20poly1305`) is deliberately
 pure Rust with no C.
 
@@ -51,7 +51,7 @@ certificate in pure Rust; the self-signature is verified in tests.
   issuer==subject, self-signature checks out under the endpoint key). Closes
   the M3-deferred "self-issued X.509 endpoint certs" item.
 - The rustls server/client wiring (mTLS, cert pinning, the §9.1 profile) lands
-  in `axon-transport` (M5) on this provider.
+  in `akson-transport` (M5) on this provider.
 - The provider choice is revisitable at the `CryptoProvider` seam without
   touching endpoint-cert generation or app-layer crypto.
 - No golden vector: certificate bytes depend on wall-clock validity, so tests

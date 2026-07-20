@@ -10,13 +10,13 @@ Node A runs Codex; node B runs a Codex *worker*. A delegates a review to B:
 
 ```text
 # node A (requester): a Codex session delegates — nothing sandboxed here
-axon task send review.json           # -> task-<id>, then: axon task outcomes
+akson task send review.json           # -> task-<id>, then: akson task outcomes
 
 # node B (performer): the approved worker IS codex, run confined
-AXON_WORKER_CMD='axon-adapter-codex --input diff'   # wraps `codex exec`
+AKSON_WORKER_CMD='akson-adapter-codex --input diff'   # wraps `codex exec`
 ```
 
-`axon-adapter-codex` reads the approved diff from `/inputs`, runs `codex exec`
+`akson-adapter-codex` reads the approved diff from `/inputs`, runs `codex exec`
 non-interactively to review it, and writes the review to `/output/response` — the
 same contract every adapter meets (§16.3), but the "worker" is a full agent instead
 of a single model call.
@@ -69,11 +69,11 @@ namespace-level seal and all broker gates remain. **This is the decision to make
 ## Increments
 
 1. **Requester harness (works today, no decision needed).** A Codex/herdr session
-   delegates a review via `axon task send`; the performer uses an existing model
+   delegates a review via `akson task send`; the performer uses an existing model
    adapter. This is exactly "Codex on A sends a task to Claude on B" and needs only a
    thin `delegate` helper + an `AGENTS.md` recipe. Good first, low-risk deliverable.
 2. **Codex performer adapter (needs the decision above).** `agent_worker_baseline`
-   seccomp profile + loopback model proxy + `axon-adapter-codex` wrapping `codex
+   seccomp profile + loopback model proxy + `akson-adapter-codex` wrapping `codex
    exec`. The real payoff; where the hard parts live.
 3. **herdr / OpenCode** reuse the same proxy + profile; each is an adapter that
    launches its own CLI against the loopback endpoint.

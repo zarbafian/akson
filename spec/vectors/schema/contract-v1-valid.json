@@ -8,15 +8,15 @@
       "schema_version": 1,
       "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
       "revision": 0,
-      "task_type": "https://axon.invalid/task/code-review/v1",
+      "task_type": "https://akson.invalid/task/code-review/v1",
       "message_id": "msg-0001",
       "context_id": "ctx-0001",
       "requester": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "requester.example"
       },
       "performer": {
-        "issuer": "axon:pairing:demo",
+        "issuer": "akson:pairing:demo",
         "agent": "reviewer.example"
       },
       "objective": "Review the supplied patch for correctness and safety.",
@@ -60,7 +60,7 @@
       "evidence_slots": [
         {
           "slot_id": "execution",
-          "statement_type": "https://axon.invalid/statement/execution/v1",
+          "statement_type": "https://akson.invalid/statement/execution/v1",
           "trust_classes": [
             "self-attested"
           ]
@@ -86,6 +86,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "620e7985d4702b63efac6c214ec1665b25d7777383713e82e404b35c2a248dca"
+    "canonical_sha256": "5aa7afe7a3dd953b5d7ec3871b788eb5b2397fa62a0a2fa7396ec9f61978bcdd"
   }
 }

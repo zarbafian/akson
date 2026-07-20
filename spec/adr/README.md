@@ -1,7 +1,7 @@
 # Architecture decision records
 
 An ADR records one decision with lasting consequences: standards disposition,
-wire formats, library selection, security posture. Axon-specific wire formats
+wire formats, library selection, security posture. Akson-specific wire formats
 additionally must satisfy design §3.1 before shipping in a stable release.
 
 Process:
