@@ -62,6 +62,14 @@ pub enum ControlRequest {
     TaskSent,
     /// List recorded requester outcomes (`axon task outcomes`).
     TaskOutcomes,
+    /// Read a task's output payloads (`axon task output`). Serves whichever side
+    /// this endpoint is: the performer's staged outputs, or the ones a delivered
+    /// result carried. With `role` set, only that output.
+    TaskOutput {
+        task_id: String,
+        #[serde(default)]
+        role: Option<String>,
+    },
     /// Approve a submitted Task: accept it and issue the one-shot work order
     /// (`axon task approve`, admin only). `processor`, when set, additionally grants
     /// `processor_use` bound to that configured processor — the explicit,
@@ -134,7 +142,8 @@ impl ControlRequest {
             ControlRequest::TaskInbox
             | ControlRequest::TaskShow { .. }
             | ControlRequest::TaskSent
-            | ControlRequest::TaskOutcomes => ControlOp::TaskInspect,
+            | ControlRequest::TaskOutcomes
+            | ControlRequest::TaskOutput { .. } => ControlOp::TaskInspect,
             ControlRequest::PeerList => ControlOp::Inspect,
             ControlRequest::PeerConfirm { .. } => ControlOp::Pair,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {

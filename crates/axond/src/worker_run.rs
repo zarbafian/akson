@@ -38,7 +38,7 @@ use crate::broker::run_processor_call;
 use crate::broker_channel::serve_broker_channel;
 use crate::confinement::Confinement;
 use crate::control::Problem;
-use crate::result::{hex_sha256, submit_result, OutputKind, ResultOutput, ResultSubmission};
+use crate::result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 
 /// The response the worker writes goes to the request origin — the v1 invariant
 /// (`send` fixes the contract's `result_recipient`, and `issue` fixes the grant's
@@ -313,8 +313,7 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
                 kind: OutputKind::Response,
                 recipient: REQUEST_ORIGIN.to_owned(),
                 media_type: "text/plain".to_owned(),
-                byte_length: body.len() as u64,
-                sha256: hex_sha256(&body),
+                content: body,
             });
         }
 
@@ -337,8 +336,10 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
             )
         })?;
 
-        // Record the result under the lock, producing the signed manifest — this also
-        // advances the attempt Running → Succeeded.
+        // Record the result under the lock, producing the signed manifest — this
+        // stages the output bytes durably (§14.1) and advances the attempt Running →
+        // Succeeded. The run dir is scratch and is deleted below; from here the
+        // store is where the worker's output lives.
         let submission = ResultSubmission {
             task_id: task_id.to_owned(),
             outputs,
@@ -450,8 +451,7 @@ fn collect_artifacts(
             kind: OutputKind::Artifact,
             recipient: REQUEST_ORIGIN.to_owned(),
             media_type: entry.media_type.clone(),
-            byte_length: bytes.len() as u64,
-            sha256: hex_sha256(&bytes),
+            content: bytes,
         });
     }
     Ok(entries.len())

@@ -373,6 +373,7 @@ dependencies = [
  "axon-store",
  "axon-transport",
  "axon-worker",
+ "base64",
  "bytes",
  "hex",
  "http-body-util",

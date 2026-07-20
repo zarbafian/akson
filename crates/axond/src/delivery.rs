@@ -28,6 +28,10 @@ pub struct DeliveryJob {
     context_id: String,
     message_id: String,
     manifest_envelope: Vec<u8>,
+    /// The staged output payloads, in manifest order — the bytes the manifest
+    /// names. They ride along so the requester ends up holding the result itself,
+    /// not just an attestation about it (§14.1).
+    outputs: Vec<axon_store::TaskOutput>,
     recipient_endpoint: String,
     recipient_fingerprint: String,
 }
@@ -88,11 +92,14 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
         .or_else(|| contract.context_id.clone())
         .unwrap_or_default();
 
+    let outputs = store.list_task_outputs(task_id).map_err(store_problem)?;
+
     Ok(DeliveryJob {
         task_id: task_id.to_owned(),
         context_id,
         message_id: format!("result-{}", &bundle_digest[..bundle_digest.len().min(16)]),
         manifest_envelope,
+        outputs,
         recipient_endpoint: peer.identity.endpoint_id,
         recipient_fingerprint: peer.identity.tls_cert.value,
     })
@@ -163,10 +170,20 @@ fn a2a_result_message(job: &DeliveryJob) -> Result<Vec<u8>, Problem> {
         media_type: DSSE_ENVELOPE_MEDIA_TYPE.to_owned(),
         content: Some(Content::Data(data)),
     };
+    // One raw Part per output, named by its manifest `artifact_id` — that name is
+    // how the requester matches each part to the manifest entry whose digest must
+    // cover it. Raw bytes are base64 in the A2A JSON mapping.
+    let mut parts = vec![manifest_part];
+    parts.extend(job.outputs.iter().map(|o| Part {
+        metadata: None,
+        filename: o.artifact_id.clone(),
+        media_type: o.media_type.clone(),
+        content: Some(Content::Raw(o.payload.clone())),
+    }));
     let message = Message {
         message_id: job.message_id.clone(),
         context_id: job.context_id.clone(),
-        parts: vec![manifest_part],
+        parts,
         ..Default::default()
     };
     serde_json::to_vec(&SendMessageRequest {
@@ -304,6 +321,7 @@ mod tests {
             context_id: "ctx-1".to_owned(),
             message_id: "result-abc".to_owned(),
             manifest_envelope: envelope_bytes,
+            outputs: vec![],
             recipient_endpoint: format!("https://127.0.0.1:{}/a2a", addr.port()),
             recipient_fingerprint: server_cert.fingerprint.value.clone(),
         };

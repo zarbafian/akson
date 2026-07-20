@@ -26,7 +26,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::control::Problem;
-use crate::outcome::finalize_result;
+use crate::outcome::{finalize_result, DeliveredOutput};
 use crate::receive::{dispatch_proposal, DispatchOutcome};
 
 const A2A_MEDIA_TYPE: &str = "application/a2a+json";
@@ -105,7 +105,14 @@ pub fn handle_receive(
     // A delivered result carries a result-manifest envelope, not a proposal —
     // route it to the requester-outcome path (design §14.5).
     if let Some(envelope) = result_manifest_envelope(&message.parts) {
-        return Ok(handle_result(store, config, &envelope, trusted_now_unix));
+        let delivered = delivered_outputs(&message.parts);
+        return Ok(handle_result(
+            store,
+            config,
+            &envelope,
+            &delivered,
+            trusted_now_unix,
+        ));
     }
 
     // Ingress gates + idempotency peek (§9.2).
@@ -163,6 +170,7 @@ fn handle_result(
     store: &Store,
     config: &ReceiveConfig,
     envelope: &Envelope,
+    delivered: &[DeliveredOutput],
     trusted_now_unix: i64,
 ) -> HttpResponse {
     let (Some(outcome_key), Some(task_result_key)) =
@@ -188,6 +196,7 @@ fn handle_result(
         outcome_key,
         task_result_key,
         envelope,
+        delivered,
         &signed_at,
         trusted_now_unix,
     ) {
@@ -209,6 +218,23 @@ fn result_manifest_envelope(parts: &[Part]) -> Option<Envelope> {
         .iter()
         .filter_map(part_envelope)
         .find(|env| env.payload_type == result_type)
+}
+
+/// The output payloads carried alongside a delivered result manifest: every raw
+/// Part, keyed by the `filename` the performer set to the manifest's `artifact_id`.
+/// Nothing is trusted here — `finalize_result` checks each against the signed
+/// manifest before any of it is stored.
+fn delivered_outputs(parts: &[Part]) -> Vec<DeliveredOutput> {
+    parts
+        .iter()
+        .filter_map(|part| match part.content.as_ref()? {
+            Content::Raw(bytes) => Some(DeliveredOutput {
+                artifact_id: part.filename.clone(),
+                bytes: bytes.to_vec(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Parses a Part's DSSE envelope (its media type marks it), if present.

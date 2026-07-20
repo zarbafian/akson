@@ -326,8 +326,23 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         },
         Some("sent") => task_sent(),
         Some("outcomes") => task_outcomes(),
+        Some("output") => match next_arg(args) {
+            Some(id) => {
+                // `--role <role>` narrows to one output; with it, the bytes are
+                // printed bare so the result can be piped straight into the next
+                // step. Without it, every output is listed with its digest.
+                let mut role = None;
+                while let Some(flag) = next_arg(args) {
+                    if flag == "--role" {
+                        role = next_arg(args);
+                    }
+                }
+                task_output(&id, role.as_deref())
+            }
+            None => usage("axon task output <task-id> [--role <role>]"),
+        },
         _ => usage(
-            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|deliver <id>|send <spec>|sent|outcomes}",
+            "axon task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|deliver <id>|send <spec>|sent|outcomes|output <id>}",
         ),
     }
 }
@@ -373,6 +388,41 @@ fn task_outcomes() -> ExitCode {
             o["task_id"].as_str().unwrap_or("?"),
             o["state"].as_str().unwrap_or("?"),
             o["bundle_digest"].as_str().unwrap_or("?"),
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// A task's output payloads (`axon task output`). With `--role`, prints just that
+/// output's bytes — the form an agent pipes into whatever it does next. Without,
+/// lists every output with its manifest digest.
+fn task_output(task_id: &str, role: Option<&str>) -> ExitCode {
+    let result = match call(&ControlRequest::TaskOutput {
+        task_id: task_id.to_owned(),
+        role: role.map(str::to_owned),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let outputs = result["outputs"].as_array().cloned().unwrap_or_default();
+    if outputs.is_empty() {
+        eprintln!("axon: no stored outputs for {task_id}");
+        return ExitCode::from(1);
+    }
+    if role.is_some() {
+        for o in &outputs {
+            print!("{}", o["text"].as_str().unwrap_or_default());
+        }
+        return ExitCode::SUCCESS;
+    }
+    println!("outputs of {task_id} ({}):", outputs.len());
+    for o in &outputs {
+        println!(
+            "  {:<12} {:<24} {} bytes  sha256 {}",
+            o["role"].as_str().unwrap_or("?"),
+            o["media_type"].as_str().unwrap_or("?"),
+            o["byte_length"].as_u64().unwrap_or(0),
+            o["sha256"].as_str().unwrap_or("?"),
         );
     }
     ExitCode::SUCCESS

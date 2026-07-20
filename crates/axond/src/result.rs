@@ -47,6 +47,12 @@ impl OutputKind {
 }
 
 /// One output a worker produced — everything the gate and the manifest need.
+///
+/// The submission carries the *bytes*, not a claimed digest: the daemon derives
+/// `byte_length` and `sha256` for the manifest from `content` and stages those
+/// exact bytes durably before the task completes (§14.1). A worker therefore
+/// cannot attest to a digest for content it never supplied, and a completed task
+/// always has its outputs on hand to deliver.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultOutput {
     pub role: String,
@@ -54,8 +60,36 @@ pub struct ResultOutput {
     pub kind: OutputKind,
     pub recipient: String,
     pub media_type: String,
-    pub byte_length: u64,
-    pub sha256: String,
+    /// Base64 over the local worker socket (§16.2), raw bytes in memory.
+    #[serde(with = "base64_content")]
+    pub content: Vec<u8>,
+}
+
+impl ResultOutput {
+    fn byte_length(&self) -> u64 {
+        self.content.len() as u64
+    }
+
+    fn sha256(&self) -> String {
+        hex_sha256(&self.content)
+    }
+}
+
+/// Base64 (standard alphabet, padded) for an output's bytes, so a large response
+/// crosses the worker socket as a string rather than a JSON array of numbers.
+mod base64_content {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        STANDARD.decode(&text).map_err(serde::de::Error::custom)
+    }
 }
 
 /// A worker's result submission over the narrow worker surface (design §16.2).
@@ -130,7 +164,7 @@ pub fn submit_result(
             channel: o.kind.channel(),
             recipient: o.recipient.clone(),
             media_type: o.media_type.clone(),
-            bytes: o.byte_length,
+            bytes: o.byte_length(),
         })
         .collect();
     gate_outputs(&issued.order.capabilities, &proposed).map_err(|e| Problem {
@@ -178,8 +212,8 @@ pub fn submit_result(
             artifact_id: o.artifact_id.clone(),
             part_index: i as u32,
             media_type: o.media_type.clone(),
-            byte_length: o.byte_length,
-            sha256: o.sha256.clone(),
+            byte_length: o.byte_length(),
+            sha256: o.sha256(),
         })
         .collect();
     let manifest = ResultManifest::assemble(
@@ -204,7 +238,27 @@ pub fn submit_result(
     let envelope_bytes = serde_json::to_vec(&envelope)
         .map_err(|_| problem(500, "internal", "the request could not be processed"))?;
 
-    // 6. Durably complete (staged-then-atomic).
+    // 6. Stage the output bytes, then durably complete (staged-then-atomic).
+    //
+    // §14.1: "the Task moves to COMPLETED only when all referenced bytes and the
+    // manifest commit durably" — so the bytes go in first. A crash between the two
+    // leaves staged bytes for a task that never completed, which is inert; the
+    // reverse (a completed task whose outputs are gone) is what must not happen.
+    for (ordinal, output) in submission.outputs.iter().enumerate() {
+        store
+            .put_task_output(
+                task_id,
+                &output.artifact_id,
+                ordinal as i64,
+                &output.role,
+                &output.media_type,
+                output.byte_length() as i64,
+                &output.sha256(),
+                &output.content,
+                now,
+            )
+            .map_err(store_problem)?;
+    }
     match store
         .complete_attempt_with_result(
             &work_order_id,
@@ -407,6 +461,8 @@ mod tests {
         PurposeKey::from_seed(KeyPurpose::TaskResult, &[5u8; 32])
     }
 
+    /// A `response` output of exactly `bytes` bytes — the length is what the gate
+    /// weighs against `max_response_bytes`.
     fn response(bytes: u64) -> ResultOutput {
         ResultOutput {
             role: "response".to_owned(),
@@ -414,8 +470,7 @@ mod tests {
             kind: OutputKind::Response,
             recipient: "request-origin".to_owned(),
             media_type: "text/plain".to_owned(),
-            byte_length: bytes,
-            sha256: "c".repeat(64),
+            content: vec![b'x'; bytes as usize],
         }
     }
 

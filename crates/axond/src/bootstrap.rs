@@ -291,6 +291,26 @@ impl DaemonState {
                     .collect();
                 Ok(serde_json::json!({ "outcomes": items }))
             }
+            ControlRequest::TaskOutput { task_id, role } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let outputs = store.list_task_outputs(task_id).map_err(|_| internal())?;
+                let items: Vec<_> = outputs
+                    .iter()
+                    .filter(|o| role.as_ref().is_none_or(|r| &o.role == r))
+                    .map(|o| {
+                        serde_json::json!({
+                            "artifact_id": o.artifact_id, "role": o.role,
+                            "media_type": o.media_type, "byte_length": o.byte_length,
+                            "sha256": o.sha256,
+                            // Lossy is right for a viewer: an agent reading a text
+                            // result must not have the whole read fail on one stray
+                            // byte, and `sha256` above is the exact-bytes identity.
+                            "text": String::from_utf8_lossy(&o.payload),
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "task_id": task_id, "outputs": items }))
+            }
             ControlRequest::TaskApprove {
                 task_id,
                 processor,

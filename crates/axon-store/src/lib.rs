@@ -73,6 +73,7 @@ const RESULT_MANIFEST_CONTEXT: &str = "result.manifest";
 const OUTCOME_CONTEXT: &str = "outcome.signed";
 const PROCESSOR_CREDENTIAL_CONTEXT: &str = "processor.credential";
 const TASK_INPUT_CONTEXT: &str = "task.input";
+const TASK_OUTPUT_CONTEXT: &str = "task.output";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -221,6 +222,21 @@ pub struct PeerSummary {
 pub struct TaskInput {
     pub input_id: String,
     pub ordinal: i64,
+    pub media_type: String,
+    pub byte_length: i64,
+    pub sha256: String,
+    pub payload: Vec<u8>,
+}
+
+/// An output payload of a completed task (design §14.1), unsealed — the bytes the
+/// worker produced, with the digest/length the signed result manifest states for
+/// them. Held by the performer (staged before completion) and by the requester
+/// (stored on delivery, after the digest was checked against that manifest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskOutput {
+    pub artifact_id: String,
+    pub ordinal: i64,
+    pub role: String,
     pub media_type: String,
     pub byte_length: i64,
     pub sha256: String,
@@ -1862,6 +1878,79 @@ impl Store {
             });
         }
         Ok(inputs)
+    }
+
+    /// Persists one output payload of a task (design §14.1), sealed at rest.
+    /// Idempotent on `(task_id, artifact_id)`: re-staging or a duplicate delivery
+    /// does not duplicate or overwrite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_task_output(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+        ordinal: i64,
+        role: &str,
+        media_type: &str,
+        byte_length: i64,
+        sha256: &str,
+        payload: &[u8],
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let sealed = self.dek.seal(TASK_OUTPUT_CONTEXT, payload);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO task_outputs
+                 (task_id, artifact_id, ordinal, role, media_type, byte_length, sha256, payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(task_id, artifact_id) DO NOTHING",
+            params![
+                task_id,
+                artifact_id,
+                ordinal,
+                role,
+                media_type,
+                byte_length,
+                sha256,
+                sealed
+            ],
+        )?;
+        audit::append(&tx, now, "task.output_stored", task_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The output payloads of a task, unsealed, in manifest order.
+    pub fn list_task_outputs(&self, task_id: &str) -> Result<Vec<TaskOutput>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT artifact_id, ordinal, role, media_type, byte_length, sha256, payload
+             FROM task_outputs WHERE task_id = ?1 ORDER BY ordinal",
+        )?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+            ))
+        })?;
+        let mut outputs = Vec::new();
+        for row in rows {
+            let (artifact_id, ordinal, role, media_type, byte_length, sha256, sealed) = row?;
+            let payload = self.dek.open(TASK_OUTPUT_CONTEXT, &sealed)?;
+            outputs.push(TaskOutput {
+                artifact_id,
+                ordinal,
+                role,
+                media_type,
+                byte_length,
+                sha256,
+                payload,
+            });
+        }
+        Ok(outputs)
     }
 
     /// Durably records a processor call in `prepared` *before* it is dispatched

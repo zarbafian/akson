@@ -533,8 +533,7 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
                 kind: OutputKind::Response,
                 recipient: "request-origin".to_owned(),
                 media_type: "text/plain".to_owned(),
-                byte_length: 14,
-                sha256: "c".repeat(64),
+                content: b"reviewed: LGTM".to_vec(),
             }],
             evidence: vec![],
             slots: vec![],
@@ -921,8 +920,8 @@ fn performer_manifest(
             artifact_id: "a-1".to_owned(),
             part_index: 0,
             media_type: "text/plain".to_owned(),
-            byte_length: 14,
-            sha256: "d".repeat(64),
+            byte_length: RESPONSE.len() as u64,
+            sha256: hex::encode(Sha256::digest(RESPONSE)),
         }],
         vec![],
         vec![],
@@ -931,19 +930,30 @@ fn performer_manifest(
     manifest.sign(task_result_key).unwrap()
 }
 
-/// An A2A `SendMessageRequest` carrying a result manifest envelope as a Part.
-fn result_message_body(manifest_envelope: &Envelope) -> Vec<u8> {
+/// The response bytes [`performer_manifest`] attests to.
+const RESPONSE: &[u8] = b"reviewed: LGTM";
+
+/// An A2A `SendMessageRequest` carrying a result manifest envelope as a Part,
+/// followed by one raw Part per output the manifest names (§14.1) — each named by
+/// its `artifact_id`, which is how the requester matches bytes to manifest entry.
+fn result_message_body(manifest_envelope: &Envelope, outputs: &[(&str, &[u8])]) -> Vec<u8> {
     let data = serde_json::from_value(serde_json::to_value(manifest_envelope).unwrap()).unwrap();
-    let part = Part {
+    let mut parts = vec![Part {
         metadata: None,
         filename: String::new(),
         media_type: axon_ext::namespace::DSSE_ENVELOPE_MEDIA_TYPE.to_owned(),
         content: Some(Content::Data(data)),
-    };
+    }];
+    parts.extend(outputs.iter().map(|(artifact_id, bytes)| Part {
+        metadata: None,
+        filename: (*artifact_id).to_owned(),
+        media_type: "text/plain".to_owned(),
+        content: Some(Content::Raw(bytes.to_vec())),
+    }));
     let message = Message {
         message_id: "result-1".to_owned(),
         context_id: "ctx-1".to_owned(),
-        parts: vec![part],
+        parts,
         ..Default::default()
     };
     serde_json::to_vec(&SendMessageRequest {
@@ -1045,7 +1055,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
         &performer_tls,
         &performer_cert,
         &requester_cert,
-        result_message_body(&envelope),
+        result_message_body(&envelope, &[("a-1", RESPONSE)]),
     )
     .await;
     assert_eq!(status, 200);
@@ -1409,8 +1419,7 @@ async fn two_daemons_run_the_whole_task_round_trip() {
                 kind: OutputKind::Response,
                 recipient: "request-origin".to_owned(),
                 media_type: "text/plain".to_owned(),
-                byte_length: 14,
-                sha256: "c".repeat(64),
+                content: b"reviewed: LGTM".to_vec(),
             }],
             evidence: vec![],
             slots: vec![],

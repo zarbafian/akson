@@ -281,6 +281,27 @@ CREATE TABLE task_inputs (
 ) STRICT;
 "#;
 
+/// Version 15 (M11): the output payloads of a completed task (design §14.1).
+/// The result manifest reduces each output to its digest, so the bytes live here,
+/// sealed at rest. The performer stages them *before* the attempt completes — the
+/// §14.1 "all referenced bytes and the manifest commit durably" rule, which is what
+/// makes a completed task never partial. The requester stores the same rows on
+/// delivery, once each part's digest has been checked against the signed manifest.
+/// `ordinal` fixes the manifest order; `(task_id, artifact_id)` is unique.
+const V15: &str = r#"
+CREATE TABLE task_outputs (
+    task_id      TEXT NOT NULL,
+    artifact_id  TEXT NOT NULL,
+    ordinal      INTEGER NOT NULL,
+    role         TEXT NOT NULL,
+    media_type   TEXT NOT NULL,
+    byte_length  INTEGER NOT NULL,
+    sha256       TEXT NOT NULL,
+    payload      BLOB NOT NULL,
+    PRIMARY KEY (task_id, artifact_id)
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -298,6 +319,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (12, V12),
     (13, V13),
     (14, V14),
+    (15, V15),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the
