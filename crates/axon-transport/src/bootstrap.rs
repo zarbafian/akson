@@ -14,7 +14,7 @@
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axon_crypto::identity::Fingerprint;
 use axon_pairing::handler::BootstrapMaterial;
@@ -27,14 +27,16 @@ use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
 use hyper::service::service_fn;
 use hyper::{HeaderMap, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-use crate::limits::{CONNECTION_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_CONCURRENT_CONNECTIONS};
+use crate::limits::{
+    BODY_READ_TIMEOUT, HANDSHAKE_TIMEOUT, HEADER_READ_TIMEOUT, MAX_CONCURRENT_CONNECTIONS,
+};
 
 /// Maximum bootstrap request body (design §9.1: limits before allocation). A
 /// signed card + key bindings + proofs is a few KiB; this is a generous cap
@@ -146,15 +148,18 @@ pub async fn serve<L: PairingStore + Send + 'static>(
                 .peer_certificates()
                 .and_then(|certs| certs.first())
                 .map(|cert| Fingerprint::cert_sha256(cert.as_ref()).value);
-            let svc = service_fn(move |req| handle(state.clone(), peer_fp.clone(), req));
-            // A per-connection protocol error is dropped, not fatal. The whole
-            // connection is time-bounded against a slow-loris body/header sender.
+            let svc = service_fn(move |req| {
+                handle(state.clone(), peer_fp.clone(), req, BODY_READ_TIMEOUT)
+            });
+            // A per-connection protocol error is dropped, not fatal. header_read_timeout
+            // bounds each request's head (and re-arms per keep-alive request, so it also
+            // caps idle time between exchanges); the body read is bounded inside `handle`.
             // Structured error logging is deferred to telemetry (design §15.4).
-            let _ = timeout(
-                CONNECTION_TIMEOUT,
-                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), svc),
-            )
-            .await;
+            let _ = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT)
+                .serve_connection(TokioIo::new(tls), svc)
+                .await;
         });
     }
 }
@@ -163,17 +168,21 @@ async fn handle<L: PairingStore + Send>(
     state: Arc<BootstrapState<L>>,
     peer_fp: Option<String>,
     req: Request<Incoming>,
+    body_read_timeout: Duration,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().as_str().to_owned();
     let authorization = header(req.headers(), AUTHORIZATION);
-    // Cap the body before reading it into memory; an oversized body is rejected
-    // (413) rather than allocated (design §9.1).
-    let body = match Limited::new(req.into_body(), MAX_BOOTSTRAP_BODY)
-        .collect()
-        .await
+    // Cap the body before reading it into memory (413 if oversized), and bound the
+    // time to read it so a slow-body sender is cut off (408) (design §9.1).
+    let body = match timeout(
+        body_read_timeout,
+        Limited::new(req.into_body(), MAX_BOOTSTRAP_BODY).collect(),
+    )
+    .await
     {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => return Ok(status(413)),
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(_)) => return Ok(status(413)),
+        Err(_) => return Ok(status(408)),
     };
 
     let now = OffsetDateTime::now_utc();

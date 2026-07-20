@@ -182,6 +182,48 @@ async fn post_body(
     split_response(&raw)
 }
 
+/// Reads exactly ONE HTTP/1.1 response off a still-open (keep-alive) connection:
+/// the header block up to CRLFCRLF, then `Content-Length` body bytes — leaving the
+/// connection ready for the next exchange.
+async fn read_one_response<S>(tls: &mut S) -> (u16, Vec<u8>)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1024];
+    let header_end = loop {
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        let n = tls.read(&mut tmp).await.unwrap();
+        assert!(n > 0, "connection closed before the full response header");
+        buf.extend_from_slice(&tmp[..n]);
+    };
+    let head = String::from_utf8_lossy(&buf[..header_end]);
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("status code");
+    let content_len = head
+        .lines()
+        .find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().parse::<usize>().unwrap())
+        })
+        .unwrap_or(0);
+    let mut body = buf[header_end..].to_vec();
+    while body.len() < content_len {
+        let n = tls.read(&mut tmp).await.unwrap();
+        assert!(n > 0, "connection closed before the full response body");
+        body.extend_from_slice(&tmp[..n]);
+    }
+    (status, body)
+}
+
 /// Reads an HTTP/1.1 response (the request set `Connection: close`, so read to EOF)
 /// into (status code, body bytes).
 fn split_response(raw: &[u8]) -> (u16, Vec<u8>) {
@@ -261,6 +303,80 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
     let submitted = store.lock().unwrap().list_submitted_tasks().unwrap();
     assert_eq!(submitted.len(), 1);
     assert_eq!(submitted[0].task_id, task_id);
+}
+
+#[tokio::test]
+async fn several_exchanges_share_one_keep_alive_connection() {
+    // A paired peer opens ONE mTLS connection and drives several request/response
+    // exchanges over it (HTTP/1.1 keep-alive, no `Connection: close`). The per-request
+    // read deadlines must bound each exchange without tearing down an active session.
+    let peer_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[1u8; 32]);
+    let peer_cert = self_signed_endpoint(&peer_tls_key, "peer", Duration::from_secs(3600)).unwrap();
+    let peer_proposal_key = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32]);
+    let server_tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[2u8; 32]);
+    let server_cert =
+        self_signed_endpoint(&server_tls_key, "axon-endpoint", Duration::from_secs(3600)).unwrap();
+
+    let store = in_memory_store();
+    store
+        .put_peer(&stored_peer(
+            "requester",
+            "https://peer/a2a",
+            &peer_cert.fingerprint,
+        ))
+        .unwrap();
+    store
+        .put_peer_key(
+            &peer_cert.fingerprint.value,
+            "contract-proposal",
+            "requester",
+            "iss",
+            &peer_proposal_key.verifying().to_public_bytes(),
+            NOW,
+        )
+        .unwrap();
+    let store = Arc::new(Mutex::new(store));
+    let addr = spawn_receive(store.clone(), &server_tls_key, &server_cert).await;
+
+    // One pinned mTLS connection, held open across every exchange.
+    let client_cfg = client_config(&peer_tls_key, &peer_cert, &server_cert.fingerprint).unwrap();
+    let connector = TlsConnector::from(Arc::new(client_cfg));
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let mut tls = connector
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+
+    let body = send_message_body(&peer_proposal_key);
+    let digest = content_digest(&body);
+    // Three sequential exchanges on the SAME socket: the first submits the task, each
+    // identical replay returns the same response (idempotent) — real back-and-forth
+    // that must not require reopening the connection.
+    for i in 0..3 {
+        let request = format!(
+            "POST /a2a HTTP/1.1\r\nHost: local\r\nContent-Type: application/a2a+json\r\n\
+             a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tls.write_all(request.as_bytes()).await.unwrap();
+        tls.write_all(&body).await.unwrap();
+        tls.flush().await.unwrap();
+
+        let (status, resp) = read_one_response(&mut tls).await;
+        assert_eq!(
+            status, 200,
+            "exchange {i} over the shared connection is 200"
+        );
+        let task: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
+    }
+
+    // All three were the identical proposal → exactly one task, proving the replays
+    // were seen as the same request over the reused connection (not three tasks).
+    assert_eq!(
+        store.lock().unwrap().list_submitted_tasks().unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test]

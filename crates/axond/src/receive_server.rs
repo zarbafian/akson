@@ -29,14 +29,16 @@ use hyper::body::Incoming;
 use hyper::header::CONTENT_TYPE;
 use hyper::service::service_fn;
 use hyper::{HeaderMap, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-use axon_transport::limits::{CONNECTION_TIMEOUT, HANDSHAKE_TIMEOUT, MAX_CONCURRENT_CONNECTIONS};
+use axon_transport::limits::{
+    BODY_READ_TIMEOUT, HANDSHAKE_TIMEOUT, HEADER_READ_TIMEOUT, MAX_CONCURRENT_CONNECTIONS,
+};
 
 use crate::receive_http::{handle_receive, HttpRequest, ReceiveConfig};
 
@@ -217,21 +219,26 @@ pub async fn serve<R: PeerResolver>(
         state,
         MAX_CONCURRENT_CONNECTIONS,
         HANDSHAKE_TIMEOUT,
-        CONNECTION_TIMEOUT,
+        HEADER_READ_TIMEOUT,
+        BODY_READ_TIMEOUT,
     )
     .await
 }
 
 /// The accept loop with explicit pre-auth ceilings (design §9.1) — [`serve`] calls
 /// this with the shared [`axon_transport::limits`] constants; tests pass small
-/// values to exercise the timeout/cap behaviour quickly.
+/// values to exercise the timeout/cap behaviour quickly. The deadlines are
+/// per-request, so multiple exchanges over one keep-alive connection are unbounded
+/// in count and total duration as long as each exchange is prompt.
+#[allow(clippy::too_many_arguments)]
 async fn serve_with_limits<R: PeerResolver>(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     state: Arc<ReceiveState<R>>,
     max_concurrent: usize,
     handshake_timeout: Duration,
-    connection_timeout: Duration,
+    header_read_timeout: Duration,
+    body_read_timeout: Duration,
 ) -> std::io::Result<()> {
     // Bound concurrent pre-auth connections; a permit is held for the whole
     // connection so a flood cannot spawn unbounded tasks (§9.1).
@@ -258,14 +265,18 @@ async fn serve_with_limits<R: PeerResolver>(
                 .peer_certificates()
                 .and_then(|certs| certs.first())
                 .map(|cert| Fingerprint::cert_sha256(cert.as_ref()).value);
-            let svc = service_fn(move |req| handle(state.clone(), peer_fp.clone(), req));
-            // The whole connection is time-bounded against a slow-loris sender that
-            // stays under the body cap but dribbles bytes.
-            let _ = timeout(
-                connection_timeout,
-                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), svc),
-            )
-            .await;
+            let svc = service_fn(move |req| {
+                handle(state.clone(), peer_fp.clone(), req, body_read_timeout)
+            });
+            // header_read_timeout bounds each request's head and re-arms while a
+            // keep-alive connection waits for the next request, so a slow-header
+            // sender or idle squatter is cut off without capping an active session.
+            // It needs a timer set explicitly.
+            let _ = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_read_timeout)
+                .serve_connection(TokioIo::new(tls), svc)
+                .await;
         });
     }
 }
@@ -274,6 +285,7 @@ async fn handle<R: PeerResolver>(
     state: Arc<ReceiveState<R>>,
     peer_fp: Option<String>,
     req: Request<Incoming>,
+    body_read_timeout: Duration,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().as_str().to_owned();
     let content_type = header(req.headers(), CONTENT_TYPE).unwrap_or_default();
@@ -288,13 +300,17 @@ async fn handle<R: PeerResolver>(
         })
         .unwrap_or_default();
 
-    // Cap the body before reading it into memory (§9.1).
-    let body = match Limited::new(req.into_body(), MAX_RECEIVE_BODY)
-        .collect()
-        .await
+    // Cap the body before reading it into memory (§9.1), and bound the time to read
+    // it so a slow-body sender is cut off (408) rather than holding the connection.
+    let body = match timeout(
+        body_read_timeout,
+        Limited::new(req.into_body(), MAX_RECEIVE_BODY).collect(),
+    )
+    .await
     {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => return Ok(status(413)),
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(_)) => return Ok(status(413)),
+        Err(_) => return Ok(status(408)),
     };
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -637,6 +653,7 @@ mod tests {
             Arc::new(state()),
             8,
             Duration::from_millis(200),
+            Duration::from_secs(5),
             Duration::from_secs(5),
         ));
 
