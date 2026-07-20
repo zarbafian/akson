@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use axon_crypto::cert::EndpointCert;
+use axon_crypto::cert::{check_cert_time_validity, CertTimeError, EndpointCert};
 use axon_crypto::identity::Fingerprint;
 use axon_crypto::keypair::{KeyError, PurposeKey};
 use axon_crypto::purpose::KeyPurpose;
@@ -102,6 +102,24 @@ fn tls12_disabled() -> Result<HandshakeSignatureValid, RustlsError> {
     Err(RustlsError::General("TLS 1.2 is disabled".into()))
 }
 
+/// Refuses a presented certificate that is outside its `notBefore..=notAfter`
+/// window at the handshake instant (design §9.1). Pinning a fingerprint proves
+/// *which* key the peer holds, never that its certificate is still current — so
+/// every verifier applies this in addition to its own identity check, mapping the
+/// failure to the standard rustls certificate-expired alert.
+fn check_cert_time(end_entity: &CertificateDer<'_>, now: UnixTime) -> Result<(), RustlsError> {
+    let now_unix = now.as_secs() as i64;
+    check_cert_time_validity(end_entity.as_ref(), now_unix).map_err(|e| match e {
+        CertTimeError::Unparseable => {
+            RustlsError::InvalidCertificate(CertificateError::BadEncoding)
+        }
+        CertTimeError::NotYetValid { .. } => {
+            RustlsError::InvalidCertificate(CertificateError::NotValidYet)
+        }
+        CertTimeError::Expired { .. } => RustlsError::InvalidCertificate(CertificateError::Expired),
+    })
+}
+
 #[derive(Debug)]
 struct PinnedServerVerifier(Pinned);
 
@@ -112,9 +130,10 @@ impl ServerCertVerifier for PinnedServerVerifier {
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> Result<ServerCertVerified, RustlsError> {
         self.0.check(end_entity)?;
+        check_cert_time(end_entity, now)?;
         Ok(ServerCertVerified::assertion())
     }
 
@@ -153,9 +172,10 @@ impl ClientCertVerifier for PinnedClientVerifier {
         &self,
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> Result<ClientCertVerified, RustlsError> {
         self.0.check(end_entity)?;
+        check_cert_time(end_entity, now)?;
         Ok(ClientCertVerified::assertion())
     }
 
@@ -198,13 +218,15 @@ impl ClientCertVerifier for AcceptAnyClientVerifier {
 
     fn verify_client_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> Result<ClientCertVerified, RustlsError> {
         // Identity is not pinned yet; the fingerprint is captured post-handshake
         // and bound into the pairing transcript. Key possession is enforced by
-        // verify_tls13_signature below.
+        // verify_tls13_signature below. The certificate must still be within its
+        // validity window, though — pairing must not pin an already-expired cert.
+        check_cert_time(end_entity, now)?;
         Ok(ClientCertVerified::assertion())
     }
 

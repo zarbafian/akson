@@ -48,6 +48,45 @@ pub enum CertError {
     Build(String),
 }
 
+/// Why a certificate is not usable at a given instant (design §8.1, §9.1).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CertTimeError {
+    #[error("certificate DER could not be parsed")]
+    Unparseable,
+    #[error("certificate is not valid until {not_before} (now {now})")]
+    NotYetValid { not_before: i64, now: i64 },
+    #[error("certificate expired at {not_after} (now {now})")]
+    Expired { not_after: i64, now: i64 },
+}
+
+/// Checks that `der` is inside its `notBefore..=notAfter` window at `now_unix`
+/// (design §9.1). Pinning a fingerprint proves *which* key a peer is, never that
+/// its certificate is still current — without this, a pinned-but-expired endpoint
+/// certificate would keep authenticating forever. `now_unix` should be the §8.5
+/// trusted time so a rolled-back clock cannot revive an expired certificate.
+pub fn check_cert_time_validity(der: &[u8], now_unix: i64) -> Result<(), CertTimeError> {
+    use x509_cert::certificate::Certificate;
+    use x509_cert::der::Decode;
+
+    let cert = Certificate::from_der(der).map_err(|_| CertTimeError::Unparseable)?;
+    let validity = cert.tbs_certificate.validity;
+    let not_before = validity.not_before.to_unix_duration().as_secs() as i64;
+    let not_after = validity.not_after.to_unix_duration().as_secs() as i64;
+    if now_unix < not_before {
+        return Err(CertTimeError::NotYetValid {
+            not_before,
+            now: now_unix,
+        });
+    }
+    if now_unix > not_after {
+        return Err(CertTimeError::Expired {
+            not_after,
+            now: now_unix,
+        });
+    }
+    Ok(())
+}
+
 /// A generated endpoint certificate.
 #[derive(Debug, Clone)]
 pub struct EndpointCert {
@@ -167,6 +206,47 @@ mod tests {
         assert!(cert
             .fingerprint
             .matches(&Fingerprint::cert_sha256(&cert.der)));
+    }
+
+    #[test]
+    fn cert_time_validity_bounds_the_window_on_both_sides() {
+        let key = tls_key();
+        let cert =
+            self_signed_endpoint(&key, "axon-endpoint", Duration::from_secs(86_400)).unwrap();
+        let parsed = Certificate::from_der(&cert.der).unwrap();
+        let not_before = parsed
+            .tbs_certificate
+            .validity
+            .not_before
+            .to_unix_duration()
+            .as_secs() as i64;
+        let not_after = parsed
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs() as i64;
+
+        // Inside the window (inclusive at both bounds).
+        check_cert_time_validity(&cert.der, not_before).unwrap();
+        check_cert_time_validity(&cert.der, not_before + 3600).unwrap();
+        check_cert_time_validity(&cert.der, not_after).unwrap();
+        // A second past expiry no longer authenticates — pinning proves which key,
+        // never that the certificate is still current.
+        assert!(matches!(
+            check_cert_time_validity(&cert.der, not_after + 1),
+            Err(CertTimeError::Expired { .. })
+        ));
+        // Before it is effective.
+        assert!(matches!(
+            check_cert_time_validity(&cert.der, not_before - 1),
+            Err(CertTimeError::NotYetValid { .. })
+        ));
+        // Garbage DER fails closed.
+        assert!(matches!(
+            check_cert_time_validity(b"not a certificate", not_before),
+            Err(CertTimeError::Unparseable)
+        ));
     }
 
     #[test]

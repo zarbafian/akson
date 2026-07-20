@@ -61,6 +61,66 @@ async fn mtls_round_trip_with_pinning() {
     srv.await.unwrap();
 }
 
+/// A correctly-pinned but EXPIRED certificate must not authenticate, in either
+/// direction. Pinning proves *which* key the peer holds; it says nothing about
+/// whether the certificate is still current, so both verifiers check the validity
+/// window at the handshake instant (design §9.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_certificate_fails_the_handshake_in_both_directions() {
+    let (good_key, good_cert) = endpoint(1);
+    // A certificate that lapses almost immediately.
+    let short_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[9u8; 32]);
+    let short_cert =
+        self_signed_endpoint(&short_key, "axon-endpoint", Duration::from_secs(1)).unwrap();
+    // Let it expire. Every pin below is CORRECT — only the clock rejects it.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // (a) Expired SERVER certificate → the client's verifier refuses.
+    {
+        let server = server_config(&short_key, &short_cert, &good_cert.fingerprint).unwrap();
+        let client = client_config(&good_key, &good_cert, &short_cert.fingerprint).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server));
+        let srv = tokio::spawn(async move {
+            if let Ok((tcp, _)) = listener.accept().await {
+                let _ = acceptor.accept(tcp).await;
+            }
+        });
+        let connector = TlsConnector::from(Arc::new(client));
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        assert!(
+            connector.connect(name, tcp).await.is_err(),
+            "client must reject an expired server certificate it otherwise pins"
+        );
+        srv.await.ok();
+    }
+
+    // (b) Expired CLIENT certificate → the server's verifier refuses.
+    {
+        let server = server_config(&good_key, &good_cert, &short_cert.fingerprint).unwrap();
+        let client = client_config(&short_key, &short_cert, &good_cert.fingerprint).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server));
+        let srv = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            acceptor.accept(tcp).await.is_err()
+        });
+        let connector = TlsConnector::from(Arc::new(client));
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        // The client may or may not observe the alert before its connect resolves;
+        // the authoritative check is that the SERVER refused the handshake.
+        let _ = connector.connect(name, tcp).await;
+        assert!(
+            srv.await.unwrap(),
+            "server must reject an expired client certificate it otherwise pins"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_pin_fails_closed() {
     let (a_key, a_cert) = endpoint(1); // real server
