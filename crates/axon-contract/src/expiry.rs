@@ -91,6 +91,12 @@ pub fn expires_at_unix(contract: &Contract) -> Result<i64, TimestampError> {
     parse(&contract.expires_at, "expires_at")
 }
 
+/// The contract's task deadline (`limits.deadline`) as unix seconds — the requested
+/// completion bound, distinct from the `expires_at` authority window.
+pub fn deadline_unix(contract: &Contract) -> Result<i64, TimestampError> {
+    parse(&contract.limits.deadline, "deadline")
+}
+
 fn parse(s: &str, field: &'static str) -> Result<i64, TimestampError> {
     OffsetDateTime::parse(s, &Rfc3339)
         .map(|dt| dt.unix_timestamp())

@@ -142,8 +142,10 @@ impl<R: PeerResolver> ReceiveState<R> {
 
     /// Resolves the peer, then runs the receive handler — the synchronous core the
     /// async connection handler calls. An unresolvable peer is `403`; a poisoned
-    /// store lock or store error is `500`. `trusted_now_unix` MUST be the §8.5
-    /// trusted time.
+    /// store lock or store error is `500`; a backward clock is `503`. `wall_now_unix`
+    /// is the raw wall clock; the §8.5 trusted time is derived from it here against
+    /// the store's monotonic floor, so authority decisions never run on a rolled-back
+    /// clock.
     #[allow(clippy::too_many_arguments)]
     fn respond(
         &self,
@@ -154,7 +156,7 @@ impl<R: PeerResolver> ReceiveState<R> {
         content_digest: Option<&str>,
         activated_extensions: &[String],
         body: &[u8],
-        trusted_now_unix: i64,
+        wall_now_unix: i64,
     ) -> (u16, String, Vec<u8>) {
         let store = match self.store.lock() {
             Ok(s) => s,
@@ -166,6 +168,13 @@ impl<R: PeerResolver> ReceiveState<R> {
         let Some(peer) = self.resolver.resolve(&store, fp) else {
             // Unknown or absent client certificate — refuse, revealing nothing.
             return problem_403();
+        };
+        // Derive the trusted time from the wall clock against the monotonic floor. A
+        // large backward step is refused (503) rather than allowed to revive expired
+        // authority downstream (§8.5).
+        let trusted_now_unix = match store.trusted_now(wall_now_unix) {
+            Ok(t) => t,
+            Err(_) => return problem_503_time(),
         };
         // If this endpoint accepts results, resolve the sending peer's task-result
         // key so a delivered result manifest can be verified.
@@ -365,6 +374,14 @@ fn problem_500() -> (u16, String, Vec<u8>) {
     problem(500, "internal", "the request could not be processed")
 }
 
+fn problem_503_time() -> (u16, String, Vec<u8>) {
+    problem(
+        503,
+        "time-uncertain",
+        "the trusted clock moved backward; refusing until time is re-established",
+    )
+}
+
 fn problem(status: u16, kind: &str, title: &str) -> (u16, String, Vec<u8>) {
     let problem = crate::control::Problem {
         type_: format!("urn:axon:error:{kind}"),
@@ -540,6 +557,30 @@ mod tests {
         assert_eq!(ct, "application/a2a+json");
         let task: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
+    }
+
+    #[test]
+    fn a_large_backward_wall_clock_is_refused_503() {
+        let state = state();
+        let body = send_message_body();
+        let digest = content_digest(&body);
+        let post = |wall: i64| {
+            state.respond(
+                Some("known-fp"),
+                "POST",
+                "application/a2a+json",
+                Some("1.0"),
+                Some(&digest),
+                &[],
+                &body,
+                wall,
+            )
+        };
+        // The first request advances the trusted-time floor to NOW.
+        assert_eq!(post(NOW).0, 200);
+        // A wall clock far below the floor is refused (503), not allowed through to
+        // decide authority on a rolled-back clock.
+        assert_eq!(post(NOW - 10_000).0, 503);
     }
 
     #[test]

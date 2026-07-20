@@ -56,6 +56,10 @@ const WRAPPED_DEK: &str = "wrapped_dek";
 const COMMITMENT_KEY: &str = "commitment_key";
 const STATE_GENERATION: &str = "state_generation";
 const TRUSTED_TIME: &str = "trusted_time";
+/// Backward wall-clock tolerance for [`Store::trusted_now`] (§8.5): a step back
+/// within this is absorbed by the monotonic floor; beyond it, time is uncertain and
+/// authority decisions refuse rather than risk reviving expired authority.
+const CLOCK_TOLERANCE_SECS: i64 = 300;
 const PEER_RECORD_CONTEXT: &str = "peers.record";
 const COMMITMENT_KEY_CONTEXT: &str = "meta.commitment_key";
 const INBOX_BODY_CONTEXT: &str = "inbox.body";
@@ -86,6 +90,8 @@ pub enum StoreError {
     UnknownAttempt(String),
     #[error("unknown processor call {0:?}")]
     UnknownProcessorCall(String),
+    #[error("trusted time is uncertain: the wall clock moved backward past tolerance")]
+    TimeUncertain,
 }
 
 /// State held outside the database and its backups (the OS keystore/TPM, per
@@ -375,6 +381,19 @@ impl Store {
     /// The trusted wall-clock floor (§8.5).
     pub fn trusted_time_floor(&self) -> Result<i64, StoreError> {
         Ok(schema::meta_get_i64(&self.conn, TRUSTED_TIME)?.unwrap_or(0))
+    }
+
+    /// The trusted `now` for an authority decision (§8.5). Observes the wall clock
+    /// against the monotonic floor and returns the floor — never a value below the
+    /// last trusted time, so a small forward clock is fine but a backward step can
+    /// never revive expired authority (an expired contract, a lapsed nonce window).
+    /// Errs [`StoreError::TimeUncertain`] if the clock moved backward past tolerance,
+    /// so the caller refuses the decision rather than acting on a rolled-back clock.
+    pub fn trusted_now(&self, wall_clock: i64) -> Result<i64, StoreError> {
+        match self.observe_time(wall_clock, CLOCK_TOLERANCE_SECS)? {
+            TimeStatus::Ok { floor } => Ok(floor),
+            TimeStatus::Uncertain { .. } => Err(StoreError::TimeUncertain),
+        }
     }
 
     /// Observes wall clock `now`. If it moved backward past `tolerance_secs`,
@@ -2195,6 +2214,22 @@ mod tests {
         assert!(matches!(
             store.observe_time(600, 300).unwrap(),
             TimeStatus::Uncertain { .. }
+        ));
+    }
+
+    #[test]
+    fn trusted_now_is_monotonic_and_refuses_a_large_backward_step() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        // Forward moves advance the floor and are returned as-is.
+        assert_eq!(store.trusted_now(1_000_000).unwrap(), 1_000_000);
+        assert_eq!(store.trusted_now(1_000_050).unwrap(), 1_000_050);
+        // A small backward step (within tolerance) never returns below the floor.
+        assert_eq!(store.trusted_now(1_000_040).unwrap(), 1_000_050);
+        // A large backward step (past tolerance) is refused, not silently accepted —
+        // so a rolled-back clock cannot revive expired authority.
+        assert!(matches!(
+            store.trusted_now(1_000_050 - 10_000),
+            Err(StoreError::TimeUncertain)
         ));
     }
 

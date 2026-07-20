@@ -297,6 +297,7 @@ impl DaemonState {
                 artifacts,
             } => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                let now = trusted_now(&store)?;
                 approve_and_issue(
                     &store,
                     &self.config.local_performer,
@@ -305,27 +306,29 @@ impl DaemonState {
                     task_id,
                     processor.as_deref(),
                     *artifacts,
-                    now_unix(),
+                    now,
                 )
             }
             ControlRequest::TaskDeny { task_id, reason } => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                let now = trusted_now(&store)?;
                 deny(
                     &store,
                     &self.config.local_performer,
                     &self.identity.purpose_key(KeyPurpose::ContractDecision),
                     task_id,
                     reason,
-                    now_unix(),
+                    now,
                 )
             }
             ControlRequest::SubmitResult(submission) => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                let now = trusted_now(&store)?;
                 submit_result(
                     &store,
                     &self.identity.purpose_key(KeyPurpose::TaskResult),
                     submission,
-                    now_unix(),
+                    now,
                 )
             }
             // Delivery, send, and processor calls manage their own store locking
@@ -525,6 +528,19 @@ fn env_nonempty(name: &str) -> Option<String> {
 /// testability; the live daemon supplies the trusted clock here.
 fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// The §8.5 trusted `now` for an authority decision: the wall clock observed against
+/// the store's monotonic floor. A large backward step is refused (503) so a
+/// rolled-back clock cannot revive expired authority (an expired contract, a lapsed
+/// nonce window). The caller must already hold the store lock.
+fn trusted_now(store: &Store) -> Result<i64, Problem> {
+    store.trusted_now(now_unix()).map_err(|_| Problem {
+        type_: "urn:axon:error:time-uncertain".to_owned(),
+        title: "the trusted clock moved backward; refusing until time is re-established".to_owned(),
+        status: 503,
+        detail: None,
+    })
 }
 
 fn internal() -> Problem {

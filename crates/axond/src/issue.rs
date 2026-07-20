@@ -20,10 +20,20 @@ use axon_authority::{
     ArtifactExportScope, Audience, Budgets, CapabilityVector, Grant, IssuedWorkOrder,
     ProcessorUseScope, ReadInputsScope, RequestOrigin, RespondScope, WorkOrder, WorkOrderKey,
 };
-use axon_contract::{parse_payload, Capability, HeadState, Identity, ResultRecipient};
+use axon_contract::{
+    deadline_unix, expires_at_unix, parse_payload, validity, Capability, Contract, HeadState,
+    Identity, ResultRecipient, Validity,
+};
 use axon_store::{ClaimOutcome, Store};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::control::Problem;
+
+/// A hard ceiling on how long a claimed attempt — and every processor call it makes,
+/// which inherits the work order's deadline — stays authorized, regardless of a
+/// generous contract deadline (§12.1, §12.3).
+const MAX_ATTEMPT_SECS: i64 = 3600;
 
 /// The local, non-contract inputs needed to issue a work order (design §12.3).
 pub struct IssueConfig<'a> {
@@ -88,6 +98,42 @@ pub fn issue_for_accepted(
             )
         })?
         .contract;
+
+    // Re-check the contract is still effective at issue time against trusted `now`.
+    // The proposal was validated at receive, but time has passed since; an expired
+    // (or not-yet-effective) contract must never be turned into a runnable work
+    // order (§9.3, §10.2).
+    match validity(&contract, now) {
+        Ok(Validity::Valid) => {}
+        Ok(Validity::Expired) => {
+            return Err(problem(
+                409,
+                "contract-expired",
+                "the contract's validity window has closed; it can no longer be issued",
+            ))
+        }
+        Ok(Validity::NotYetValid) => {
+            return Err(problem(
+                409,
+                "contract-not-yet-valid",
+                "the contract is not yet effective",
+            ))
+        }
+        Err(_) => {
+            return Err(problem(
+                500,
+                "corrupt-contract",
+                "the contract timestamps could not be parsed",
+            ))
+        }
+    }
+
+    // The work order's deadline is the earliest of the contract's expiry, the
+    // contract's task deadline, and a hard per-attempt ceiling from now — so a
+    // generous contract cannot license an unbounded-duration attempt, and every
+    // processor call (which inherits this deadline) is bounded too (§12.1, §12.3).
+    let deadline = clamp_deadline(&contract, now)?;
+
     let context_id = store
         .task_context(task_id)
         .map_err(store_problem)?
@@ -106,7 +152,7 @@ pub fn issue_for_accepted(
                 recipient: recipient.to_owned(),
                 max_responses: 1,
                 max_bytes: contract.limits.max_response_bytes,
-                deadline: contract.limits.deadline.clone(),
+                deadline: deadline.clone(),
             })),
             Capability::ReadSuppliedInputs => {
                 grants.push(Grant::ReadSuppliedInputs(ReadInputsScope {
@@ -228,7 +274,7 @@ pub fn issue_for_accepted(
         policy_version: config.policy_version,
         decision_id: config.decision_id.to_owned(),
         not_before: contract.created_at.clone(),
-        deadline: contract.limits.deadline.clone(),
+        deadline: deadline.clone(),
         nonce: config.nonce.to_owned(),
         remote_cancel: None,
     };
@@ -257,6 +303,34 @@ fn recipient_str(r: ResultRecipient) -> &'static str {
     match r {
         ResultRecipient::RequestOrigin => "request-origin",
     }
+}
+
+/// The work order's deadline: `min(expires_at, contract task deadline, now + cap)`,
+/// formatted back to RFC 3339. The caller has already confirmed the contract is
+/// effective (`now < expires_at`); a task deadline that is already in the past is
+/// refused here, since such an attempt is dead on arrival.
+fn clamp_deadline(contract: &Contract, now: i64) -> Result<String, Problem> {
+    let corrupt = || {
+        problem(
+            500,
+            "corrupt-contract",
+            "the contract timestamps could not be parsed",
+        )
+    };
+    let expires = expires_at_unix(contract).map_err(|_| corrupt())?;
+    let task_deadline = deadline_unix(contract).map_err(|_| corrupt())?;
+    let clamped = expires.min(task_deadline).min(now + MAX_ATTEMPT_SECS);
+    if clamped <= now {
+        return Err(problem(
+            409,
+            "deadline-passed",
+            "the contract's task deadline has already passed; it cannot be issued",
+        ));
+    }
+    OffsetDateTime::from_unix_timestamp(clamped)
+        .ok()
+        .and_then(|dt| dt.format(&Rfc3339).ok())
+        .ok_or_else(corrupt)
 }
 
 fn store_problem(_e: axon_store::StoreError) -> Problem {
@@ -454,6 +528,58 @@ mod tests {
             .attempt_state(&issued.order.work_order_id)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn the_work_order_deadline_is_clamped_to_the_attempt_ceiling() {
+        let store = store();
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs"]);
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        let issued = issue_for_accepted(
+            &store,
+            &task_id,
+            &config(&key, &issuer, &"n".repeat(43)),
+            NOW,
+        )
+        .unwrap();
+
+        // The contract's deadline is 2030 — far beyond the per-attempt ceiling — so
+        // the work order (and the Respond grant it derives) is clamped to NOW + cap,
+        // not the generous contract deadline.
+        let expected = OffsetDateTime::from_unix_timestamp(NOW + MAX_ATTEMPT_SECS)
+            .unwrap()
+            .format(&Rfc3339)
+            .unwrap();
+        assert_eq!(issued.order.deadline, expected);
+        match issued
+            .order
+            .capabilities
+            .grant(CapabilityComponent::Respond)
+        {
+            Some(Grant::Respond(scope)) => assert_eq!(scope.deadline, expected),
+            other => panic!("expected a Respond grant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_expired_contract_is_refused_at_issue() {
+        let store = store();
+        let task_id = submit_and_accept(&store, &["respond", "read_supplied_inputs"]);
+        let key = WorkOrderKey::from_bytes([7u8; 32]);
+        let issuer = ident("authority");
+        // Issue at a trusted `now` past the contract's expires_at (2030-01-01):
+        // the contract can no longer authorize work, even though its head is locked.
+        let after_expiry = 1_893_456_000; // 2030-01-01T00:00:00Z
+        let err = issue_for_accepted(
+            &store,
+            &task_id,
+            &config(&key, &issuer, &"n".repeat(43)),
+            after_expiry,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, 409);
+        assert!(err.type_.contains("contract-expired"));
     }
 
     #[test]
