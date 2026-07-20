@@ -278,6 +278,12 @@ fn common_worker_syscalls() -> Vec<i64> {
         libc::SYS_close_range,
         libc::SYS_openat,
         libc::SYS_open,
+        // Create a directory. The worker can already create files in /output via
+        // openat(O_CREAT); a directory is no more reach. Without it the adapter SDK's
+        // write_artifact → create_dir_all("/output/artifacts") is killed, so a real
+        // SARIF-producing adapter granted artifact_export cannot deliver (codex review).
+        libc::SYS_mkdir,
+        libc::SYS_mkdirat,
         libc::SYS_fstat,
         libc::SYS_newfstatat,
         // Read-only filesystem statistics (block size, free space) on a path/fd the

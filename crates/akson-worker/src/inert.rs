@@ -64,8 +64,11 @@ pub fn check_inert(media_type: &str, bytes: &[u8]) -> Result<(), NotInert> {
     }
 
     // Work on a lowercased copy so matches are case-insensitive (bytes are valid
-    // UTF-8 per the guard above).
-    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    // UTF-8 per the guard above), with numeric HTML character references decoded
+    // first: a browser decodes `java&#x73;cript:` to `javascript:` and `&#x3c;script`
+    // to `<script`, so scanning only the raw bytes misses the very payloads this
+    // check exists to catch (codex review). Decode `&#dd;`/`&#xhh;` before scanning.
+    let text = decode_numeric_entities(&String::from_utf8_lossy(bytes)).to_ascii_lowercase();
 
     // Active markup / embedding.
     for token in [
@@ -109,6 +112,46 @@ pub fn check_inert(media_type: &str, bytes: &[u8]) -> Result<(), NotInert> {
     Ok(())
 }
 
+/// Decodes numeric HTML character references — `&#123;` (decimal) and `&#x1f;`
+/// (hex) — to their characters, leaving everything else (named entities, stray
+/// text) untouched. Enough to defeat the common obfuscation of a dangerous token
+/// like `javascript:` or `<script` behind numeric references; a browser decodes
+/// these before acting on the markup, so the inert scan must too. A malformed or
+/// out-of-range reference is left literal (still harmless to the scan).
+fn decode_numeric_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' && i + 2 < bytes.len() && bytes[i + 1] == b'#' {
+            let (radix, start) = if matches!(bytes[i + 2], b'x' | b'X') {
+                (16, i + 3)
+            } else {
+                (10, i + 2)
+            };
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b';' {
+                j += 1;
+            }
+            if j < bytes.len() && j > start {
+                if let Some(ch) = u32::from_str_radix(&text[start..j], radix)
+                    .ok()
+                    .and_then(char::from_u32)
+                {
+                    out.push(ch);
+                    i = j + 1; // skip past the ';'
+                    continue;
+                }
+            }
+        }
+        // Not a decodable reference — copy this byte's char through.
+        let ch = text[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Whether `text` (already lowercased) carries an `href`/`src`/`url` reference whose
 /// target is an absolute (`http://`, `https://`) or protocol-relative (`//`) URL.
 ///
@@ -118,7 +161,10 @@ pub fn check_inert(media_type: &str, bytes: &[u8]) -> Result<(), NotInert> {
 /// https://… for details") is not mistaken for a fetched reference.
 fn references_external_url(text: &str) -> bool {
     let b = text.as_bytes();
-    for anchor in ["href", "src", "url"] {
+    // `srcset` before `src`: an `<img srcset="https://…">` fetches on render just as
+    // `src` does, and the plain `src` scan would otherwise stop at the "set" and
+    // miss the URL (codex review).
+    for anchor in ["href", "srcset", "src", "url"] {
         let mut from = 0;
         while let Some(pos) = text[from..].find(anchor) {
             let at = from + pos;
@@ -309,5 +355,27 @@ mod tests {
         // when an absolute URL follows it; "curl" must not anchor either.
         let md = b"# Notes\nthe url https://api.example was called; run curl https://x to repro.\n";
         assert!(check_inert("text/markdown", md).is_ok());
+    }
+
+    #[test]
+    fn a_script_uri_hidden_behind_numeric_char_references_is_rejected() {
+        // A browser decodes `java&#x73;cript:` to `javascript:` before acting; so
+        // must the scan (codex review). Both hex and decimal forms.
+        let hex = br#"<a href="java&#x73;cript:alert(1)">x</a>"#;
+        assert!(check_inert("text/html", hex).is_err());
+        let dec = br#"<a href="java&#115;cript:alert(1)">x</a>"#;
+        assert!(check_inert("text/html", dec).is_err());
+        // And a tag opener hidden the same way (`&#x3c;script`).
+        let tag = "&#x3c;script&#x3e;alert(1)&#x3c;/script&#x3e;".as_bytes();
+        assert!(check_inert("text/html", tag).is_err());
+        // A legitimate numeric reference to a harmless character still passes.
+        assert!(check_inert("text/html", "<p>ok &#8212; done</p>".as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn an_external_srcset_fetch_is_rejected() {
+        // `srcset` fetches on render just like `src`; the plain `src` scan missed it.
+        let html = br#"<img srcset="https://attacker.example/pixel 1x">"#;
+        assert!(check_inert("text/html", html).is_err());
     }
 }

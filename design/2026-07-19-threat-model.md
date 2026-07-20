@@ -95,5 +95,30 @@ authority is never touched by Akson; a **separate, additive** layer governs only
   durable high-water sequence/terminal-hash anchor (tied to the T13 external
   checkpoint) is the follow-up; until then tail-truncation resistance rests on the
   same at-rest custody as the rest of the store.
+- **`processor_visible: false` on an input is advisory, not enforced.** A worker
+  granted both input-read and `processor_use` reads the input and can place any of
+  its bytes into the opaque request it hands the broker, which does not inspect the
+  body (same root as the cost-ceiling item). Marking an input not-processor-visible
+  does not prevent a prompt-injected adapter from disclosing it. Enforcing this
+  needs either a non-opaque broker request contract or excluding such inputs from a
+  processor-enabled worker's readable set (follow-up).
+- **Result manifests are not cross-checked against the contract's requirements.**
+  The performer signs, and the requester verifies, that the delivered bytes match
+  the manifest — but neither checks the manifest against the contract's declared
+  `deliverables` (required roles/media types) or substantiates a passing evidence
+  slot with an actual in-toto envelope (evidence bytes are not delivered, stored, or
+  verified in v1). A performer can therefore complete a task while omitting an agreed
+  deliverable, or assert a passing verification slot without evidence. The requester
+  sees exactly what arrived, so this is a completeness/authenticity-of-claim gap, not
+  a silent substitution; deliverable-role enforcement and evidence substantiation are
+  tracked follow-ups.
+- **Output byte limits are per-output, not aggregate.** A grant's `max_bytes` bounds
+  each output; the number of outputs is bounded by `max_responses`/`max_count`. The
+  total returned to the requester can therefore reach count×`max_bytes`. The risk
+  card should be read as a per-item ceiling with a count, not a single total.
+- **The worker's `/output` is host-backed and not disk-quota'd.** A worker can write
+  to `/output` until the host filesystem fills; this is bounded by the wall-clock
+  ceiling and refused on *read* above a per-file cap, but a sub-ceiling burst can
+  still pressure host disk. A sized overlay/tmpfs for `/output` is the follow-up.
 - **Physical access, kernel/hypervisor compromise, and side channels** are out of
   scope for v1.

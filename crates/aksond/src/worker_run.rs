@@ -150,6 +150,13 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     let run_budget = worker_wall_clock(&deadline)?;
 
     // Phase 2 — stage, launch fully confined, and gate. No store lock is held.
+    //
+    // Correctness here relies on the control socket dispatching serially (one
+    // connection handled to completion before the next — see `socket::serve`), so
+    // two `task run` calls for one task cannot interleave and race on the shared
+    // run directory below. The attempt-Start CAS is the durable backstop, but the
+    // run-directory wipe precedes it; if the control loop is ever made concurrent,
+    // move that CAS ahead of the wipe (codex review).
     let run_dir = state.config().data_dir.join("run").join(task_id);
     let staging = run_dir.join("inputs");
     let output = run_dir.join("output");
@@ -340,7 +347,7 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
         let mut outputs = Vec::new();
         let mut response_bytes = 0usize;
 
-        if let Ok(body) = std::fs::read(output.join("response")) {
+        if let Some(body) = read_worker_file(&output.join("response"))? {
             response_bytes = body.len();
             proposed.push(ProposedOutput {
                 channel: OutputChannel::Response,
@@ -443,9 +450,9 @@ fn collect_artifacts(
     proposed: &mut Vec<ProposedOutput>,
     outputs: &mut Vec<ResultOutput>,
 ) -> Result<usize, Problem> {
-    let raw = match std::fs::read(output.join("artifacts.json")) {
-        Ok(raw) => raw,
-        Err(_) => return Ok(0),
+    let raw = match read_worker_file(&output.join("artifacts.json"))? {
+        Some(raw) => raw,
+        None => return Ok(0),
     };
     let entries: Vec<ArtifactEntry> = serde_json::from_slice(&raw)
         .map_err(|e| problem_detail(422, "bad-artifacts", "the artifact manifest is invalid", e))?;
@@ -462,14 +469,14 @@ fn collect_artifacts(
                 "an artifact role is not a safe name",
             ));
         }
-        let bytes = std::fs::read(output.join("artifacts").join(&entry.role)).map_err(|e| {
-            problem_detail(
-                422,
-                "missing-artifact",
-                "a declared artifact was not written",
-                e,
-            )
-        })?;
+        let bytes =
+            read_worker_file(&output.join("artifacts").join(&entry.role))?.ok_or_else(|| {
+                problem(
+                    422,
+                    "missing-artifact",
+                    "a declared artifact was not written",
+                )
+            })?;
         // A renderable artifact must be inert — no scripts, event handlers, or
         // external fetches that would execute when the requester views it (§20.4).
         check_inert(&entry.media_type, &bytes).map_err(|e| {
@@ -496,6 +503,34 @@ fn collect_artifacts(
         });
     }
     Ok(entries.len())
+}
+
+/// The most the unconfined daemon will read from any single worker-produced file.
+/// The per-grant budget (typically a few KiB) is enforced by `gate_outputs`; this
+/// is a coarse pre-read guard so a worker cannot make the daemon allocate a huge
+/// buffer before that gate runs — a 100 GiB `/output/response` must be refused by
+/// its *size*, not read into daemon memory first (codex review). Well above any
+/// legitimate response, well below memory-exhaustion territory.
+const MAX_WORKER_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Reads a worker-produced file, refusing (without allocating) any file larger
+/// than [`MAX_WORKER_FILE_BYTES`]. `Ok(None)` means the file is absent.
+fn read_worker_file(path: &Path) -> Result<Option<Vec<u8>>, Problem> {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if meta.len() > MAX_WORKER_FILE_BYTES {
+        return Err(problem(
+            413,
+            "output-too-large",
+            "a worker output file exceeds the maximum readable size",
+        ));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Whether `s` is a safe single path component (`[a-z0-9][a-z0-9-]*`): no `/`, no

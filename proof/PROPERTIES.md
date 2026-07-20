@@ -114,6 +114,19 @@ crashes are finite. The worker gets **no** fairness — termination holds even
 if it never claims or hangs forever. The `no-expiry-fairness` negative check
 shows the property genuinely depends on deadline enforcement.
 
+> **Gap between this model and the code (be honest about it).** The spec's
+> `KillClaimed`/`Expire` fairness assumes the daemon *drives claimed and
+> unclaimed attempts to a terminal state at their deadline*. The daemon does
+> **not** yet do this: a wall-clock ceiling now bounds a worker once `task run`
+> starts (`worker_run.rs`), which corresponds to `KillRunning`, but an attempt
+> that is approved and then **never run** stays `claimed` past its deadline —
+> there is no sweeper emitting `Cancel`, and `AttemptState` has no expiry
+> transition. So `Termination` is proved of the *model*, and holds of the code
+> only for attempts that are actually run. Closing it needs a deadline sweeper
+> over claimed/unclaimed attempts (tracked follow-up); until then this liveness
+> claim is aspirational for the un-run case, and this note is the honest record
+> of that (codex review).
+
 ### conformance/ — model ↔ code, as CI
 
 `cargo test` in `conformance/` asserts, for **every** (state, event) pair,
@@ -123,6 +136,20 @@ that the implemented pure functions equal the TLA+ transition relations:
 `akson-contract::apply_revision`/`accept_head` ↔ ContractChain.tla's guards
 against real parsed contracts. A change to either side that forgets the
 other fails the suite.
+
+> **What conformance does and does not catch (be honest about it).** The oracle
+> is a hand-transcribed `spec(...)` table in `conformance/src/lib.rs`, not a
+> parse of the `.tla` files. So it catches **code drift** — a change to a Rust
+> `next` function that contradicts the transcribed relation fails the suite —
+> but not **model-only drift**: editing a `.tla` action *and nothing else* does
+> not fail conformance, because the transcription is a third, independent copy.
+> The transcription also flattens the specs' auxiliary guards (`spawned`,
+> `inflight`): the Rust `next` functions are pure `(state, event) -> state` and
+> do not track them, so those guards are verified by TLC over the full model,
+> not by the pair-wise oracle. Deeper coupling would mean generating the oracle
+> from the specs (tracked follow-up); the current guarantee is "the code cannot
+> silently diverge from the transcribed relation," which is the drift that
+> actually bit c2c (codex review).
 
 ### specs/PairingLedgerInd.tla + specs/RollbackAdversaryInd.tla — inductive proofs (Apalache)
 

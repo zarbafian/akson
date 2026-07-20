@@ -41,6 +41,14 @@ pub struct CallResponse {
     pub body: Vec<u8>,
 }
 
+/// TCP-connect ceiling for a processor call.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// TLS-handshake ceiling.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Whole request→response ceiling once bytes start flowing. Generous enough for a
+/// slow model, short enough that a silent processor cannot pin a worker run.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Why the transport failed, and whether it is *clean* (no byte left the host —
 /// safe to mark `failed`) or *uncertain* (bytes may have left — must be `ambiguous`).
 pub enum TransportError {
@@ -252,15 +260,23 @@ impl CallTransport for HttpsTransport<'_> {
         let connector = TlsConnector::from(Arc::new(config));
 
         // Everything up to and including the handshake is a *clean* failure — no
-        // request byte has left the host.
-        let tcp = TcpStream::connect(SocketAddr::new(addr, port))
-            .await
-            .map_err(|e| TransportError::Clean(e.to_string()))?;
+        // request byte has left the host. Bound the connect and handshake: a
+        // processor that accepts the TCP connection but never completes the TLS
+        // handshake would otherwise block this broker thread — and, since the
+        // confined worker waits on the broker reply, the whole run — indefinitely,
+        // defeating the worker's wall-clock ceiling (codex review).
+        let tcp = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            TcpStream::connect(SocketAddr::new(addr, port)),
+        )
+        .await
+        .map_err(|_| TransportError::Clean("connect timed out".to_owned()))?
+        .map_err(|e| TransportError::Clean(e.to_string()))?;
         let server_name = ServerName::try_from(host.to_owned())
             .map_err(|_| TransportError::Clean("bad host".to_owned()))?;
-        let mut tls = connector
-            .connect(server_name, tcp)
+        let mut tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
             .await
+            .map_err(|_| TransportError::Clean("handshake timed out".to_owned()))?
             .map_err(|e| TransportError::Clean(e.to_string()))?;
 
         // From the first write on, a failure is *uncertain* — the request may have
@@ -307,8 +323,13 @@ impl CallTransport for HttpsTransport<'_> {
             }
             Ok::<_, std::io::Error>(raw)
         };
-        let raw = exchange
+        // From the first write on, a stall is *uncertain* — bytes may have been
+        // transmitted and processed, so a timeout here marks the call ambiguous
+        // (never auto-retried), not failed. This bounds a processor that reads the
+        // request and then never replies nor closes.
+        let raw = tokio::time::timeout(RESPONSE_TIMEOUT, exchange)
             .await
+            .map_err(|_| TransportError::Uncertain("response timed out".to_owned()))?
             .map_err(|e| TransportError::Uncertain(e.to_string()))?;
         let (status, body) = split_response(&raw)
             .ok_or_else(|| TransportError::Uncertain("no HTTP response".to_owned()))?;

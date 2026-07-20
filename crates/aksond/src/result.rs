@@ -191,6 +191,23 @@ pub fn submit_result(
         detail: Some(e.to_string()),
     })?;
 
+    // Two outputs sharing an artifact_id (e.g. a worker declaring two artifacts
+    // with the same role) would produce a manifest naming one id twice: storage
+    // keys outputs by (task_id, artifact_id) so only one row survives, yet the
+    // signed manifest claims two — and the requester rightly refuses the duplicate,
+    // leaving the completed result undeliverable. Refuse at the source (codex
+    // review, performer mirror of the requester-side guard).
+    let mut seen_ids = std::collections::BTreeSet::new();
+    for o in &submission.outputs {
+        if !seen_ids.insert(o.artifact_id.as_str()) {
+            return Err(problem(
+                422,
+                "duplicate-artifact",
+                "two outputs share an artifact id",
+            ));
+        }
+    }
+
     // 5. Assemble + sign the result manifest (§14.1).
     let header = ManifestHeader {
         task_id: task_id.clone(),

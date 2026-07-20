@@ -391,6 +391,22 @@ impl Store {
             Recovery::Normal
         };
 
+        // Adopt the external checkpoint's trusted time as a floor on every open,
+        // not just first init. The checkpoint is the anti-rollback anchor (§15.5);
+        // if it is skipped on reopen, restoring an older snapshot silently lowers
+        // the monotonic time floor and revives authority that expired after the
+        // snapshot, even when the state-generation counter did not move. Raising
+        // the floor to at least the anchor closes that (codex review). Only when
+        // rollback detection is actually available — the interim custody profile
+        // (ADR-0009) carries no trustworthy anchor and must not be trusted to
+        // advance time.
+        if checkpoint.rollback_detectable {
+            let stored = schema::meta_get_i64(&conn, TRUSTED_TIME)?.unwrap_or(0);
+            if checkpoint.trusted_time > stored {
+                schema::meta_set_i64(&conn, TRUSTED_TIME, checkpoint.trusted_time)?;
+            }
+        }
+
         Ok(Self {
             conn,
             dek,
@@ -2388,6 +2404,40 @@ mod tests {
         let store = Store::open(&path, &kek(), checkpoint(3)).unwrap();
         assert_eq!(*store.recovery(), Recovery::Normal);
         assert!(store.recovery().automatic_authority_enabled());
+    }
+
+    #[test]
+    fn reopening_adopts_the_external_checkpoints_trusted_time_as_a_floor() {
+        // A restored older snapshot must not lower the monotonic time floor below
+        // the external anchor, or authority that expired after the snapshot revives
+        // (codex review). On reopen, the floor is raised to the checkpoint's time.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        {
+            // First open at generation 5, time 1000; advance the floor to 1500.
+            let cp = ExternalCheckpoint {
+                state_generation: 5,
+                trusted_time: 1000,
+                rollback_detectable: true,
+            };
+            let store = Store::open(&path, &kek(), cp).unwrap();
+            assert_eq!(store.trusted_now(1500).unwrap(), 1500);
+        }
+        // Reopen (same generation — no mismatch) with the anchor advanced to 5000.
+        let cp = ExternalCheckpoint {
+            state_generation: 5,
+            trusted_time: 5000,
+            rollback_detectable: true,
+        };
+        let store = Store::open(&path, &kek(), cp).unwrap();
+        assert_eq!(*store.recovery(), Recovery::Normal);
+        // The floor is now the anchor: a wall clock of 3000 is below it and refused,
+        // so authority that expired at 4000 cannot be revived.
+        assert_eq!(store.trusted_time_floor().unwrap(), 5000);
+        assert!(matches!(
+            store.observe_time(3000, 5).unwrap(),
+            TimeStatus::Uncertain { .. }
+        ));
     }
 
     #[test]
