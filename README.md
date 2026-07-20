@@ -243,6 +243,10 @@ c2c for the groundwork.
 - [Control protocol](spec/control-protocol.md) — the local socket the `akson` CLI
   speaks to a running `aksond` (framing, surfaces, operations).
 - [ADRs](spec/adr/) — recorded decisions.
+- [Machine-checked proofs](proof/) — TLA+ models of the task lifecycle,
+  contract chain, receive pipeline, pairing ledger, broker budget, and rollback
+  adversary, with the invariant-to-design traceability in
+  [PROPERTIES.md](proof/PROPERTIES.md).
 - [SECURITY.md](SECURITY.md) — reporting vulnerabilities.
 
 ## Development
@@ -253,9 +257,17 @@ cargo test --workspace
 cargo fmt --all --check && cargo clippy --workspace --all-targets
 ~~~
 
-Rust toolchain is pinned in `rust-toolchain.toml`. Golden vectors under
-`spec/vectors/` are cross-checked by an independent Python implementation in
-`xcheck/`.
+Rust toolchain is pinned in `rust-toolchain.toml`.
+
+Two checks run against the code from the outside, so agreement is a fact rather
+than a claim:
+
+- Golden vectors under `spec/vectors/` are re-derived by an independent Python
+  implementation in `xcheck/` that shares no code with the workspace.
+- The TLA+ models in `proof/specs/` are held to the Rust state machines by
+  `proof/conformance`, a workspace member — so `cargo test --workspace` above
+  already fails if the model and the code disagree. Checking the models
+  themselves needs Java: `make -C proof full`.
 
 ## License
 

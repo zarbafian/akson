@@ -228,6 +228,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "akson-model-conformance"
+version = "0.0.1"
+dependencies = [
+ "akson-authority",
+ "akson-broker",
+ "akson-contract",
+ "akson-ext",
+ "serde_json",
+]
+
+[[package]]
 name = "akson-pairing"
 version = "0.0.1"
 dependencies = [

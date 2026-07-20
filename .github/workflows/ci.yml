@@ -85,3 +85,24 @@ jobs:
         run: cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh
+
+  proof:
+    name: machine-checked protocol models
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # The model <-> code conformance tests are a workspace member and run in
+      # the `check` job's `cargo test --workspace`. This job checks the models
+      # themselves, which need TLC and Apalache (downloaded by the Makefile).
+      - name: TLC — exhaustive check of every spec
+        run: make -C proof
+      - name: Apalache — inductive proofs (any run length)
+        run: make -C proof inductive
+      # Without this, a harness that checks nothing would still pass: each
+      # mutation breaks one protocol rule and TLC must produce a counterexample.
+      - name: negative checks — the checks must be able to fail
+        run: make -C proof negative

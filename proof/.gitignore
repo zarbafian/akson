@@ -1,0 +1,6 @@
+# Checkers are downloaded by the Makefile on first use, never vendored.
+tools/
+# TLC / Apalache run output.
+states/
+_apalache-out/
+*.out

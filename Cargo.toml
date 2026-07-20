@@ -20,6 +20,9 @@ members = [
     "adapters/anthropic",
     "adapters/gemini",
     "harness/runner",
+    # A workspace member on purpose: `cargo test --workspace` must fail when the
+    # Rust state machines and the TLA+ specs in proof/specs drift apart.
+    "proof/conformance",
 ]
 # The cargo-fuzz crate needs nightly + libFuzzer; keep it out of the normal build.
 exclude = ["fuzz"]

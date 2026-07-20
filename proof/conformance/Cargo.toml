@@ -1,0 +1,15 @@
+[package]
+name = "akson-model-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+akson-authority = { workspace = true }
+akson-broker = { workspace = true }
+akson-contract = { workspace = true }
+akson-ext = { workspace = true }
+serde_json = { workspace = true }

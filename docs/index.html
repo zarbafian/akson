@@ -1490,6 +1490,14 @@ selecting which daemon you're commanding.</p>
     every residual risk honestly, and <strong>spec/control-protocol.md</strong> documents
     the local socket the CLI speaks.
   </p>
+  <p>
+    The rules on this page are not only prose. <strong>proof/</strong> holds TLA+ models
+    of the task lifecycle, contract chain, receive pipeline, pairing ledger, broker
+    budget, and a rollback adversary; a model checker explores every interleaving —
+    crashes, replays, hostile deliveries — and proves the named invariants over all of
+    them. A second set of tests holds those models to the Rust code, so the two cannot
+    drift apart silently.
+  </p>
   <p>Akson is pre-release and under active development.</p>
 </footer>
 
