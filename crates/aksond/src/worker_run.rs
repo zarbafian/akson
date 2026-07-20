@@ -434,6 +434,136 @@ pub fn run_worker(state: &DaemonState, task_id: &str) -> Result<serde_json::Valu
     }
 }
 
+/// Fulfils an approved Task with a result the local operator (or its own trusted
+/// agent) produced, instead of running a confined worker (`akson task fulfill`).
+///
+/// This is the cooperative counterpart to [`run_worker`]. It exists because the
+/// confined worker is the wrong executor for trusted, same-operator delegation:
+/// its whole value is isolation — a sealed, network-less, context-less process —
+/// whereas the point of asking *your own* other agent (say a Codex session that
+/// holds context you never exported) is precisely that peer's knowledge. So the
+/// bytes come from the operator's agent, and Akson does only what it is good at:
+/// it still gates the result against the granted scope, signs the manifest over
+/// these exact bytes, and completes the task, so the requester's outcome is just
+/// as verifiable as one from a sandboxed run. It does *not* confine anything —
+/// only ever reach it over the admin surface, for a peer you trust to execute.
+pub fn run_fulfill(
+    state: &DaemonState,
+    task_id: &str,
+    provided: &[crate::socket::FulfillOutput],
+) -> Result<serde_json::Value, Problem> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    if provided.is_empty() {
+        return Err(problem(
+            422,
+            "no-output",
+            "a fulfilment must carry at least one output",
+        ));
+    }
+
+    // The approved work order — its exact granted capabilities gate the result.
+    let (work_order_id, capabilities) = {
+        let store = state.store();
+        let store = store.lock().map_err(|_| internal())?;
+        let work_order_id = store
+            .attempt_for_task(task_id)
+            .map_err(store_problem)?
+            .ok_or_else(|| problem(409, "no-work-order", "this task has no issued work order"))?;
+        let issued = store
+            .get_work_order(&work_order_id)
+            .map_err(store_problem)?
+            .ok_or_else(|| problem(404, "no-work-order", "the work order is missing"))?;
+        (work_order_id, issued.order.capabilities)
+    };
+
+    // Turn the operator's outputs into result outputs. `response` is the reply to
+    // the request origin; any other role is an artifact.
+    let mut proposed = Vec::new();
+    let mut outputs = Vec::new();
+    for out in provided {
+        let content = STANDARD.decode(&out.content_base64).map_err(|_| {
+            problem(
+                422,
+                "bad-content",
+                "an output's content is not valid base64",
+            )
+        })?;
+        let kind = if out.role == "response" {
+            OutputKind::Response
+        } else {
+            OutputKind::Artifact
+        };
+        let artifact_id = match kind {
+            OutputKind::Response => format!("resp-{task_id}"),
+            OutputKind::Artifact => format!("art-{task_id}-{}", out.role),
+        };
+        proposed.push(ProposedOutput {
+            channel: match kind {
+                OutputKind::Response => OutputChannel::Response,
+                OutputKind::Artifact => OutputChannel::Artifact,
+            },
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: out.media_type.clone(),
+            bytes: content.len() as u64,
+        });
+        outputs.push(ResultOutput {
+            role: out.role.clone(),
+            artifact_id,
+            kind,
+            recipient: REQUEST_ORIGIN.to_owned(),
+            media_type: out.media_type.clone(),
+            content,
+        });
+    }
+
+    // Same gate as a sandboxed run: the operator-provided result must fall inside
+    // the granted scope (recipient, media type, per-output bytes, counts). A
+    // trusted executor is not an unchecked one — the contract still binds.
+    gate_outputs(&capabilities, &proposed).map_err(|e| {
+        problem_detail(
+            403,
+            "output-denied",
+            "the provided result is outside the granted scope",
+            format!("offending output index {}", e.index),
+        )
+    })?;
+
+    // Record it, producing the signed manifest and completing the attempt
+    // (Claimed → Succeeded). On failure, mark the attempt Failed so it is terminal.
+    let submission = ResultSubmission {
+        task_id: task_id.to_owned(),
+        outputs,
+        evidence: vec![],
+        slots: vec![],
+    };
+    let result = {
+        let store = state.store();
+        let store = store.lock().map_err(|_| internal())?;
+        submit_result(
+            &store,
+            &state.identity().purpose_key(KeyPurpose::TaskResult),
+            &submission,
+            now_unix(),
+        )
+    };
+    match result {
+        Ok(manifest) => Ok(serde_json::json!({
+            "fulfilled": true,
+            "task_id": task_id,
+            "outputs": provided.len(),
+            "result": manifest,
+        })),
+        Err(e) => {
+            if let Ok(store) = state.store().lock() {
+                let _ = store.advance_attempt(&work_order_id, AttemptEvent::Fail, now_unix());
+            }
+            Err(e)
+        }
+    }
+}
+
 /// One artifact the worker declared in `/output/artifacts.json` (mirrors the SDK's
 /// `ArtifactEntry`).
 #[derive(serde::Deserialize)]

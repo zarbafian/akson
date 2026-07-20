@@ -359,6 +359,9 @@ impl DaemonState {
             // (they must not hold the lock across the network I/O), so they take the
             // daemon state.
             ControlRequest::TaskRun { task_id } => crate::run_worker(self, task_id),
+            ControlRequest::TaskFulfill { task_id, outputs } => {
+                crate::run_fulfill(self, task_id, outputs)
+            }
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => run_send(self, spec),
             ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),

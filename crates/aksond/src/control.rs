@@ -88,6 +88,8 @@ pub enum ControlOp {
     TaskCancel,
     /// Run an approved task's worker in the sandbox and submit its result.
     RunWorker,
+    /// Fulfil an approved task with an operator-provided result (no sandbox).
+    FulfillTask,
     /// Show a peer or the policy.
     Inspect,
     /// Report daemon and sandbox health (`akson doctor`, `akson status`).
@@ -166,7 +168,7 @@ mod tests {
         ControlOp::RequestProcessorCall,
     ];
 
-    const ADMIN_ONLY_OPS: [ControlOp; 13] = [
+    const ADMIN_ONLY_OPS: [ControlOp; 14] = [
         ControlOp::Pair,
         ControlOp::Policy,
         ControlOp::ApproveContract,
@@ -179,6 +181,7 @@ mod tests {
         ControlOp::Processor,
         ControlOp::TaskCancel,
         ControlOp::RunWorker,
+        ControlOp::FulfillTask,
         ControlOp::Diagnose,
     ];
 

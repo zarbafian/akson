@@ -42,9 +42,9 @@ use akson_store::envelope::Kek;
 use akson_store::{ExternalCheckpoint, Store};
 use akson_transport::tls::bootstrap_server_config;
 use aksond::{
-    serve_receive, ControlRequest, DaemonConfig, DaemonState, Deliverable, IdentityKeys,
-    OutputKind, ReceiveState, ResultOutput, ResultSubmission, StorePeerResolver, TaskInput,
-    TaskSpec,
+    serve_receive, ControlRequest, DaemonConfig, DaemonState, Deliverable, FulfillOutput,
+    IdentityKeys, OutputKind, ReceiveState, ResultOutput, ResultSubmission, StorePeerResolver,
+    TaskInput, TaskSpec,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -451,6 +451,139 @@ async fn exchange(
         "the requester must hold exactly what the performer signed"
     );
     text
+}
+
+/// The cooperative path: the performer fulfils a task with a result its own agent
+/// produced (`task fulfill`), not a sandboxed worker — the shape of "my Claude asks
+/// my Codex, which answers from its own session." The daemon still gates and signs
+/// it, so the requester's accepted result is exactly as verifiable as a sandboxed
+/// run's, and it holds precisely the bytes the performer signed for.
+#[tokio::test]
+async fn a_performer_can_fulfil_a_task_from_its_own_agent_without_a_sandbox() {
+    let (alice, bob) = paired_endpoints().await;
+
+    // Alice delegates a design task. The brief carries none of the "session-only"
+    // knowledge the answer will use — that is the whole point of asking the peer.
+    let spec = TaskSpec {
+        performer: bob.agent.clone(),
+        task_type: "https://akson.cc/task/design/v1".to_owned(),
+        objective: "Design a caching strategy for our checkout service.".to_owned(),
+        inputs: vec![],
+        deliverables: vec![Deliverable {
+            role: "response".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes: 8192,
+    };
+    let sender = alice.state.clone();
+    let sent =
+        tokio::task::spawn_blocking(move || sender.dispatch(&ControlRequest::TaskSend(spec)))
+            .await
+            .unwrap()
+            .unwrap();
+    let task_id = sent["task_id"].as_str().unwrap().to_owned();
+
+    // Bob approves, then fulfils with what his own agent produced (references facts
+    // never present in the brief).
+    bob.state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+            processor: None,
+            artifacts: false,
+        })
+        .unwrap();
+    let design = "Use an in-process LRU plus PostgreSQL materialized views; no Redis.";
+    let fulfilled = bob
+        .state
+        .dispatch(&ControlRequest::TaskFulfill {
+            task_id: task_id.clone(),
+            outputs: vec![FulfillOutput {
+                role: "response".to_owned(),
+                media_type: "text/plain".to_owned(),
+                content_base64: STANDARD.encode(design),
+            }],
+        })
+        .unwrap();
+    assert_eq!(
+        fulfilled["fulfilled"], true,
+        "fulfilment completes the task"
+    );
+
+    // Deliver, then alice reads the verified result — byte-exact.
+    let deliverer = bob.state.clone();
+    let tid = task_id.clone();
+    let delivered = tokio::task::spawn_blocking(move || {
+        deliverer.dispatch(&ControlRequest::TaskDeliver { task_id: tid })
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(delivered["delivered"], true);
+
+    let read = alice
+        .state
+        .dispatch(&ControlRequest::TaskOutput {
+            task_id: task_id.clone(),
+            role: Some("response".to_owned()),
+        })
+        .unwrap();
+    let got = STANDARD
+        .decode(read["outputs"][0]["content"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        got,
+        design.as_bytes(),
+        "alice holds exactly what bob fulfilled"
+    );
+}
+
+/// A fulfilment is gated exactly like a sandboxed run: a result outside the granted
+/// scope (here, over the byte ceiling) is refused, and no outcome is delivered.
+#[tokio::test]
+async fn a_fulfilment_outside_the_granted_scope_is_refused() {
+    let (alice, bob) = paired_endpoints().await;
+    let spec = TaskSpec {
+        performer: bob.agent.clone(),
+        task_type: "https://akson.cc/task/design/v1".to_owned(),
+        objective: "Small answer only.".to_owned(),
+        inputs: vec![],
+        deliverables: vec![Deliverable {
+            role: "response".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes: 16, // a tight ceiling
+    };
+    let sender = alice.state.clone();
+    let sent =
+        tokio::task::spawn_blocking(move || sender.dispatch(&ControlRequest::TaskSend(spec)))
+            .await
+            .unwrap()
+            .unwrap();
+    let task_id = sent["task_id"].as_str().unwrap().to_owned();
+    bob.state
+        .dispatch(&ControlRequest::TaskApprove {
+            task_id: task_id.clone(),
+            processor: None,
+            artifacts: false,
+        })
+        .unwrap();
+    // 100 bytes against a 16-byte grant → the gate refuses it.
+    let err = bob
+        .state
+        .dispatch(&ControlRequest::TaskFulfill {
+            task_id: task_id.clone(),
+            outputs: vec![FulfillOutput {
+                role: "response".to_owned(),
+                media_type: "text/plain".to_owned(),
+                content_base64: STANDARD.encode("x".repeat(100)),
+            }],
+        })
+        .unwrap_err();
+    assert_eq!(err.status, 403, "an over-budget fulfilment is denied");
 }
 
 // ---------------------------------------------------------------------------

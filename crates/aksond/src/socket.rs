@@ -87,6 +87,17 @@ pub enum ControlRequest {
     /// Run an approved Task's worker in the sandbox and submit its result
     /// (`akson task run`, admin only).
     TaskRun { task_id: String },
+    /// Fulfil an approved Task with a result the local operator (or its own
+    /// trusted agent) produced — the cooperative counterpart to `TaskRun`
+    /// (`akson task fulfill`, admin only). No sandbox: the daemon still gates the
+    /// result against the granted scope and signs the manifest over these exact
+    /// bytes, but the work was done by the operator's agent, not a confined
+    /// worker. For trusted, same-operator delegation (e.g. one of your agents
+    /// asking another), where the value is the peer's own context, not isolation.
+    TaskFulfill {
+        task_id: String,
+        outputs: Vec<FulfillOutput>,
+    },
     /// Deliver a completed Task's signed result to the requester (admin only).
     TaskDeliver { task_id: String },
     /// Send a task to a performer (sign + POST a proposal, admin only).
@@ -134,6 +145,18 @@ pub enum ControlRequest {
     IssueWorkOrder { task_id: String },
 }
 
+/// One output an operator provides via `TaskFulfill`. `content` is base64 so
+/// arbitrary bytes (a design doc, a diagram, a SARIF file) cross the control
+/// socket as a string. `role` picks the channel — `response` goes to the request
+/// origin as the reply; any other role is an artifact — and must fit a granted
+/// deliverable, or the daemon's gate refuses it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FulfillOutput {
+    pub role: String,
+    pub media_type: String,
+    pub content_base64: String,
+}
+
 impl ControlRequest {
     /// The authorization unit for this request (design §16.2).
     pub fn op(&self) -> ControlOp {
@@ -150,6 +173,7 @@ impl ControlRequest {
                 ControlOp::ApproveContract
             }
             ControlRequest::TaskRun { .. } => ControlOp::RunWorker,
+            ControlRequest::TaskFulfill { .. } => ControlOp::FulfillTask,
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
             ControlRequest::PairAccept { .. } | ControlRequest::PairInvite => ControlOp::Pair,

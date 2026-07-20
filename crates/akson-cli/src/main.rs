@@ -24,7 +24,9 @@ use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
 use akson_sandbox::{all_required_available, diagnose, Diagnostic};
-use aksond::{admin_socket_path, send_request, ControlRequest, ControlResponse, TaskSpec};
+use aksond::{
+    admin_socket_path, send_request, ControlRequest, ControlResponse, FulfillOutput, TaskSpec,
+};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -312,6 +314,29 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(id) => task_run(&id),
             None => usage("akson task run <task-id>"),
         },
+        Some("fulfill") | Some("fulfil") => {
+            // `akson task fulfill <id> --file <path> [--role response] [--media-type text/plain]`
+            // Provide a result this side's own agent produced, instead of running a
+            // confined worker. `-` reads the bytes from stdin.
+            let Some(id) = next_arg(args) else {
+                return usage("akson task fulfill <task-id> --file <path> [--role <role>] [--media-type <mt>]");
+            };
+            let mut file = None;
+            let mut role = "response".to_owned();
+            let mut media_type = "text/plain".to_owned();
+            while let Some(flag) = next_arg(args) {
+                match flag.as_str() {
+                    "--file" => file = next_arg(args),
+                    "--role" => role = next_arg(args).unwrap_or(role),
+                    "--media-type" => media_type = next_arg(args).unwrap_or(media_type),
+                    _ => {}
+                }
+            }
+            let Some(file) = file else {
+                return usage("akson task fulfill <task-id> --file <path> [--role <role>] [--media-type <mt>]");
+            };
+            task_fulfill(&id, &file, &role, &media_type)
+        }
         Some("deny") => match (next_arg(args), next_arg(args)) {
             (Some(id), Some(reason)) => task_deny(&id, &reason),
             _ => usage("akson task deny <task-id> <reason>"),
@@ -342,7 +367,7 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             None => usage("akson task output <task-id> [--role <role>]"),
         },
         _ => usage(
-            "akson task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|deliver <id>|send <spec>|sent|outcomes|output <id>}",
+            "akson task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|fulfill <id> --file <path>|deliver <id>|send <spec>|sent|outcomes|output <id>}",
         ),
     }
 }
@@ -560,6 +585,49 @@ fn task_run(task_id: &str) -> ExitCode {
         "  response:   {} B",
         result["response_bytes"].as_u64().unwrap_or(0)
     );
+    println!(
+        "  bundle:     {}",
+        result["result"]["bundle_digest"].as_str().unwrap_or("?")
+    );
+    ExitCode::SUCCESS
+}
+
+/// Fulfil an approved Task with a result this side's own agent produced, instead
+/// of running a confined worker (`akson task fulfill`). `file` is `-` for stdin.
+fn task_fulfill(task_id: &str, file: &str, role: &str, media_type: &str) -> ExitCode {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    use std::io::Read as _;
+
+    let bytes = if file == "-" {
+        let mut buf = Vec::new();
+        if std::io::stdin().read_to_end(&mut buf).is_err() {
+            eprintln!("akson: could not read the result from stdin");
+            return ExitCode::from(1);
+        }
+        buf
+    } else {
+        match std::fs::read(file) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("akson: cannot read {file}: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    };
+    let result = match call(&ControlRequest::TaskFulfill {
+        task_id: task_id.to_owned(),
+        outputs: vec![FulfillOutput {
+            role: role.to_owned(),
+            media_type: media_type.to_owned(),
+            content_base64: STANDARD.encode(&bytes),
+        }],
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!("fulfilled {task_id}");
+    println!("  output:     {role} ({media_type}), {} B", bytes.len());
     println!(
         "  bundle:     {}",
         result["result"]["bundle_digest"].as_str().unwrap_or("?")
