@@ -410,10 +410,25 @@ fn task_output(task_id: &str, role: Option<&str>) -> ExitCode {
         return ExitCode::from(1);
     }
     if role.is_some() {
+        // Write the exact bytes the manifest digest covers — not a UTF-8 view of
+        // them. This is what makes `axon task output ... > file` reproduce the
+        // artifact, and what lets `sha256sum` on the result match the digest below.
+        use std::io::Write as _;
+        let mut out = std::io::stdout().lock();
         for o in &outputs {
-            print!("{}", o["text"].as_str().unwrap_or_default());
+            let Some(bytes) = o["content"].as_str().and_then(decode_base64) else {
+                eprintln!("axon: the daemon returned an undecodable output payload");
+                return ExitCode::from(1);
+            };
+            if out.write_all(&bytes).is_err() {
+                return ExitCode::from(1);
+            }
         }
-        return ExitCode::SUCCESS;
+        return if out.flush().is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
     }
     println!("outputs of {task_id} ({}):", outputs.len());
     for o in &outputs {
@@ -610,6 +625,13 @@ fn call(req: &ControlRequest) -> Result<serde_json::Value, ExitCode> {
             Err(ExitCode::from(1))
         }
     }
+}
+
+/// Decodes a base64 output payload from the daemon.
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    STANDARD.decode(text).ok()
 }
 
 fn next_arg(args: &mut impl Iterator<Item = OsString>) -> Option<String> {

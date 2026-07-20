@@ -159,6 +159,7 @@ version = "0.0.1"
 dependencies = [
  "axon-sandbox",
  "axond",
+ "base64",
  "serde_json",
 ]
 

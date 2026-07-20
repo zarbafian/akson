@@ -298,14 +298,18 @@ impl DaemonState {
                     .iter()
                     .filter(|o| role.as_ref().is_none_or(|r| &o.role == r))
                     .map(|o| {
+                        use base64::engine::general_purpose::STANDARD;
+                        use base64::Engine as _;
                         serde_json::json!({
                             "artifact_id": o.artifact_id, "role": o.role,
                             "media_type": o.media_type, "byte_length": o.byte_length,
                             "sha256": o.sha256,
-                            // Lossy is right for a viewer: an agent reading a text
-                            // result must not have the whole read fail on one stray
-                            // byte, and `sha256` above is the exact-bytes identity.
-                            "text": String::from_utf8_lossy(&o.payload),
+                            // Base64, so what comes back out is byte-for-byte what
+                            // the digest above covers. A lossy UTF-8 view here would
+                            // silently corrupt any non-text artifact, and the whole
+                            // point of the digest check is that these bytes are
+                            // exactly what the performer signed for.
+                            "content": STANDARD.encode(&o.payload),
                         })
                     })
                     .collect();

@@ -1419,7 +1419,7 @@ async fn two_daemons_run_the_whole_task_round_trip() {
                 kind: OutputKind::Response,
                 recipient: "request-origin".to_owned(),
                 media_type: "text/plain".to_owned(),
-                content: b"reviewed: LGTM".to_vec(),
+                content: RESULT_BYTES.to_vec(),
             }],
             evidence: vec![],
             slots: vec![],
@@ -1450,4 +1450,37 @@ async fn two_daemons_run_the_whole_task_round_trip() {
     assert_eq!(outcome.state, OutcomeState::Accepted);
     assert_eq!(outcome.task_id, task_id);
     assert_eq!(outcome.contract_digest, contract_digest);
+
+    // 6. ...and the requester holds the RESULT, byte for byte. The payload crosses
+    //    base64-encoded precisely so a non-UTF-8 artifact survives intact — a lossy
+    //    text view here would silently corrupt anything that is not plain text,
+    //    while still reporting the digest it no longer matches.
+    let read = a_state
+        .dispatch(&ControlRequest::TaskOutput {
+            task_id: task_id.clone(),
+            role: Some("response".to_owned()),
+        })
+        .unwrap();
+    let encoded = read["outputs"][0]["content"].as_str().unwrap();
+    let got = base64_decode(encoded);
+    assert_eq!(
+        got, RESULT_BYTES,
+        "the delivered bytes must round-trip exactly"
+    );
+    assert_eq!(
+        read["outputs"][0]["sha256"].as_str().unwrap(),
+        hex::encode(Sha256::digest(RESULT_BYTES)),
+        "and the reported digest must cover exactly those bytes",
+    );
+}
+
+/// The performer's result: deliberately NOT valid UTF-8 (a lone 0xFF, and an
+/// interior NUL), so a lossy or text-only path through the store, the delivery,
+/// or the control API would corrupt it and fail the digest check above.
+const RESULT_BYTES: &[u8] = b"reviewed: LGTM\xff\x00\x80 done";
+
+fn base64_decode(text: &str) -> Vec<u8> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    STANDARD.decode(text).unwrap()
 }

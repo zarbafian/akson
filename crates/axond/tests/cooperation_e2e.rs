@@ -32,6 +32,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+
 use axon_contract::Identity;
 use axon_crypto::cert::{self_signed_endpoint, EndpointCert};
 use axon_crypto::purpose::KeyPurpose;
@@ -439,7 +442,10 @@ async fn exchange(
             role: Some("response".to_owned()),
         })
         .unwrap();
-    let text = read["outputs"][0]["text"].as_str().unwrap().to_owned();
+    // The payload comes back base64 so it is byte-exact, not a lossy UTF-8 view.
+    let encoded = read["outputs"][0]["content"].as_str().unwrap();
+    let bytes = STANDARD.decode(encoded).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
     assert_eq!(
         text, response,
         "the requester must hold exactly what the performer signed"
