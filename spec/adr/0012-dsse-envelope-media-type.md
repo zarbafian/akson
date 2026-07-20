@@ -62,7 +62,7 @@ rationale:
   contract Part-extraction step (M7) selects the one Part carrying it, and later
   milestones reuse it for decisions, result manifests, evidence, and outcomes.
 - The value is in the `vnd.akson-dev` placeholder tree and is gated by
-  `NAMESPACE_IS_PLACEHOLDER`; the real media type is assigned through
+  `MEDIA_TYPES_ARE_PROVISIONAL`; the real media type is assigned through
   registration in Phase 0 (design §14.2, §3.1), together with the payload types.
 - Interop note for a second implementation: match the signed Part by the DSSE
   envelope media type, then trust only `payloadType` for content routing. A

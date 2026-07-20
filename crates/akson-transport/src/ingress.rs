@@ -229,7 +229,7 @@ mod tests {
     fn rejects_missing_required_extension() {
         let digest = content_digest(BODY);
         let mut required = BTreeSet::new();
-        required.insert("https://akson.invalid/ext/contract/v1".to_owned());
+        required.insert("https://akson.cc/ext/contract/v1".to_owned());
         assert!(matches!(
             admit(&store(), &required, &ingress(&digest, &[])).unwrap(),
             Admit::Rejected(Reject::MissingRequiredExtensions(_))

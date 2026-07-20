@@ -79,10 +79,13 @@ fail closed until resolved):
 
 External action items (block release, not development):
 
-- **Extension namespace domain** (design §3.1 Phase 0 release gate): the
-  project needs a stable HTTPS namespace for extension URIs and media types.
-  Owner: maintainer. Needed before any URI string is frozen; until then use a
-  clearly-marked placeholder constant in one module.
+- ~~**Extension namespace domain**~~ (design §3.1 Phase 0 release gate):
+  **done, 2026-07-20** — the project controls `akson.cc` and extension URIs are
+  built from `https://akson.cc/ext`.
+- **Media-type registration** (design §14.2, §3.1 Phase 0 release gate): payload
+  and envelope media types are still in the unregistered `vnd.akson-dev.*` tree.
+  A domain is not a registration; this is a separate IANA process (RFC 6838
+  §3.2). Owner: maintainer. Gated in code by `MEDIA_TYPES_ARE_PROVISIONAL`.
 - **License**: Apache-2.0 proposed (design §17.1); commit `LICENSE` in M0.
 
 ## 3. What we take from c2c — and what we deliberately don't
@@ -776,7 +779,7 @@ runner, packaging.
 | No qualifying Rust envelope-encryption library (ADR-0005) | Adopt Tink's ciphertext format with reference vectors; worst case is more test surface, not a new format |
 | Sandbox launcher scope creep (M9 is the hardest milestone) | Timeboxed S2 spike with a published checklist; bubblewrap fallback keeps us on a reviewed launcher; fail-closed probing ships regardless |
 | Codex non-interactive interface volatility (seen in c2c) | Adapter SDK isolates it; §4.4 replacement-ADR rule; OpenCode local path is the independent second adapter |
-| Extension namespace domain not secured | Development proceeds on a placeholder constant; release gate blocks on it; single-module change to swap |
+| ~~Extension namespace domain not secured~~ | Retired 2026-07-20: `akson.cc` secured, URIs swapped in the one module as planned. The residual risk is now media-type *registration*, which no domain purchase resolves |
 | Keystore/TPM absent on target machines | ADR-0009: report rollback detection unavailable and degrade per §15.5 rather than block install |
 | Solo bandwidth vs. design breadth | Tracer bullet keeps an integrated loop green from mid-plan; deferred list (§4.2) is a hard no-new-scope boundary |
 

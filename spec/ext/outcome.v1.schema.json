@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://akson.invalid/ext/outcome/v1/schema.json",
+  "$id": "https://akson.cc/ext/outcome/v1/schema.json",
   "title": "Akson requester outcome v1 (design §14.5)",
   "type": "object",
   "additionalProperties": false,

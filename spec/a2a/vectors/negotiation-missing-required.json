@@ -4,24 +4,24 @@
   "kind": "negotiation",
   "input": {
     "supported": [
-      "https://akson.invalid/ext/contract/v1",
-      "https://akson.invalid/ext/key-binding/v1",
-      "https://akson.invalid/ext/delivery/v1",
-      "https://akson.invalid/ext/result-evidence/v1",
-      "https://akson.invalid/ext/outcome/v1"
+      "https://akson.cc/ext/contract/v1",
+      "https://akson.cc/ext/key-binding/v1",
+      "https://akson.cc/ext/delivery/v1",
+      "https://akson.cc/ext/result-evidence/v1",
+      "https://akson.cc/ext/outcome/v1"
     ],
     "required": [
-      "https://akson.invalid/ext/contract/v1",
-      "https://akson.invalid/ext/key-binding/v1",
-      "https://akson.invalid/ext/delivery/v1",
-      "https://akson.invalid/ext/result-evidence/v1",
-      "https://akson.invalid/ext/outcome/v1"
+      "https://akson.cc/ext/contract/v1",
+      "https://akson.cc/ext/key-binding/v1",
+      "https://akson.cc/ext/delivery/v1",
+      "https://akson.cc/ext/result-evidence/v1",
+      "https://akson.cc/ext/outcome/v1"
     ],
     "activated": [
-      "https://akson.invalid/ext/key-binding/v1",
-      "https://akson.invalid/ext/delivery/v1",
-      "https://akson.invalid/ext/result-evidence/v1",
-      "https://akson.invalid/ext/outcome/v1"
+      "https://akson.cc/ext/key-binding/v1",
+      "https://akson.cc/ext/delivery/v1",
+      "https://akson.cc/ext/result-evidence/v1",
+      "https://akson.cc/ext/outcome/v1"
     ]
   },
   "expected": {

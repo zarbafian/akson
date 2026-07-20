@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://akson.invalid/ext/evidence-reference/v1/schema.json",
+  "$id": "https://akson.cc/ext/evidence-reference/v1/schema.json",
   "title": "Akson evidence reference v1 (design §3.2): a pointer to one DSSE evidence envelope by exact bytes and signer",
   "type": "object",
   "additionalProperties": false,

@@ -10,15 +10,15 @@
       "interface_url": "https://agent.example/a2a",
       "a2a_version": "1.0",
       "extensions": [
-        "https://akson.invalid/ext/outcome/v1",
-        "https://akson.invalid/ext/contract/v1"
+        "https://akson.cc/ext/outcome/v1",
+        "https://akson.cc/ext/contract/v1"
       ],
       "content_type": "application/a2a+json",
       "http_method": "POST"
     }
   },
   "expected": {
-    "canonical": "{\"a2a_version\":\"1.0\",\"body_digest\":\"d62DP99DNpf0i4a00AmLplii+5CeP8mI6DKN7u0c1PU=\",\"content_type\":\"application/a2a+json\",\"extensions\":[\"https://akson.invalid/ext/contract/v1\",\"https://akson.invalid/ext/outcome/v1\"],\"http_method\":\"POST\",\"interface_url\":\"https://agent.example/a2a\",\"message_id\":\"m1\",\"peer\":\"agent-b\"}",
-    "commitment_hex": "fb4f42ff7e16799ad8ff920fe34ded7e25fb123ab36d267da6312ea6c11fe1c8"
+    "canonical": "{\"a2a_version\":\"1.0\",\"body_digest\":\"d62DP99DNpf0i4a00AmLplii+5CeP8mI6DKN7u0c1PU=\",\"content_type\":\"application/a2a+json\",\"extensions\":[\"https://akson.cc/ext/contract/v1\",\"https://akson.cc/ext/outcome/v1\"],\"http_method\":\"POST\",\"interface_url\":\"https://agent.example/a2a\",\"message_id\":\"m1\",\"peer\":\"agent-b\"}",
+    "commitment_hex": "7003a69ee42cc1f7adebe1f3e1b949f042cd4e76c8a7129f8b703096b0af6794"
   }
 }

@@ -17,17 +17,14 @@ fn message_parses_from_a2a_json() {
             {"text": "review this patch", "mediaType": "text/plain"},
             {"data": {"max_findings": 10}, "mediaType": "application/json"}
         ],
-        "extensions": ["https://akson.invalid/ext/contract/v1"],
+        "extensions": ["https://akson.cc/ext/contract/v1"],
         "referenceTaskIds": ["task-0000"]
     }"#;
     let message: Message = serde_json::from_str(json).unwrap();
     assert_eq!(message.message_id, "msg-0001");
     assert_eq!(message.role, Role::User as i32);
     assert_eq!(message.parts.len(), 2);
-    assert_eq!(
-        message.extensions,
-        ["https://akson.invalid/ext/contract/v1"]
-    );
+    assert_eq!(message.extensions, ["https://akson.cc/ext/contract/v1"]);
     assert_eq!(message.reference_task_ids, ["task-0000"]);
 
     let Some(akson_proto::v1::part::Content::Text(text)) = &message.parts[0].content else {

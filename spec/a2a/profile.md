@@ -106,7 +106,7 @@ not verification or acceptance — those are separate Akson records
 
 The five safety-critical extension URIs (contract, key-binding, delivery,
 result-evidence, outcome) are defined by the extension registry
-(`spec/ext/`) under the namespace placeholder rules — see
+(`spec/ext/`) under the project-controlled namespace — see
 `crates/akson-ext/src/namespace.rs`. The profile validator takes the set as
 configuration so the pinned A2A layer stays independent of the extension
 crates.

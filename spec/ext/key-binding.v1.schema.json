@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://akson.invalid/ext/key-binding/v1/schema.json",
+  "$id": "https://akson.cc/ext/key-binding/v1/schema.json",
   "title": "Akson identity/key binding v1 (design §8.1, §8.2 step 5): purpose-bound verification keys exchanged at pairing",
   "description": "Keys are an object keyed by purpose so each purpose binds at most one key and only known statement purposes are allowed. TLS identity is pinned by certificate digest; local-authority keys never leave the endpoint. Code additionally verifies each thumbprint equals its JWK (enforced at pairing, milestone M6).",
   "type": "object",

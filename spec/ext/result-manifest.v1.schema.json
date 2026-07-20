@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://akson.invalid/ext/result-manifest/v1/schema.json",
+  "$id": "https://akson.cc/ext/result-manifest/v1/schema.json",
   "title": "Akson canonical result manifest v1 (design §14.1)",
   "description": "Array ordering is normative (bytewise by role, object identifier, part index, digest) but enforced by code, not schema.",
   "type": "object",
