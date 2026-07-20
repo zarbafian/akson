@@ -136,6 +136,12 @@ bob task deliver task-<id>
 
 # 4. alice records the verifiable outcome; the bundle digest matches bob's.
 alice task outcomes
+
+# 5. ...and reads what bob actually produced. The delivery carried the bytes
+#    alongside the signed manifest, and alice accepted them only because each
+#    re-hashed to the digest bob signed for.
+alice task output task-<id>              # role, media type, size, digest
+alice task output task-<id> --role response   # just the bytes, ready to pipe
 ~~~
 
 `axon whoami` prints a daemon's own identity and endpoint fingerprint;
@@ -184,6 +190,34 @@ malformed or oversized findings fails closed. For Anthropic's Messages API, use 
 Anthropic adapter and point the processor at it instead:
 `... anthropic api.anthropic.com 443 ca --path /v1/messages --auth x-api-key --header anthropic-version:2023-06-01`.
 
+### Two agents, cooperating
+
+Because a delivered result carries its bytes, the requesting side can *read* what
+its peer produced and send the next task built from it. That turns the one-shot
+round trip into a working conversation between two agents that own different
+components:
+
+~~~text
+alice owns the web UI                    bob owns the API server
+  1. alice → bob   feature  "add GET /stats"
+  2. bob   → alice feature  "it's live, here's the shape — render it"
+  3. alice → bob   defect   "uptime arrives in ms, the shape says seconds"
+  4. bob   → alice feature  "added error_rate, render that too"
+  5. alice → bob   defect   "/stats 500s when users = 0"
+  6. bob   → alice confirm  "fixed — re-check against the shape"
+~~~
+
+Neither side ever sees the other's source: the only thing that crosses is a signed
+task and its signed result. Both endpoints send *and* perform, so each pins the
+other's proposal and task-result keys at pairing.
+
+- `crates/axond/tests/cooperation_e2e.rs` runs the whole scenario hermetically
+  (`cargo test -p axond --test cooperation_e2e`). Its closing assertion is the
+  point: every round's input digest equals the previous round's output digest, so
+  the six exchanges form one unbroken chain.
+- `bench/cooperate.sh` runs the same six rounds across two hosts with a real
+  model behind each side's worker.
+
 ## Acknowledgments
 
 Axon's founding idea comes from **c2c**, a prior agent-communication system:
@@ -197,6 +231,9 @@ c2c for the groundwork.
 
 ## Documents
 
+- **[Documentation site](docs/index.html)** — the friendly path in: install,
+  quickstart, pointing it at a real model, and driving it from Claude Code or
+  Codex on Linux. Open the file directly, or serve `docs/` over any static host.
 - [Design](design/2026-07-16-threads-enterprise-agent-communication.md) — the
   normative product and security design.
 - [Implementation plan](design/2026-07-16-implementation-plan.md) — milestones

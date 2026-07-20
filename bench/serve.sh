@@ -28,10 +28,15 @@ export PATH="$HOME/.cargo/bin:$BIN:$PATH"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 
+# requester/performer are the one-way bench roles. alice/bob are the two-way
+# cooperation roles (cooperate.sh): same identities and ports, but BOTH get a
+# worker, because each side takes its turn performing.
 case "$ROLE" in
-  requester) AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443 ;;
-  performer) AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444 ;;
-  *) echo "ROLE must be requester|performer" >&2; exit 2 ;;
+  requester) AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443; WORKER=0 ;;
+  performer) AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444; WORKER=1 ;;
+  alice)     AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443; WORKER=1 ;;
+  bob)       AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444; WORKER=1 ;;
+  *) echo "ROLE must be requester|performer|alice|bob" >&2; exit 2 ;;
 esac
 DATA="$HOME/.axon-bench-$ROLE"
 UNIT="axon-$ROLE"
@@ -55,7 +60,7 @@ ENV=(
   "--setenv=AXON_RECEIVE_ADDR=$SELF_IP:$RECV"
   "--setenv=AXON_PAIR_ADDR=$SELF_IP:$PAIRP"
 )
-[ "$ROLE" = performer ] && ENV+=("--setenv=AXON_WORKER_EXEC=$(worker_exec "$PROVIDER")")
+[ "$WORKER" = 1 ] && ENV+=("--setenv=AXON_WORKER_EXEC=$(worker_exec "$PROVIDER")")
 
 echo "==> Starting $UNIT (delegated cgroup) as $ISSUER/$AGENT on $SELF_IP:$RECV${ROLE:+ [provider=$PROVIDER]}…"
 systemctl --user stop "$UNIT" 2>/dev/null || true
@@ -69,7 +74,7 @@ SOCK="$XDG_RUNTIME_DIR/axon/admin.sock"
 for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
 [ -S "$SOCK" ] || { echo "daemon socket did not appear: $SOCK" >&2; exit 1; }
 
-if [ "$ROLE" = performer ]; then
+if [ "$WORKER" = 1 ]; then
   # Configure a processor for every back-end whose key is present (`ca` = validate
   # the public endpoint against the CA roots). Re-adding is idempotent.
   if [ -n "${OPENAI_API_KEY:-}" ]; then

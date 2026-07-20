@@ -1,0 +1,1299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Axon — how to use it</title>
+<meta name="description" content="Install Axon, pair two endpoints, delegate a task, and read a verified result — plus driving it from Claude Code and Codex on Linux.">
+<style>
+/* ============================================================
+   Axon docs
+   Palette: slate-indigo ground; two semantic accents that encode
+   DIRECTION, because the whole product is two endpoints taking
+   turns — copper = the side that asks, teal = the side that does.
+   Type: monospace display (the subject's world is a terminal),
+   system sans for reading, mono again for data and labels.
+   ============================================================ */
+
+:root {
+  --ink:      #F5F7F4;
+  --surface:  #FFFFFF;
+  --sunken:   #EDF0EE;
+  --text:     #1A2028;
+  --muted:    #5D6B78;
+  --line:     #DDE3E2;
+  --line-hard:#C6CFCD;
+
+  --ask:      #A85618;   /* copper — the endpoint that delegates */
+  --ask-dim:  #F3E5D8;
+  --do:       #0E6D62;   /* teal   — the endpoint that performs  */
+  --do-dim:   #DCEBE8;
+  --warn:     #8A5B00;
+  --warn-dim: #FBF0DA;
+
+  --code-bg:  #12171E;
+  --code-fg:  #DCE3EC;
+  --code-mut: #7D8C9E;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --rail: 15rem;
+  --measure: 68ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink:      #0E1219;
+    --surface:  #141A22;
+    --sunken:   #1A222C;
+    --text:     #D9E2EC;
+    --muted:    #8093A5;
+    --line:     #232D39;
+    --line-hard:#313E4D;
+
+    --ask:      #E09A57;
+    --ask-dim:  #2A2018;
+    --do:       #5CC3B2;
+    --do-dim:   #12262A;
+    --warn:     #D9A441;
+    --warn-dim: #29220F;
+
+    --code-bg:  #0A0E14;
+    --code-fg:  #D9E2EC;
+    --code-mut: #6E7F91;
+  }
+}
+
+/* The viewer's toggle stamps data-theme on :root and must win both ways. */
+:root[data-theme="light"] {
+  --ink: #F5F7F4; --surface: #FFFFFF; --sunken: #EDF0EE;
+  --text: #1A2028; --muted: #5D6B78; --line: #DDE3E2; --line-hard: #C6CFCD;
+  --ask: #A85618; --ask-dim: #F3E5D8; --do: #0E6D62; --do-dim: #DCEBE8;
+  --warn: #8A5B00; --warn-dim: #FBF0DA;
+  --code-bg: #12171E; --code-fg: #DCE3EC; --code-mut: #7D8C9E;
+}
+:root[data-theme="dark"] {
+  --ink: #0E1219; --surface: #141A22; --sunken: #1A222C;
+  --text: #D9E2EC; --muted: #8093A5; --line: #232D39; --line-hard: #313E4D;
+  --ask: #E09A57; --ask-dim: #2A2018; --do: #5CC3B2; --do-dim: #12262A;
+  --warn: #D9A441; --warn-dim: #29220F;
+  --code-bg: #0A0E14; --code-fg: #D9E2EC; --code-mut: #6E7F91;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  gap: 0;
+  max-width: 76rem;
+  margin: 0 auto;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 2.5rem 1.25rem 3rem 1.5rem;
+  border-right: 1px solid var(--line);
+}
+
+.rail-mark {
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+  display: block;
+  margin-bottom: 0.35rem;
+}
+.rail-mark span { color: var(--ask); }
+
+.rail-sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 2rem;
+  font-family: var(--mono);
+}
+
+.rail nav { display: flex; flex-direction: column; gap: 0.1rem; }
+
+.rail nav a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.855rem;
+  border-left: 2px solid transparent;
+  border-radius: 0 3px 3px 0;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.rail nav a:hover { color: var(--text); background: var(--sunken); }
+.rail nav a.on { color: var(--text); border-left-color: var(--ask); font-weight: 600; }
+
+.rail nav .grp {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--muted);
+  opacity: 0.75;
+  margin: 1.4rem 0 0.4rem 0.6rem;
+}
+.rail nav .grp:first-of-type { margin-top: 0; }
+
+main { padding: 2.5rem 3rem 8rem; min-width: 0; }
+
+/* ---------- type ---------- */
+
+h1, h2, h3 { text-wrap: balance; }
+
+h1 {
+  font-family: var(--mono);
+  font-size: clamp(2rem, 4.5vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.06;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-family: var(--mono);
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  margin: 4.5rem 0 0.35rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 1.5rem;
+}
+h2:first-of-type { border-top: none; padding-top: 0; }
+
+h3 {
+  font-family: var(--mono);
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  margin: 2.5rem 0 0.5rem;
+  scroll-margin-top: 1.5rem;
+}
+
+.deck {
+  color: var(--muted);
+  font-size: 0.97rem;
+  margin: 0 0 2rem;
+  max-width: var(--measure);
+}
+
+p, ul, ol { max-width: var(--measure); }
+p { margin: 0 0 1.05rem; }
+ul, ol { margin: 0 0 1.05rem; padding-left: 1.15rem; }
+li { margin-bottom: 0.4rem; }
+li::marker { color: var(--muted); }
+
+a { color: var(--ask); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { color: var(--text); }
+:focus-visible { outline: 2px solid var(--ask); outline-offset: 2px; border-radius: 2px; }
+
+strong { font-weight: 650; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.87em;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.08em 0.32em;
+  word-break: break-word;
+}
+
+/* ---------- hero ---------- */
+
+.hero { padding-bottom: 1rem; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin: 0 0 1.1rem;
+}
+
+.lede {
+  font-size: 1.12rem;
+  line-height: 1.6;
+  max-width: var(--measure);
+  margin: 0 0 1.5rem;
+}
+
+.pills { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 2.5rem; }
+.pill {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--line-hard);
+  border-radius: 100px;
+  color: var(--muted);
+}
+
+/* ---------- the direction diagram ---------- */
+
+.wire {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 1.4rem 1.5rem;
+  margin: 0 0 2rem;
+  overflow-x: auto;
+}
+.wire-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr 6.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  min-width: 30rem;
+}
+.wire-end {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 0.35rem 0;
+}
+.wire-end.a { color: var(--ask); }
+.wire-end.b { color: var(--do); text-align: right; }
+.wire-line { position: relative; height: 1px; background: var(--line-hard); }
+.wire-step {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr 6.5rem;
+  gap: 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.73rem;
+  color: var(--muted);
+  min-width: 30rem;
+  padding: 0.28rem 0;
+  border-bottom: 1px dashed var(--line);
+}
+.wire-step:last-child { border-bottom: none; }
+.wire-step .arrow { text-align: center; color: var(--text); }
+.wire-step .l { color: var(--ask); }
+.wire-step .r { color: var(--do); text-align: right; }
+.wire-steps { margin-top: 0.9rem; }
+
+/* ---------- code blocks with an endpoint rail ---------- */
+
+.cmd {
+  position: relative;
+  margin: 0 0 1.4rem;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+}
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.55rem 0.4rem 0.85rem;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.025);
+}
+
+.who {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+.who::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+}
+.cmd.alice .who { color: #E09A57; }
+.cmd.bob   .who { color: #5CC3B2; }
+.cmd.host  .who { color: #8093A5; }
+
+.cmd.alice { border-left: 3px solid #E09A57; }
+.cmd.bob   { border-left: 3px solid #5CC3B2; }
+.cmd.host  { border-left: 3px solid #45525F; }
+
+.copy {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #93A2B4;
+  border-radius: 3px;
+  padding: 0.18rem 0.5rem;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.copy:hover { color: #DCE3EC; border-color: rgba(255,255,255,0.35); }
+.copy.done { color: #5CC3B2; border-color: #5CC3B2; }
+
+.cmd pre {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: var(--code-fg);
+  tab-size: 2;
+}
+.cmd pre code {
+  background: none; border: none; padding: 0; font-size: inherit; color: inherit;
+}
+.cmd .c { color: var(--code-mut); font-style: italic; }
+
+/* plain (non-terminal) block: file contents */
+.file {
+  margin: 0 0 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.file .cmd-head { border-bottom: 1px solid rgba(255,255,255,0.07); }
+.file .path {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: #93A2B4;
+  letter-spacing: 0.02em;
+}
+.file pre {
+  margin: 0; padding: 0.9rem 1rem; overflow-x: auto;
+  font-family: var(--mono); font-size: 0.8rem; line-height: 1.7; color: var(--code-fg);
+}
+.file pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
+
+/* ---------- callouts ---------- */
+
+.note {
+  border-left: 3px solid var(--do);
+  background: var(--do-dim);
+  padding: 0.85rem 1.1rem;
+  border-radius: 0 5px 5px 0;
+  margin: 0 0 1.4rem;
+  max-width: var(--measure);
+  font-size: 0.93rem;
+}
+.note.warn { border-left-color: var(--warn); background: var(--warn-dim); }
+.note p:last-child { margin-bottom: 0; }
+.note .tag {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: var(--do);
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.note.warn .tag { color: var(--warn); }
+
+/* ---------- tables ---------- */
+
+.tw { overflow-x: auto; margin: 0 0 1.6rem; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 34rem;
+  font-size: 0.88rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.55rem 0.8rem 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom-color: var(--line-hard);
+}
+td code { white-space: nowrap; }
+
+/* ---------- footer ---------- */
+
+footer {
+  margin-top: 5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+  max-width: var(--measure);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 1.5rem 1.25rem;
+  }
+  .rail nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.3rem;
+  }
+  .rail nav a { border-left: none; border-bottom: 2px solid transparent; }
+  .rail nav a.on { border-left: none; border-bottom-color: var(--ask); }
+  .rail nav .grp { width: 100%; margin: 0.8rem 0 0.2rem; }
+  main { padding: 2rem 1.25rem 5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+<aside class="rail">
+  <a class="rail-mark" href="#top">ax<span>o</span>n</a>
+  <div class="rail-sub">docs · linux</div>
+  <nav id="nav">
+    <div class="grp">Start</div>
+    <a href="#what">What it is</a>
+    <a href="#requirements">Requirements</a>
+    <a href="#build">Build it</a>
+    <div class="grp">Do it</div>
+    <a href="#quickstart">Quickstart</a>
+    <a href="#reading">Reading a result</a>
+    <a href="#commands">Every command</a>
+    <div class="grp">Go further</div>
+    <a href="#model">Use a real model</a>
+    <a href="#cooperate">Two agents cooperating</a>
+    <div class="grp">In your agent</div>
+    <a href="#claude">From Claude Code</a>
+    <a href="#codex">From Codex</a>
+    <div class="grp">Reference</div>
+    <a href="#trouble">Troubleshooting</a>
+    <a href="#safety">Why it's safe</a>
+  </nav>
+</aside>
+
+<main id="top">
+
+<header class="hero">
+  <p class="eyebrow">Local-first agent-to-agent gateway</p>
+  <h1>Let another agent do work for you — without giving it your machine.</h1>
+  <p class="lede">
+    Axon connects two independently operated agents so they can hand each other real
+    work. Every task is signed, every result is verifiable, and the work a peer sends
+    you runs in a sandbox with no network, no credentials, and nothing on disk except
+    the files that task explicitly named.
+  </p>
+  <div class="pills">
+    <span class="pill">Linux</span>
+    <span class="pill">No hosted account</span>
+    <span class="pill">No relay server</span>
+    <span class="pill">mTLS 1.3, pinned</span>
+    <span class="pill">Pre-release</span>
+  </div>
+</header>
+
+<div class="note warn">
+  <span class="tag">Pre-release</span>
+  <p>Axon runs end to end today, but key custody is interim and the extension
+  namespaces are not final. Use it to explore and to build against — not yet to
+  protect anything that matters.</p>
+</div>
+
+<h2 id="what">What it is</h2>
+<p>
+  Two people each run their own <code>axond</code> daemon. They pair once, in person or
+  over any channel they already trust, and from then on their agents can delegate work
+  to each other directly — no broker in the middle, no shared API key, no account.
+</p>
+<p>The unit of exchange is a <strong>task</strong>, and it moves through six steps:</p>
+
+<div class="wire">
+  <div class="wire-row">
+    <div class="wire-end a">alice</div>
+    <div class="wire-line"></div>
+    <div class="wire-end b">bob</div>
+  </div>
+  <div class="wire-steps">
+    <div class="wire-step"><span class="l">send</span><span class="arrow">──────▶</span><span class="r">a task lands, inert</span></div>
+    <div class="wire-step"><span class="l"></span><span class="arrow">&nbsp;</span><span class="r">approve — a human decides</span></div>
+    <div class="wire-step"><span class="l"></span><span class="arrow">&nbsp;</span><span class="r">run — sandboxed worker</span></div>
+    <div class="wire-step"><span class="l">outcome recorded</span><span class="arrow">◀──────</span><span class="r">deliver — signed result</span></div>
+    <div class="wire-step"><span class="l">output — read the bytes</span><span class="arrow">&nbsp;</span><span class="r"></span></div>
+  </div>
+</div>
+
+<p>
+  Two ideas carry the whole design. First, <strong>arrival is not execution</strong>:
+  a task showing up in your inbox never starts a model, never touches your files, never
+  fetches a URL. It just sits there until you approve it. Second, <strong>a peer's work
+  runs in its own reduced-authority domain</strong> — your agent's authority is never
+  lent to it.
+</p>
+
+<p>
+  Throughout these docs, <strong style="color:var(--ask)">alice</strong> is the endpoint
+  asking for work and <strong style="color:var(--do)">bob</strong> is the endpoint doing
+  it. Every command block below is tagged with which one you type it into.
+</p>
+
+<h2 id="requirements">Requirements</h2>
+<p>Axon is a Linux daemon. Sending, pairing, and receiving work anywhere Linux does; the
+sandbox that <em>runs</em> a peer's task needs a few kernel features.</p>
+
+<div class="tw">
+<table>
+  <tr><th>You want to</th><th>You need</th></tr>
+  <tr>
+    <td>Send tasks, pair, receive, deliver</td>
+    <td>Any modern Linux. Rust toolchain to build.</td>
+  </tr>
+  <tr>
+    <td>Run a peer's task in the sandbox</td>
+    <td><code>bwrap</code> (bubblewrap), unprivileged user namespaces, and a
+        <strong>delegated cgroup&nbsp;v2 subtree</strong> with the <code>memory</code>
+        and <code>pids</code> controllers.</td>
+  </tr>
+</table>
+</div>
+
+<p>Check the host before anything else — this needs no daemon running:</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>axon doctor</code></pre>
+</div>
+
+<p>
+  The usual blocker on Ubuntu is AppArmor gating unprivileged user namespaces. The other
+  is that a plain SSH login has no delegated cgroup, so <code>axon doctor</code> reports
+  <code>cgroup_delegation MISSING</code> until you start the daemon under a delegated
+  scope — see <a href="#trouble">Troubleshooting</a>.
+</p>
+
+<div class="note">
+  <span class="tag">Fails closed</span>
+  <p>If the sandbox is unavailable, <code>axon task run</code> refuses with
+  <code>503 no-confinement</code>. It will never fall back to running a peer's task
+  unconfined.</p>
+</div>
+
+<h2 id="build">Build it</h2>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>git clone https://github.com/zarbafian/axon &amp;&amp; cd axon
+cargo build --release -p axond -p axon-cli
+<span class="c"># target/release/axond  — the daemon</span>
+<span class="c"># target/release/axon   — the CLI that commands it</span>
+export PATH="$PWD/target/release:$PATH"</code></pre>
+</div>
+
+<p>
+  <code>axond</code> is a long-running daemon; <code>axon</code> is a thin client that
+  talks to it over a Unix socket in <code>$XDG_RUNTIME_DIR/axon/</code>. That is the only
+  thing connecting them, which is how you point the CLI at one daemon or the other when
+  you run two on the same machine.
+</p>
+
+<h2 id="quickstart">Quickstart: a full round trip on one machine</h2>
+<p class="deck">
+  Two daemons, three terminals, about two minutes. Everything stays on loopback over
+  mutually authenticated TLS.
+</p>
+
+<h3>1 · Start bob, the endpoint that will do the work</h3>
+<p>
+  <code>AXON_WORKER_CMD</code> is what the sandbox runs for an approved task. Here it is a
+  shell stand-in that reads the supplied input and writes a response — enough to see the
+  whole loop without any model or API key.
+</p>
+
+<div class="cmd bob">
+  <div class="cmd-head"><span class="who">terminal 1 · bob</span><button class="copy">Copy</button></div>
+<pre><code>export XDG_RUNTIME_DIR=/tmp/bob AXON_DATA_DIR=/tmp/bob-data
+export AXON_ISSUER=orgB AXON_AGENT=bob
+export AXON_INTERFACE_URL=https://127.0.0.1:18444/a2a
+export AXON_RECEIVE_ADDR=127.0.0.1:18444 AXON_PAIR_ADDR=127.0.0.1:19444
+export AXON_WORKER_CMD='[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" &gt; /output/response'
+mkdir -p "$XDG_RUNTIME_DIR"
+axond serve</code></pre>
+</div>
+
+<h3>2 · Start alice, the endpoint that will ask</h3>
+
+<div class="cmd alice">
+  <div class="cmd-head"><span class="who">terminal 2 · alice</span><button class="copy">Copy</button></div>
+<pre><code>export XDG_RUNTIME_DIR=/tmp/alice AXON_DATA_DIR=/tmp/alice-data
+export AXON_ISSUER=orgA AXON_AGENT=alice
+export AXON_INTERFACE_URL=https://127.0.0.1:18443/a2a
+export AXON_RECEIVE_ADDR=127.0.0.1:18443 AXON_PAIR_ADDR=127.0.0.1:19443
+mkdir -p "$XDG_RUNTIME_DIR"
+axond serve</code></pre>
+</div>
+
+<div class="note warn">
+  <span class="tag">Keep the paths short</span>
+  <p>A Unix socket path can't exceed about 100 bytes. Use short runtime dirs like
+  <code>/tmp/bob</code>; the data dir can be anywhere.</p>
+</div>
+
+<h3>3 · Drive both from a third terminal</h3>
+<p>
+  Two shell functions, each pointing the CLI at one daemon. This is the whole trick to
+  running both sides locally.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">terminal 3 · driver</span><button class="copy">Copy</button></div>
+<pre><code>alice() { XDG_RUNTIME_DIR=/tmp/alice axon "$@"; }
+bob()   { XDG_RUNTIME_DIR=/tmp/bob   axon "$@"; }
+
+alice whoami   <span class="c"># identity + endpoint certificate fingerprint</span>
+bob   whoami</code></pre>
+</div>
+
+<h3>4 · Pair them, once</h3>
+<p>
+  Alice mints an invitation; bob accepts it. Then each confirms the other, which is the
+  moment a human says <em>yes, this is really them</em>. From here on both sides pin the
+  other's certificate by fingerprint — not by CA, not by DNS.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">terminal 3 · driver</span><button class="copy">Copy</button></div>
+<pre><code>alice pair invite /tmp/inv.json   <span class="c"># hand this to bob however you like</span>
+bob   pair accept /tmp/inv.json
+
+alice peer confirm bob
+bob   peer confirm alice
+
+alice peer list                   <span class="c"># bob should read ACTIVE</span></code></pre>
+</div>
+
+<h3>5 · Alice sends a task</h3>
+<p>
+  A task is a JSON spec. <code>capabilities</code> is the important field: it is
+  everything the work is allowed to do, and nothing outside it will be possible.
+</p>
+
+<div class="cmd alice">
+  <div class="cmd-head"><span class="who">terminal 3 · alice</span><button class="copy">Copy</button></div>
+<pre><code>cat &gt; /tmp/task.json &lt;&lt;'JSON'
+{ "performer": "bob",
+  "task_type": "https://axon.invalid/task/code-review/v1",
+  "objective": "Review the supplied diff.",
+  "inputs": [{ "id": "diff", "media_type": "text/x-diff",
+               "text": "--- a\n+++ b\n" }],
+  "deliverables": [{ "role": "review", "media_type": "text/plain" }],
+  "capabilities": ["respond", "read_supplied_inputs"],
+  "deadline": "2030-01-01T00:00:00Z",
+  "max_response_bytes": 8192 }
+JSON
+
+alice task send /tmp/task.json    <span class="c"># prints: sent to bob: task &lt;id&gt;</span></code></pre>
+</div>
+
+<h3>6 · Bob decides, runs, and delivers</h3>
+<p>
+  Nothing has executed yet. <code>task show</code> renders the risk card: exactly what
+  this contract asks for, in one screen, so the decision is informed.
+</p>
+
+<div class="cmd bob">
+  <div class="cmd-head"><span class="who">terminal 3 · bob</span><button class="copy">Copy</button></div>
+<pre><code>bob task inbox
+bob task show    task-&lt;id&gt;   <span class="c"># the risk card — read before approving</span>
+bob task approve task-&lt;id&gt;   <span class="c"># accepts, and issues a one-shot work order</span>
+bob task run     task-&lt;id&gt;   <span class="c"># confined worker: reads /inputs, writes /output</span>
+bob task deliver task-&lt;id&gt;   <span class="c"># signed result goes back to alice</span></code></pre>
+</div>
+
+<h3>7 · Alice reads what came back</h3>
+
+<div class="cmd alice">
+  <div class="cmd-head"><span class="who">terminal 3 · alice</span><button class="copy">Copy</button></div>
+<pre><code>alice task outcomes                          <span class="c"># the signed, verifiable disposition</span>
+alice task output task-&lt;id&gt;                  <span class="c"># role, media type, size, digest</span>
+alice task output task-&lt;id&gt; --role response  <span class="c"># just the bytes → reviewed: LGTM</span></code></pre>
+</div>
+
+<p>That's the whole loop. Everything else is a variation on it.</p>
+
+<h2 id="reading">What "reading a result" actually means</h2>
+<p>
+  When bob delivers, two things travel: the bytes his worker produced, and a manifest he
+  signed that names each output with its SHA-256. Alice's daemon accepts the delivery
+  <strong>only if every output the manifest names arrives and re-hashes to the digest bob
+  signed for</strong>. One missing output, one altered byte, or one extra part that the
+  manifest doesn't cover, and the whole delivery is refused — no outcome recorded, nothing
+  stored.
+</p>
+<p>
+  So when <code>axon task output</code> prints something, you already know it is exactly
+  what your peer put their signature on. That is what makes it safe to feed straight into
+  whatever you do next:
+</p>
+
+<div class="cmd alice">
+  <div class="cmd-head"><span class="who">alice</span><button class="copy">Copy</button></div>
+<pre><code>alice task output task-&lt;id&gt; --role response | jq .
+alice task output task-&lt;id&gt; --role response &gt; /tmp/review.txt</code></pre>
+</div>
+
+<h2 id="commands">Every command</h2>
+
+<div class="tw">
+<table>
+  <tr><th>Command</th><th>What it does</th></tr>
+  <tr><td><code>axon doctor</code></td><td>Check the host can run the sandbox. Needs no daemon.</td></tr>
+  <tr><td><code>axon status</code></td><td>Ask the running daemon how it is.</td></tr>
+  <tr><td><code>axon whoami</code></td><td>This endpoint's identity, URL, and certificate fingerprint.</td></tr>
+  <tr><td><code>axon pair invite &lt;file&gt;</code></td><td>Mint an invitation to hand to a peer.</td></tr>
+  <tr><td><code>axon pair accept &lt;file&gt;</code></td><td>Accept a peer's invitation.</td></tr>
+  <tr><td><code>axon peer list</code></td><td>Peers and their status.</td></tr>
+  <tr><td><code>axon peer confirm &lt;agent&gt;</code></td><td>Promote a pending peer to active. A human's yes.</td></tr>
+  <tr><td><code>axon task send &lt;spec.json&gt;</code></td><td>Sign and post a task to a peer.</td></tr>
+  <tr><td><code>axon task inbox</code></td><td>Tasks awaiting your decision.</td></tr>
+  <tr><td><code>axon task show &lt;id&gt;</code></td><td>The risk card for one task.</td></tr>
+  <tr><td><code>axon task approve &lt;id&gt;</code></td><td>Accept it and issue a one-shot work order.<br>
+      <code>--processor &lt;id&gt;</code> also grants model access.<br>
+      <code>--artifacts</code> also grants artifact export.</td></tr>
+  <tr><td><code>axon task deny &lt;id&gt; &lt;reason&gt;</code></td><td>Sign a refusal.</td></tr>
+  <tr><td><code>axon task run &lt;id&gt;</code></td><td>Run the worker in the sandbox.</td></tr>
+  <tr><td><code>axon task deliver &lt;id&gt;</code></td><td>Send the signed result back.</td></tr>
+  <tr><td><code>axon task sent</code></td><td>Tasks you sent as requester.</td></tr>
+  <tr><td><code>axon task outcomes</code></td><td>Signed dispositions you recorded.</td></tr>
+  <tr><td><code>axon task output &lt;id&gt;</code></td><td>The result's outputs.<br>
+      <code>--role &lt;role&gt;</code> prints just those bytes.</td></tr>
+  <tr><td><code>axon processor add …</code></td><td>Register a model endpoint the broker may reach.</td></tr>
+  <tr><td><code>axon processor list</code></td><td>Configured processors.</td></tr>
+  <tr><td><code>axon processor credential &lt;id&gt; &lt;key&gt;</code></td><td>Store its API key, sealed.</td></tr>
+</table>
+</div>
+
+<h3>Environment</h3>
+<div class="tw">
+<table>
+  <tr><th>Variable</th><th>Meaning</th></tr>
+  <tr><td><code>XDG_RUNTIME_DIR</code></td><td>Where the control socket lives. Selects which daemon the CLI talks to.</td></tr>
+  <tr><td><code>AXON_DATA_DIR</code></td><td>The encrypted store and key material.</td></tr>
+  <tr><td><code>AXON_ISSUER</code> / <code>AXON_AGENT</code></td><td>This endpoint's identity, e.g. <code>orgA</code> / <code>alice</code>.</td></tr>
+  <tr><td><code>AXON_INTERFACE_URL</code></td><td>The URL peers reach you at.</td></tr>
+  <tr><td><code>AXON_RECEIVE_ADDR</code></td><td>Address to listen on for tasks and results.</td></tr>
+  <tr><td><code>AXON_PAIR_ADDR</code></td><td>Address to listen on for pairing.</td></tr>
+  <tr><td><code>AXON_WORKER_CMD</code></td><td>Worker as a shell command. Convenient; for demos.</td></tr>
+  <tr><td><code>AXON_WORKER_EXEC</code></td><td>Worker as a direct program. Stricter sandbox — use this in production.</td></tr>
+</table>
+</div>
+
+<h2 id="model">Point it at a real model</h2>
+<p class="deck">
+  The stand-in worker just echoes. A real one calls a model — but never directly.
+</p>
+<p>
+  The confined worker has no network at all: <code>socket()</code> and
+  <code>connect()</code> are denied outright. It reaches a model only through the
+  <strong>broker</strong>. It inherits one already-connected file descriptor, writes its
+  request to that, and the daemon makes the real HTTPS call — injecting the credential,
+  enforcing an egress allowlist, and counting the spend against a budget.
+</p>
+<p>
+  Which means the API key never enters the worker. A prompt-injected task cannot exfiltrate
+  it, because it was never reachable.
+</p>
+
+<h3>Register the model endpoint</h3>
+
+<div class="cmd bob">
+  <div class="cmd-head"><span class="who">bob · the side that runs work</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># `ca` validates the public endpoint against the system CA roots.</span>
+bob processor add gpt openai api.openai.com 443 ca \
+    --path /v1/chat/completions --auth bearer
+bob processor credential gpt "$OPENAI_API_KEY"
+
+<span class="c"># Anthropic:</span>
+bob processor add claude anthropic api.anthropic.com 443 ca \
+    --path /v1/messages --auth x-api-key \
+    --header anthropic-version:2023-06-01
+bob processor credential claude "$ANTHROPIC_API_KEY"
+
+<span class="c"># A model on this machine — nothing leaves the box. Pass the server's</span>
+<span class="c"># certificate SHA-256 instead of `ca`: that marks the processor local,</span>
+<span class="c"># which is what permits a loopback address through the egress policy.</span>
+<span class="c"># The broker always dials over TLS, so terminate TLS in front of a</span>
+<span class="c"># plain-HTTP server like Ollama.</span>
+bob processor add local openai 127.0.0.1 11434 &lt;server-cert-sha256&gt; \
+    --path /v1/chat/completions --auth none</code></pre>
+</div>
+
+<h3>Make an adapter the worker</h3>
+
+<div class="cmd bob">
+  <div class="cmd-head"><span class="who">bob · before axond serve</span><button class="copy">Copy</button></div>
+<pre><code>cargo build --release -p axon-adapter-openai   <span class="c"># or -anthropic, -gemini</span>
+
+<span class="c"># AXON_WORKER_EXEC runs the adapter directly — no wrapping shell — under the</span>
+<span class="c"># strict profile: one process that cannot fork and cannot open a socket.</span>
+export AXON_WORKER_EXEC="$PWD/target/release/axon-adapter-openai \
+    --processor gpt --model gpt-4o --sarif"
+axond serve</code></pre>
+</div>
+
+<h3>Grant model access, per task</h3>
+<p>
+  Reaching a model is <em>outward-disclosing</em> — the task's content leaves the machine.
+  So it is never automatic. The task must ask for it, and bob must grant it explicitly at
+  approval time.
+</p>
+
+<div class="cmd bob">
+  <div class="cmd-head"><span class="who">bob</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># the spec must list them:</span>
+<span class="c">#   "capabilities": ["respond","read_supplied_inputs","processor_use","artifact_export"]</span>
+
+bob task approve task-&lt;id&gt; --processor gpt --artifacts
+bob task run     task-&lt;id&gt;   <span class="c"># adapter → broker → model → validated SARIF</span></code></pre>
+</div>
+
+<h2 id="cooperate">Two agents cooperating</h2>
+<p class="deck">
+  Because a delivered result carries its bytes, the asking side can read what its peer
+  produced and build the next task from it. One round trip becomes a working
+  conversation.
+</p>
+<p>
+  Say alice owns a web UI and bob owns the API it calls. Neither can see the other's
+  source. All that crosses is a signed task and a signed result — and that turns out to
+  be enough to build a feature together:
+</p>
+
+<div class="wire">
+  <div class="wire-row">
+    <div class="wire-end a">alice · web UI</div>
+    <div class="wire-line"></div>
+    <div class="wire-end b">bob · API</div>
+  </div>
+  <div class="wire-steps">
+    <div class="wire-step"><span class="l">feature</span><span class="arrow">──────▶</span><span class="r">"add GET /stats"</span></div>
+    <div class="wire-step"><span class="l">"here's the shape — render it"</span><span class="arrow">◀──────</span><span class="r">feature</span></div>
+    <div class="wire-step"><span class="l">defect</span><span class="arrow">──────▶</span><span class="r">"uptime is ms, shape says seconds"</span></div>
+    <div class="wire-step"><span class="l">"added error_rate, render it too"</span><span class="arrow">◀──────</span><span class="r">feature</span></div>
+    <div class="wire-step"><span class="l">defect</span><span class="arrow">──────▶</span><span class="r">"/stats 500s when users = 0"</span></div>
+    <div class="wire-step"><span class="l">"fixed — re-check the panel"</span><span class="arrow">◀──────</span><span class="r">confirm</span></div>
+  </div>
+</div>
+
+<p>
+  Both endpoints send <em>and</em> perform, so each needs a worker, and each pins the
+  other's proposal and task-result keys at pairing. The pattern in each round is always
+  the same:
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">the loop</span><button class="copy">Copy</button></div>
+<pre><code>OUT=$(alice task output "$PREV_ID" --role response)   <span class="c"># last round's result</span>
+<span class="c"># …build the next spec with $OUT as its input, then:</span>
+alice task send /tmp/next.json
+bob   task approve &lt;id&gt; --processor gpt
+bob   task run     &lt;id&gt;
+bob   task deliver &lt;id&gt;
+<span class="c"># and now the roles swap for the next round.</span></code></pre>
+</div>
+
+<p>Two runnable versions ship in the repo:</p>
+<ul>
+  <li><code>cargo test -p axond --test cooperation_e2e</code> — the whole six-round
+      scenario, hermetic, no network and no models. Its closing assertion is the point:
+      every round's input digest equals the previous round's output digest, so the six
+      exchanges form one unbroken chain.</li>
+  <li><code>bench/cooperate.sh</code> — the same six rounds across two hosts with a real
+      model behind each side's worker.</li>
+</ul>
+
+<h2 id="claude">Driving it from Claude Code</h2>
+<p class="deck">
+  Axon is a CLI, so Claude Code drives it with Bash. The work is in scoping what it may
+  run and teaching it the verbs.
+</p>
+
+<h3>1 · Allow the axon verbs, and only those</h3>
+<p>
+  Prefix rules let you allow the safe, read-and-send verbs without handing over general
+  shell access. Note what is deliberately <em>absent</em>: <code>task approve</code> is
+  not on the list, because approving is the human decision this whole system exists to
+  protect.
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">.claude/settings.json</span><button class="copy">Copy</button></div>
+<pre><code>{
+  "permissions": {
+    "allow": [
+      "Bash(axon whoami)",
+      "Bash(axon status)",
+      "Bash(axon peer list)",
+      "Bash(axon task inbox)",
+      "Bash(axon task sent)",
+      "Bash(axon task outcomes)",
+      "Bash(axon task show:*)",
+      "Bash(axon task send:*)",
+      "Bash(axon task output:*)"
+    ],
+    "deny": [
+      "Bash(axon task approve:*)",
+      "Bash(axon processor credential:*)",
+      "Bash(axon pair:*)"
+    ]
+  }
+}</code></pre>
+</div>
+
+<div class="note">
+  <span class="tag">How matching works</span>
+  <p><code>Bash(axon task send:*)</code> allows that exact prefix with any arguments after
+  it. Rules are evaluated <strong>deny first</strong>, then ask, then allow — so a deny
+  entry always wins, even against a more specific allow. Put team-wide rules in
+  <code>.claude/settings.json</code> (commit it); keep personal ones in
+  <code>.claude/settings.local.json</code> (gitignored).</p>
+</div>
+
+<h3>2 · Teach it the verbs</h3>
+<p>
+  Claude Code reads <code>CLAUDE.md</code> from your project root on every session. Keep
+  it short and concrete — commands it can copy, and the boundaries it must respect.
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">CLAUDE.md</span><button class="copy">Copy</button></div>
+<pre><code>## Delegating work with axon
+
+This project has a paired axon peer. To hand work to it:
+
+1. Check the peer is reachable:      `axon peer list`
+2. Write a task spec to /tmp/task.json (performer, objective,
+   inputs[], deliverables[], capabilities[], deadline,
+   max_response_bytes) and send it:  `axon task send /tmp/task.json`
+3. The peer's operator approves and runs it on their side.
+4. Read the verified result:
+   `axon task output &lt;task-id&gt; --role response`
+
+Rules:
+- Never run `axon task approve`. Approving inbound work is the
+  operator's decision, not yours. Show them `axon task show &lt;id&gt;`
+  and let them decide.
+- Only request the capabilities the task truly needs. `processor_use`
+  sends content off the machine; `artifact_export` returns files.
+- `axon task output` is already digest-verified against the peer's
+  signature, so its bytes are safe to use directly.</code></pre>
+</div>
+
+<h3>3 · Give it a one-shot command</h3>
+<p>
+  A project slash command turns the whole flow into <code>/delegate review this diff</code>.
+  <code>allowed-tools</code> narrows what the command itself may reach, and
+  <code>$ARGUMENTS</code> carries whatever the user typed.
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">.claude/commands/delegate.md</span><button class="copy">Copy</button></div>
+<pre><code>---
+description: Delegate a task to the paired axon peer and report the result
+argument-hint: [what you want the peer to do]
+allowed-tools: Read, Write, Bash(axon peer list), Bash(axon task send:*), Bash(axon task sent), Bash(axon task output:*)
+---
+
+Peers currently paired:
+
+!`axon peer list`
+
+Delegate this to the peer: $ARGUMENTS
+
+Steps:
+1. Write a task spec to /tmp/axon-task.json. Request only
+   ["respond", "read_supplied_inputs"] unless the work genuinely
+   needs a model on their side.
+2. Send it with `axon task send /tmp/axon-task.json` and note the id.
+3. Tell me the task id and that their operator must approve it.
+4. Once they have, read it back with
+   `axon task output &lt;id&gt; --role response` and summarize.</code></pre>
+</div>
+
+<h3>4 · Optional: a subagent that watches the inbox</h3>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">.claude/agents/axon-inbox.md</span><button class="copy">Copy</button></div>
+<pre><code>---
+name: axon-inbox
+description: Summarize inbound axon tasks awaiting a decision, and the risk each one carries. Use when asked what work peers have sent.
+tools: Bash(axon task inbox), Bash(axon task show:*), Bash(axon peer list)
+model: haiku
+---
+
+List pending tasks with `axon task inbox`, then run
+`axon task show &lt;id&gt;` on each.
+
+For every task report: who sent it, what it asks for, and — most
+importantly — which capabilities it requests. Call out
+`processor_use` (content leaves the machine) and `artifact_export`
+(files come back) explicitly.
+
+Never approve anything. Summarize so the operator can decide.</code></pre>
+</div>
+
+<h2 id="codex">Driving it from Codex</h2>
+<p class="deck">
+  Same idea, different knobs: Codex reads <code>AGENTS.md</code> and takes its sandbox
+  policy on the command line.
+</p>
+
+<h3>Project instructions</h3>
+<p>
+  Codex picks up <code>AGENTS.md</code> from the repo root. The content is the same
+  guidance you gave Claude Code — the verbs, and the line it must not cross.
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">AGENTS.md</span><button class="copy">Copy</button></div>
+<pre><code># Delegating work with axon
+
+`axon` is on PATH and a peer is already paired.
+
+- `axon peer list`                          who we can delegate to
+- `axon task send &lt;spec.json&gt;`              hand work over
+- `axon task sent`                          what we have outstanding
+- `axon task output &lt;id&gt; --role response`   read a verified result
+
+Do not run `axon task approve`. Approving inbound work is the
+operator's call — surface `axon task show &lt;id&gt;` and stop there.
+
+Request the narrowest capabilities that will do the job.</code></pre>
+</div>
+
+<h3>Running it non-interactively</h3>
+<p>
+  <code>codex exec</code> is the headless mode. The sandbox flag matters here: sending a
+  task writes a spec file, so <code>read-only</code> is too tight — use
+  <code>workspace-write</code> and keep the work inside a directory you name.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># Ask the peer for a review, capture the final message to a file.</span>
+codex exec -s workspace-write -o /tmp/codex-out.txt \
+  "Delegate a review of the staged diff to our axon peer, then report the task id."
+
+<span class="c"># Read-only is right for anything that only inspects.</span>
+codex exec -s read-only \
+  "Summarize the tasks in our axon inbox and the capabilities each requests."
+
+<span class="c"># Pipe a long prompt in instead of quoting it.</span>
+echo "Delegate this and summarize the result" | codex exec -s workspace-write -</code></pre>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>Flag</th><th>Use it for</th></tr>
+  <tr><td><code>-s read-only</code></td><td>Inspection only. The safe default for reporting.</td></tr>
+  <tr><td><code>-s workspace-write</code></td><td>Writing a task spec before sending it.</td></tr>
+  <tr><td><code>-o &lt;file&gt;</code></td><td>Capture the agent's final message — the reliable way to script around it.</td></tr>
+  <tr><td><code>--json</code></td><td>Stream events as JSONL for a wrapper to parse.</td></tr>
+  <tr><td><code>-C &lt;dir&gt;</code></td><td>Set the working root.</td></tr>
+  <tr><td><code>-c key=value</code></td><td>Override one config value from <code>~/.codex/config.toml</code>.</td></tr>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">Two sandboxes, don't confuse them</span>
+  <p>Codex's <code>-s</code> flag confines <em>Codex</em> on your machine. Axon's sandbox
+  confines <em>a peer's task</em>. They are independent, and you want both: Codex bounded
+  so it doesn't wander your filesystem, axon bounded so an incoming task can't touch it
+  at all.</p>
+</div>
+
+<h2 id="trouble">Troubleshooting</h2>
+
+<h3><code>axon doctor</code> says <code>cgroup_delegation MISSING</code></h3>
+<p>
+  Expected over a plain SSH session — there is no delegated cgroup there. Start the daemon
+  inside a delegated scope instead:
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>sudo loginctl enable-linger "$USER"   <span class="c"># once, so your user systemd survives logout</span>
+
+systemd-run --user --unit=axon -p Delegate=yes --collect \
+  --setenv=AXON_DATA_DIR="$HOME/.axon" \
+  --setenv=AXON_AGENT=bob --setenv=AXON_ISSUER=orgB \
+  --setenv=AXON_RECEIVE_ADDR=0.0.0.0:18444 \
+  axond serve
+
+journalctl --user -u axon -f</code></pre>
+</div>
+
+<h3><code>axon task run</code> fails with <code>503 no-confinement</code></h3>
+<p>The sandbox isn't available, so the daemon refused rather than running the task
+unconfined. Work through, in order: is <code>bwrap</code> installed; are unprivileged user
+namespaces permitted; is there a delegated cgroup. On Ubuntu the middle one is usually the
+culprit:</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0</code></pre>
+</div>
+
+<h3><code>path must be shorter than SUN_LEN</code></h3>
+<p>Your <code>XDG_RUNTIME_DIR</code> is too long — the control socket path exceeds the
+~100-byte Unix socket limit. Use something short like <code>/tmp/bob</code>.</p>
+
+<h3>A task is refused with <code>output-digest-mismatch</code></h3>
+<p>A delivered output did not re-hash to the digest the performer signed. This is the
+system working: the bytes and the signature disagree, so nothing was stored. Have the
+performer re-run and re-deliver.</p>
+
+<h3><code>peer list</code> shows a peer but tasks are refused</h3>
+<p>The peer is probably still pending. A stored key alone does not admit work — the peer
+must be <code>ACTIVE</code>, which means someone ran <code>axon peer confirm</code> on
+this side. Confirmation is per-side; both ends need to do it.</p>
+
+<h3>The CLI can't find the daemon</h3>
+<p><code>XDG_RUNTIME_DIR</code> doesn't match the daemon's. That variable is the only thing
+selecting which daemon you're commanding.</p>
+
+<h2 id="safety">Why this is safe to point at a stranger</h2>
+
+<div class="tw">
+<table>
+  <tr><th>Property</th><th>How it holds</th></tr>
+  <tr>
+    <td><strong>Arrival is not execution</strong></td>
+    <td>A message, task, or artifact arriving never starts a model, mints authority,
+        touches a workspace, invokes a tool, or fetches a URL. It waits.</td>
+  </tr>
+  <tr>
+    <td><strong>Zero ambient authority</strong></td>
+    <td>Peer work starts in fresh user, mount, pid, and network namespaces with
+        default-deny seccomp, Landlock, and cgroup limits. Only the inputs the task named
+        are constructed in.</td>
+  </tr>
+  <tr>
+    <td><strong>Credentials never reach the worker</strong></td>
+    <td><code>socket()</code> is denied. The model is reachable only through the broker,
+        which injects the key on the worker's behalf and enforces an allowlist and a
+        budget.</td>
+  </tr>
+  <tr>
+    <td><strong>A human approves the exact contract</strong></td>
+    <td>The outward-disclosing grants — reaching a model, exporting an artifact — are
+        never automatic.</td>
+  </tr>
+  <tr>
+    <td><strong>Results are verifiable</strong></td>
+    <td>Signed with DSSE/in-toto; findings in SARIF. The requester checks the bundle
+        independently and signs its own outcome.</td>
+  </tr>
+  <tr>
+    <td><strong>Pinned, direct, local-first</strong></td>
+    <td>Mutual TLS 1.3 with certificates pinned by fingerprint at pairing — not by CA, not
+        by DNS. No relay, no hosted account.</td>
+  </tr>
+  <tr>
+    <td><strong>Evidence is inert</strong></td>
+    <td>Rendered artifacts are scanned for scripts, event handlers, and external fetches,
+        and refused before delivery.</td>
+  </tr>
+</table>
+</div>
+
+<footer>
+  <p>
+    Deeper reading lives in the repository: the
+    <strong>design</strong> document is normative, the <strong>threat model</strong> tracks
+    every residual risk honestly, and <strong>spec/control-protocol.md</strong> documents
+    the local socket the CLI speaks.
+  </p>
+  <p>Axon is pre-release and under active development.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+// Copy buttons — take the sibling <pre>'s text, minus nothing; comments are part
+// of what you'd paste anyway.
+document.querySelectorAll(".copy").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var block = btn.closest(".cmd, .file");
+    var pre = block && block.querySelector("pre");
+    if (!pre) return;
+    navigator.clipboard.writeText(pre.innerText).then(function () {
+      var was = btn.textContent;
+      btn.textContent = "Copied";
+      btn.classList.add("done");
+      setTimeout(function () {
+        btn.textContent = was;
+        btn.classList.remove("done");
+      }, 1400);
+    });
+  });
+});
+
+// Highlight the section you're reading in the rail.
+var links = Array.prototype.slice.call(document.querySelectorAll("#nav a"));
+var byId = {};
+links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+var seen = new Set();
+var io = new IntersectionObserver(function (entries) {
+  entries.forEach(function (e) {
+    if (e.isIntersecting) seen.add(e.target.id); else seen.delete(e.target.id);
+  });
+  var first = null;
+  document.querySelectorAll("main h2[id]").forEach(function (h) {
+    if (!first && seen.has(h.id)) first = h.id;
+  });
+  links.forEach(function (a) { a.classList.remove("on"); });
+  if (first && byId[first]) byId[first].classList.add("on");
+}, { rootMargin: "0px 0px -70% 0px" });
+document.querySelectorAll("main h2[id]").forEach(function (h) { io.observe(h); });
+</script>
+
+</body>
+</html>

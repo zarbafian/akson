@@ -98,7 +98,11 @@ overhead from model latency, run a second pass against a **local** model on bob
 
 ```
 # on bob, in another shell: ollama serve && ollama pull qwen2.5-coder:7b
-ssh bob 'axon processor add local openai 127.0.0.1 11434 ca --path /v1/chat/completions --auth none'
+# Pass the TLS terminator's cert SHA-256, NOT `ca`: `ca` marks the processor remote,
+# and the egress policy only permits a loopback address for a *local* processor
+# (broker.rs `if config.is_local() { policy.allow_local() }`). The broker always
+# dials TLS, so front the plain-HTTP Ollama port with a TLS terminator.
+ssh bob 'axon processor add local openai 127.0.0.1 11434 <cert-sha256> --path /v1/chat/completions --auth none'
 # point AXON_WORKER_EXEC at --processor local --model qwen2.5-coder:7b and re-run.
 ```
 
