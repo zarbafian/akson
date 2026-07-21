@@ -274,7 +274,7 @@ fn build_task_spec(args: &Value) -> Result<aksond::TaskSpec, String> {
         max_response_bytes: args
             .get("max_response_bytes")
             .and_then(Value::as_u64)
-            .unwrap_or(65536),
+            .unwrap_or(512 * 1024),
     })
 }
 
