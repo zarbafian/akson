@@ -1,0 +1,815 @@
+/* ============================================================
+   Akson docs.
+
+   The identity is one idea: this product is two endpoints taking
+   turns, so COLOUR ENCODES WHICH ENDPOINT. Copper is the side that
+   asks, teal is the side that does — and those two hues are used
+   for nothing else. Links, focus, notes, and navigation are all
+   neutral, so that when you see copper you know what it means.
+
+   Type: system sans set tight for headings, mono reserved for the
+   things that are literally machine text — commands, identifiers,
+   labels, endpoint names.
+   ============================================================ */
+
+:root {
+  color-scheme: light dark;
+
+  --ink:      #F5F7F4;
+  --surface:  #FFFFFF;
+  --sunken:   #EAEEEC;
+  --text:     #1A2028;
+  --muted:    #5A6672;
+  --line:     #D9E0DE;
+  --line-hard:#7A8585;
+
+  --ask:      #A85618;   /* copper — the endpoint that asks    */
+  --do:       #0E6D62;   /* teal   — the endpoint that performs */
+  --warn:     #8A5B00;
+  --warn-dim: #FBF1DC;
+
+  --code-bg:  #11161C;
+  --code-fg:  #DDE4EC;
+  --code-mut: #93A2B1;
+
+  --ep-a:     #E09A57;   /* the endpoint hues as used on dark ground */
+  --ep-b:     #5CC3B2;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --rail: 15rem;
+  --measure: 64ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink:      #0E1318;
+    --surface:  #151B21;
+    --sunken:   #1C242C;
+    --text:     #E5EAE8;
+    --muted:    #9BA8B3;
+    --line:     #34404A;
+    --line-hard:#60717E;
+
+    --ask:      #E09A57;
+    --do:       #5CC3B2;
+    --warn:     #D9A441;
+    --warn-dim: #27200F;
+
+    --code-bg:  #090D12;
+    --code-fg:  #E5EAE8;
+    --code-mut: #9AA8B7;
+  }
+}
+
+/* The theme control (and, in an embedded viewer, the host) stamps data-theme
+   on :root. It must beat the media query in BOTH directions. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink: #F5F7F4; --surface: #FFFFFF; --sunken: #EAEEEC;
+  --text: #1A2028; --muted: #5A6672; --line: #D9E0DE; --line-hard: #7A8585;
+  --ask: #A85618; --do: #0E6D62; --warn: #8A5B00; --warn-dim: #FBF1DC;
+  --code-bg: #11161C; --code-fg: #DDE4EC; --code-mut: #93A2B1;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #0E1318; --surface: #151B21; --sunken: #1C242C;
+  --text: #E5EAE8; --muted: #9BA8B3; --line: #34404A; --line-hard: #60717E;
+  --ask: #E09A57; --do: #5CC3B2; --warn: #D9A441; --warn-dim: #27200F;
+  --code-bg: #090D12; --code-fg: #E5EAE8; --code-mut: #9AA8B7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.58;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  max-width: 78rem;
+  margin: 0 auto;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100dvh;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 2.75rem 1.25rem 3rem 1.5rem;
+  border-right: 1px solid var(--line);
+}
+
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.rail-mark {
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+/* The mark itself carries the two endpoint hues — the one decorative use,
+   because it is the thing the hues stand for. */
+.rail-mark .a { color: var(--ask); }
+.rail-mark .b { color: var(--do); }
+
+.themer {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line-hard);
+  border-radius: 2px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+.themer:hover { color: var(--text); border-color: var(--text); }
+
+.rail-sub {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 0.3rem 0 2rem;
+  font-family: var(--mono);
+}
+
+.rail nav { display: flex; flex-direction: column; gap: 0.05rem; }
+
+.rail nav a {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.855rem;
+  font-weight: 500;
+  border-left: 2px solid transparent;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.rail nav a:hover { color: var(--text); background: var(--sunken); }
+.rail nav a.on {
+  color: var(--text);
+  border-left-color: var(--text);
+  background: var(--sunken);
+}
+
+.rail nav .grp {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--muted);
+  margin: 1.5rem 0 0.4rem 0.6rem;
+}
+.rail nav .grp:first-of-type { margin-top: 0; }
+
+main {
+  width: 100%;
+  max-width: 62rem;
+  padding: 3rem 3.5rem 8rem;
+  min-width: 0;
+}
+
+/* ---------- type ---------- */
+
+h1, h2, h3 { font-family: var(--sans); text-wrap: balance; }
+
+h1 {
+  max-width: 20ch;
+  font-size: clamp(2.4rem, 5vw, 4rem);
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  line-height: 1.03;
+  margin: 0 0 1.25rem;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 2.4vw, 2.1rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.14;
+  margin: 5rem 0 0.75rem;
+  scroll-margin-top: 5rem;
+}
+
+h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.018em;
+  line-height: 1.3;
+  margin: 2.75rem 0 0.6rem;
+  scroll-margin-top: 5rem;
+}
+
+/* A rule only where the document genuinely changes gear — not on every heading.
+   Mark those headings with .chapter-start, matching the rail's groups. */
+.chapter-start {
+  padding-top: 2.25rem;
+  border-top: 1px solid var(--line);
+}
+
+/* The hero already ends on a callout; a full section gap after it reads as a hole. */
+.hero + .note + h2 { margin-top: 3.25rem; }
+
+/* Inline code inside a heading should read as part of the heading, not as a chip. */
+h2 code, h3 code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 0.88em;
+  word-break: normal;
+}
+
+.deck {
+  color: var(--muted);
+  max-width: 58ch;
+  font-size: 1.03rem;
+  line-height: 1.55;
+  margin: 0 0 2rem;
+}
+
+p, ul, ol { max-width: var(--measure); }
+p { margin: 0 0 1.05rem; }
+ul, ol { margin: 0 0 1.05rem; padding-left: 1.15rem; }
+li { margin-bottom: 0.4rem; }
+li::marker { color: var(--muted); }
+
+/* Links are neutral on purpose: copper and teal mean "endpoint", nothing else. */
+a {
+  color: inherit;
+  text-decoration-color: var(--line-hard);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+a:hover { text-decoration-color: currentColor; }
+
+:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+
+strong { font-weight: 700; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.87em;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.08em 0.32em;
+  word-break: break-word;
+}
+
+/* ---------- hero ---------- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin: 0 0 1.1rem;
+}
+
+.lede {
+  max-width: 58ch;
+  font-size: 1.2rem;
+  line-height: 1.5;
+  margin: 0 0 1.5rem;
+}
+
+/* Metadata, not badges. */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0;
+  padding-block: 0.7rem;
+  border-block: 1px solid var(--line);
+  margin: 0 0 2rem;
+}
+.pill {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  padding: 0 0.7rem;
+}
+.pill:first-child { padding-left: 0; }
+.pill + .pill { border-left: 1px solid var(--line-hard); }
+
+/* ---------- hero vignette: the loop as you'd actually see it ---------- */
+
+.vignette {
+  background: var(--code-bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 0 1rem;
+  /* Both endpoints, one on each edge — the page's thesis as a frame. */
+  box-shadow: inset 3px 0 0 var(--ep-a), inset -3px 0 0 var(--ep-b);
+}
+.vignette-bar {
+  padding: 0.7rem 1.2rem 0.2rem;
+}
+.vignette-title {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--code-mut);
+}
+.vignette pre {
+  margin: 0;
+  padding: 0.7rem 1.2rem 1.3rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.65;
+  color: #C6D1DD;
+}
+.vignette .pa { color: var(--ep-a); font-weight: 700; }
+.vignette .pb { color: var(--ep-b); font-weight: 700; }
+.vignette .hi { color: var(--code-fg); }
+
+/* ---------- the direction diagram ---------- */
+
+.wire {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 3px;
+  padding: 1.4rem 1.5rem;
+  margin: 0 0 2rem;
+  overflow-x: auto;
+}
+.wire-row,
+.wire-step {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) 5.5rem minmax(7rem, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--mono);
+  min-width: 30rem;
+}
+.wire-row { font-size: 0.78rem; padding-bottom: 0.5rem; }
+.wire-end { font-weight: 700; letter-spacing: -0.01em; }
+.wire-end.a { color: var(--ask); }
+.wire-end.b { color: var(--do); text-align: right; }
+.wire-line { height: 1px; background: var(--line-hard); }
+
+.wire-steps { border-top: 1px solid var(--line); }
+.wire-step {
+  font-size: 0.73rem;
+  color: var(--muted);
+  padding: 0.34rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.wire-step:last-child { border-bottom: none; }
+/* Colour names the ENDPOINT, not the column. */
+.wire-step .ep-a { color: var(--ask); }
+.wire-step .ep-b { color: var(--do); text-align: right; }
+
+/* The connector is drawn, not typed — a box-drawing character's width depends
+   on whichever monospace font happens to be installed. */
+.wire-step .arrow { position: relative; min-height: 0.9rem; }
+.wire-step .arrow::before {
+  content: "";
+  position: absolute;
+  inset: calc(50% - 1px) 0 auto;
+  border-top: 1px solid var(--line-hard);
+}
+.wire-step.to-right .arrow::after,
+.wire-step.to-left .arrow::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 4px);
+  width: 6px;
+  height: 6px;
+  transform: rotate(45deg);
+}
+.wire-step.to-right .arrow::after {
+  right: 0;
+  border-top: 1px solid var(--line-hard);
+  border-right: 1px solid var(--line-hard);
+}
+.wire-step.to-left .arrow::after {
+  left: 0;
+  border-bottom: 1px solid var(--line-hard);
+  border-left: 1px solid var(--line-hard);
+}
+.wire-step.none .arrow::before { border-top-style: dotted; }
+
+/* ---------- code blocks, tagged by the endpoint you type them into ---------- */
+
+.cmd, .file {
+  margin: 0 0 1.4rem;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+}
+
+.cmd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.55rem 0.4rem 0.9rem;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.025);
+}
+
+.who, .path {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+.who::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.path { text-transform: none; letter-spacing: 0.02em; font-weight: 500; color: var(--code-mut); }
+
+.cmd .who        { color: var(--code-mut); }  /* safe base — headers sit on dark ground */
+.cmd.alice .who  { color: var(--ep-a); }
+.cmd.bob   .who  { color: var(--ep-b); }
+
+.cmd.alice { border-left: 3px solid var(--ep-a); }
+.cmd.bob   { border-left: 3px solid var(--ep-b); }
+.cmd.host  { border-left: 3px solid #46535F; }
+
+.copy {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.16);
+  color: var(--code-mut);
+  border-radius: 2px;
+  padding: 0.18rem 0.5rem;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.copy:hover { color: var(--code-fg); border-color: rgba(255,255,255,0.4); }
+.copy.done  { color: var(--code-fg); border-color: var(--code-fg); }
+.copy:focus-visible { outline: 2px solid var(--code-fg); outline-offset: 2px; }
+
+.cmd pre, .file pre {
+  margin: 0;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  line-height: 1.65;
+  color: var(--code-fg);
+  tab-size: 2;
+}
+/* Block code scrolls; it must never inherit the inline `word-break: break-word`
+   rule, which would silently rewrap a command mid-token. */
+.cmd pre code, .file pre code, .vignette pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.cmd .c, .vignette .c { color: var(--code-mut); }
+
+/* ---------- callouts ---------- */
+
+.note {
+  border-left: 3px solid var(--line-hard);
+  background: var(--sunken);
+  padding: 0.85rem 1.1rem;
+  border-radius: 0 3px 3px 0;
+  margin: 0 0 1.4rem;
+  max-width: var(--measure);
+  font-size: 0.93rem;
+}
+.note.warn { border-left-color: var(--warn); background: var(--warn-dim); }
+.note p:last-child { margin-bottom: 0; }
+.note .tag {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.note.warn .tag { color: var(--warn); }
+
+/* ---------- tables ---------- */
+
+.tw {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  margin: 0 0 1.6rem;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 32rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+th, td {
+  text-align: left;
+  padding: 0.65rem 1rem 0.65rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom-color: var(--line-hard);
+}
+td:first-child { width: 32%; color: var(--text); }
+/* A long command must wrap inside its cell rather than stretch the table. */
+td code { white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+
+/* ---------- footer ---------- */
+
+footer {
+  margin-top: 5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+  max-width: var(--measure);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+
+  /* A compact scrolling section index — not the desktop rail stacked on top. */
+  .rail {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    height: auto;
+    padding: 0.6rem 1rem;
+    overflow: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    background: var(--ink);
+  }
+  .rail-sub, .rail nav .grp { display: none; }
+  .rail-head { margin-bottom: 0.5rem; }
+  .rail nav {
+    flex-flow: row nowrap;
+    gap: 0.2rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .rail nav::-webkit-scrollbar { display: none; }
+  .rail nav a {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    border-left: none;
+    border-radius: 2px;
+  }
+  .rail nav a.on { border-left: none; }
+
+  main { max-width: none; padding: 2.25rem 1.25rem 5rem; }
+  h2 { margin-top: 4rem; scroll-margin-top: 6rem; }
+  h3 { scroll-margin-top: 6rem; }
+  .chapter-start { padding-top: 1.5rem; }
+}
+
+/* The wire keeps its 30rem minimum on phones and scrolls inside its own box —
+   a readable horizontal diagram beats a fully visible, illegible one. */
+@media (max-width: 600px) {
+  .pills { gap: 0.35rem 0.9rem; }
+  .pill { padding: 0; }
+  .pill + .pill { border-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
+
+/* ============================================================
+   Site-wide additions: cross-page nav, drawn figures, the
+   landing page. Same identity — copper asks, teal does.
+   ============================================================ */
+
+/* The rail's cross-page links: the current page is marked by weight alone —
+   the sunken fill and border stay reserved for the live scroll position. */
+.rail nav a.here {
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* ---------- figures: drawn diagrams ---------- */
+
+.fig {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 3px;
+  padding: 1.4rem 1.4rem 1.05rem;
+  margin: 0 0 1.6rem;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+/* Scale to the column, but never below legibility — narrow screens scroll.
+   Minimums track the drawings' viewBox widths so label text stays ~12px. */
+.fig svg { display: block; width: 100%; height: auto; min-width: 47rem; }
+.fig.wide svg { min-width: 50rem; }
+.fig-cap {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0.9rem 0 0;
+  max-width: none;
+}
+
+svg .bx   { fill: var(--sunken);  stroke: var(--line-hard); }
+svg .bx2  { fill: var(--surface); stroke: var(--line-hard); }
+svg .bxd  { fill: var(--code-bg); stroke: var(--line-hard); }
+svg .lbl  { fill: var(--text); font-family: var(--mono); font-size: 12.5px; }
+svg .lbld { fill: var(--code-fg); font-family: var(--mono); font-size: 12.5px; }
+svg .b700 { font-weight: 700; }
+svg .mut  { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+svg .mutd { fill: var(--code-mut); font-family: var(--mono); font-size: 10.5px; }
+svg .ln   { stroke: var(--line-hard); fill: none; }
+svg .ar   { fill: var(--line-hard); stroke: none; }
+svg .aa   { stroke: var(--ask); }  svg .af { fill: var(--ask); }
+svg .ba   { stroke: var(--do); }   svg .bf { fill: var(--do); }
+svg .wall { stroke: var(--text); stroke-width: 2.5; }
+svg .dash { stroke-dasharray: 4 4; }
+
+/* ---------- landing shell ---------- */
+
+.wrap { max-width: 72rem; margin: 0 auto; padding: 0 2.25rem; }
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.35rem 0 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+.top .links { display: flex; align-items: baseline; gap: 1.3rem; flex-wrap: wrap; }
+.top .links a {
+  font-size: 0.855rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+}
+.top .links a:hover { color: var(--text); }
+
+.landing main { max-width: none; padding: 0 0 5rem; }
+.landing .hero { padding: 4.25rem 0 0; }
+.landing .hero h1 { max-width: 21ch; }
+.landing section { border-top: 1px solid var(--line); margin-top: 4rem; padding-top: 2.5rem; }
+.landing section > h2 { margin-top: 0; }
+
+.cta { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0 0 2.25rem; }
+.btn {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.62rem 1.15rem;
+  border-radius: 3px;
+  border: 1px solid var(--line-hard);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.12s, opacity 0.12s;
+}
+.btn:hover { border-color: var(--text); }
+.btn.primary { background: var(--text); border-color: var(--text); color: var(--ink); }
+.btn.primary:hover { opacity: 0.88; }
+
+/* ---------- cards: a hairline grid ---------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0 0 1.6rem;
+}
+.card { background: var(--surface); padding: 1.25rem 1.35rem 1.35rem; }
+.card h3 { margin: 0 0 0.45rem; font-size: 0.98rem; letter-spacing: -0.01em; }
+.card p { margin: 0; font-size: 0.875rem; line-height: 1.55; color: var(--muted); max-width: none; }
+.card .k {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.55rem;
+}
+a.card { display: block; text-decoration: none; transition: background 0.12s; }
+a.card:hover { background: var(--sunken); }
+a.card .go { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); display: block; margin-top: 0.75rem; }
+a.card:hover .go { color: var(--text); }
+
+/* ---------- the principle, stated once and large ---------- */
+
+.principle blockquote {
+  margin: 0 0 1rem;
+  max-width: 32ch;
+  font-size: clamp(1.4rem, 2.6vw, 2rem);
+  font-weight: 720;
+  letter-spacing: -0.03em;
+  line-height: 1.28;
+  text-wrap: balance;
+}
+.principle blockquote .u {
+  text-decoration: underline;
+  text-decoration-color: var(--line-hard);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.14em;
+}
+.principle .src { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .wrap { padding: 0 1.25rem; }
+  .landing .hero { padding-top: 2.75rem; }
+  .landing section { margin-top: 3rem; padding-top: 2rem; }
+}
+
+/* ---------- previous / next, at the foot of each article ---------- */
+
+.pagenav {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 4.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  max-width: var(--measure);
+}
+.pagenav a { text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.92rem; }
+.pagenav a:hover { color: var(--text); }
+.pagenav .k {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 0.25rem;
+}
+.pagenav .next { text-align: right; margin-left: auto; }
+
+/* ---------- print ---------- */
+
+@media print {
+  :root, :root[data-theme="dark"], :root[data-theme="light"] {
+    color-scheme: light;
+    --ink: #fff; --surface: #fff; --sunken: #f3f3f3;
+    --text: #111; --muted: #555; --line: #bbb; --line-hard: #777;
+    --ask: #A85618; --do: #0E6D62; --warn: #8A5B00; --warn-dim: #FBF1DC;
+    --code-bg: #fff; --code-fg: #111; --code-mut: #555;
+    --ep-a: #A85618; --ep-b: #0E6D62;
+  }
+  .rail, .top, .themer, .copy { display: none !important; }
+  .shell { display: block; max-width: none; }
+  .wrap, main, .landing main { max-width: none; padding: 0; }
+  .cmd, .file, .vignette, .fig, .tw { overflow: visible; border-color: var(--line-hard); }
+  .cmd pre, .file pre, .vignette pre { overflow: visible; color: var(--text); }
+  .cmd pre code, .file pre code, .vignette pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .fig svg, .fig.wide svg, table { min-width: 0; }
+}

@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Internals — Akson</title>
+<meta name="description" content="How Akson is built: the receive pipeline, two permission domains, the sandbox layer by layer, the broker, evidence, the wire, and the crate map.">
+<link rel="canonical" href="https://akson.cc/internals/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Internals — Akson">
+<meta property="og:description" content="The architecture: receive pipeline, two permission domains, the sandbox layer by layer, the broker, evidence, and the wire.">
+<meta property="og:url" content="https://akson.cc/internals/">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script>
+/* Apply a saved theme before first paint; site.js wires the toggle. */
+(function (root) {
+  try {
+    var saved = localStorage.getItem("akson-theme");
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+})(document.documentElement);
+</script>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<div class="shell">
+<aside class="rail">
+  <div class="rail-head">
+    <a class="rail-mark" href="../">aks<span class="a">o</span><span class="b">n</span></a>
+    <button class="themer" id="themer" type="button" aria-label="Switch colour theme">theme</button>
+  </div>
+  <div class="rail-sub">internals</div>
+  <nav id="nav">
+    <div class="grp">Site</div>
+    <a href="../">Overview</a>
+    <a href="../guide/">Guide</a>
+    <a href="./" class="here" aria-current="page">Internals</a>
+    <a href="../proofs/">Proofs</a>
+    <a href="https://github.com/zarbafian/akson">GitHub</a>
+    <div class="grp">The shape</div>
+    <a href="#map">The system, drawn</a>
+    <a href="#lifecycle">One task's life</a>
+    <a href="#domains">Two domains</a>
+    <div class="grp">Enforcement</div>
+    <a href="#sandbox">The sandbox</a>
+    <a href="#broker">The broker</a>
+    <a href="#evidence">Evidence</a>
+    <div class="grp">Interfaces</div>
+    <a href="#wire">The wire</a>
+    <a href="#control">The control plane</a>
+    <a href="#crates">The crate map</a>
+  </nav>
+</aside>
+
+<main id="top">
+
+<header class="hero">
+  <p class="eyebrow">Internals · Architecture</p>
+  <h1>How Akson is built.</h1>
+  <p class="lede">
+    One daemon per user, a handful of trusted components, and a rule that shapes
+    everything: the path that <em>receives</em> a peer's bytes and the path that
+    <em>executes</em> them never meet without a local decision in between — yours, or
+    a standing policy you configured.
+  </p>
+  <div class="pills">
+    <span class="pill">Rust workspace</span>
+    <span class="pill">A2A 1.0 + versioned extensions</span>
+    <span class="pill">SQLite · envelope-encrypted fields</span>
+    <span class="pill">Linux namespaces · seccomp</span>
+    <span class="pill">Pre-release</span>
+  </div>
+</header>
+
+<p>
+  This page is the technical map. The normative source of truth is the
+  <a href="https://github.com/zarbafian/akson/blob/main/design/2026-07-16-threads-enterprise-agent-communication.md">design
+  document</a> (§ references below point into it) and the
+  <a href="https://github.com/zarbafian/akson/blob/main/design/2026-07-19-threat-model.md">threat model</a>;
+  the state machines drawn here are also
+  <a href="../proofs/">model-checked</a> against the code.
+</p>
+
+<h2 id="map">The system, drawn</h2>
+<p class="deck">
+  Everything lives in <code>aksond</code>. Peers reach it over pinned mTLS; the operator
+  reaches it over a Unix socket; a model is reachable only through the broker.
+</p>
+
+<figure class="fig wide" tabindex="0">
+  <svg viewBox="0 0 820 700" role="img" aria-label="Architecture: a remote peer reaches the receive pipeline over mTLS; the operator drives policy over a Unix socket; an approved task flows through a one-shot work order into the sandboxed worker, through the output gate to the evidence engine; the broker is the only path to a model; everything commits to an encrypted store.">
+    <!-- outside actors -->
+    <rect class="bx2" x="40" y="20" width="210" height="46" rx="3"/>
+    <text class="lbl b700" x="56" y="39">remote peer — untrusted</text>
+    <text class="mut" x="56" y="55">another aksond, anywhere</text>
+
+    <rect class="bx2" x="480" y="20" width="220" height="46" rx="3"/>
+    <text class="lbl b700" x="496" y="39">operator — trusted</text>
+    <text class="mut" x="496" y="55">akson CLI · MCP · harness</text>
+
+    <!-- the daemon (drawn first, so the entry arrows paint over its border) -->
+    <rect class="bx" x="30" y="110" width="690" height="470" rx="4"/>
+    <text class="lbl b700" x="48" y="134">aksond</text>
+
+    <!-- entry arrows -->
+    <line class="ln" x1="145" y1="66" x2="145" y2="154"/>
+    <polygon class="ar" points="145,160 140.5,151 149.5,151"/>
+    <text class="mut" x="155" y="86">HTTPS · A2A 1.0</text>
+    <text class="mut" x="155" y="100">mutual TLS, pinned</text>
+
+    <polyline class="ln" points="590,66 590,88 420,88 420,154"/>
+    <polygon class="ar" points="420,160 415.5,151 424.5,151"/>
+    <text class="mut" x="600" y="84">unix socket</text>
+    <text class="mut" x="600" y="98">same UID only</text>
+
+    <!-- lanes -->
+    <text class="mut" x="60" y="151">receive</text>
+    <text class="mut" x="300" y="151">authorize · execute</text>
+    <text class="mut" x="510" y="151">egress · evidence</text>
+
+    <!-- receive column -->
+    <rect class="bx2" x="60" y="160" width="200" height="44" rx="3"/>
+    <text class="lbl" x="76" y="179">network endpoint</text>
+    <text class="mut" x="76" y="195">mTLS 1.3 · pinned peer cert</text>
+
+    <rect class="bx2" x="60" y="234" width="200" height="44" rx="3"/>
+    <text class="lbl" x="76" y="253">bounded A2A parser</text>
+    <text class="mut" x="76" y="269">I-JSON caps · fail closed</text>
+
+    <rect class="bx2" x="60" y="308" width="200" height="44" rx="3"/>
+    <text class="lbl" x="76" y="327">inbox / dedupe</text>
+    <text class="mut" x="76" y="343">durable · inert · replay-safe</text>
+
+    <rect class="bx2" x="60" y="382" width="200" height="44" rx="3"/>
+    <text class="lbl" x="76" y="401">contract engine</text>
+    <text class="mut" x="76" y="417">CAS head · risk card</text>
+
+    <line class="ln" x1="160" y1="204" x2="160" y2="228"/>
+    <polygon class="ar" points="160,234 155.5,225 164.5,225"/>
+    <line class="ln" x1="160" y1="278" x2="160" y2="302"/>
+    <polygon class="ar" points="160,308 155.5,299 164.5,299"/>
+    <line class="ln" x1="160" y1="352" x2="160" y2="376"/>
+    <polygon class="ar" points="160,382 155.5,373 164.5,373"/>
+
+    <!-- contract -> policy -->
+    <polyline class="ln" points="260,404 280,404 280,182 294,182"/>
+    <polygon class="ar" points="300,182 291,177.5 291,186.5"/>
+
+    <!-- decision & execution column -->
+    <rect class="bx2" x="300" y="160" width="180" height="44" rx="3"/>
+    <text class="lbl" x="316" y="179">policy decision</text>
+    <text class="mut" x="316" y="195">risk card → explicit grant</text>
+
+    <rect class="bx2" x="300" y="234" width="180" height="44" rx="3"/>
+    <text class="lbl" x="316" y="253">one-shot work order</text>
+    <text class="mut" x="316" y="269">single-use · capabilities</text>
+
+    <rect class="bx2 ba" x="300" y="308" width="180" height="44" rx="3"/>
+    <text class="lbl" x="316" y="327">clean worker</text>
+    <text class="mut" x="316" y="343">sandboxed, from zero</text>
+
+    <rect class="bx2" x="300" y="382" width="180" height="44" rx="3"/>
+    <text class="lbl" x="316" y="401">output gate</text>
+    <text class="mut" x="316" y="417">recipient · type · size</text>
+
+    <line class="ln" x1="390" y1="204" x2="390" y2="228"/>
+    <polygon class="ar" points="390,234 385.5,225 394.5,225"/>
+    <line class="ln" x1="390" y1="278" x2="390" y2="302"/>
+    <polygon class="ar" points="390,308 385.5,299 394.5,299"/>
+    <line class="ln" x1="390" y1="352" x2="390" y2="376"/>
+    <polygon class="ar" points="390,382 385.5,373 394.5,373"/>
+
+    <!-- right column: broker, evidence -->
+    <rect class="bx2" x="510" y="308" width="190" height="44" rx="3"/>
+    <text class="lbl" x="526" y="327">processor broker</text>
+    <text class="mut" x="526" y="343">allowlist · budget · key</text>
+
+    <rect class="bx2" x="510" y="382" width="190" height="44" rx="3"/>
+    <text class="lbl" x="526" y="401">evidence engine</text>
+    <text class="mut" x="526" y="417">DSSE manifest · SARIF</text>
+
+    <line class="ln" x1="480" y1="330" x2="504" y2="330"/>
+    <polygon class="ar" points="510,330 501,325.5 501,334.5"/>
+    <text class="mut" x="495" y="300" text-anchor="middle">one inherited fd</text>
+
+    <line class="ln" x1="480" y1="404" x2="504" y2="404"/>
+    <polygon class="ar" points="510,404 501,399.5 501,408.5"/>
+
+    <!-- store -->
+    <text class="mut" x="60" y="472">the receive path holds only a &amp;Store — it cannot dial, run, or read files</text>
+    <rect class="bxd" x="60" y="490" width="440" height="44" rx="3"/>
+    <text class="lbld b700" x="76" y="509">encrypted store</text>
+    <text class="mutd" x="76" y="525">tasks · contracts · outbox · audit — durable before effect</text>
+    <line class="ln dash" x1="160" y1="426" x2="160" y2="484"/>
+    <polygon class="ar" points="160,490 155.5,481 164.5,481"/>
+    <line class="ln dash" x1="390" y1="426" x2="390" y2="484"/>
+    <polygon class="ar" points="390,490 385.5,481 394.5,481"/>
+
+    <!-- broker egress -->
+    <polyline class="ln" points="700,330 740,330 740,614"/>
+    <polygon class="ar" points="740,620 735.5,611 744.5,611"/>
+    <text class="mut" x="750" y="360" transform="rotate(90 750 360)">the only egress for approved plaintext</text>
+
+    <rect class="bx2" x="620" y="620" width="180" height="46" rx="3"/>
+    <text class="lbl b700" x="636" y="639">model / processor</text>
+    <text class="mut" x="636" y="655">plaintext, never the key</text>
+
+    <!-- result egress -->
+    <line class="ln" x1="560" y1="426" x2="560" y2="614"/>
+    <polygon class="ar" points="560,620 555.5,611 564.5,611"/>
+
+    <rect class="bx2 aa" x="380" y="620" width="200" height="46" rx="3"/>
+    <text class="lbl b700" x="396" y="639">signed result</text>
+    <text class="mut" x="396" y="655">back to the requester</text>
+  </svg>
+  <figcaption class="fig-cap">The trusted computing base is the daemon's own components — endpoint,
+  parser, contract engine, issuer, gate, broker, evidence validator, store. The peer, the
+  task content, the worker while running peer work, and the model are all untrusted. (§7.1)</figcaption>
+</figure>
+
+<p>
+  Three structural choices do most of the security work:
+</p>
+<ul>
+  <li><strong>The receive path cannot act.</strong> The function that accepts a proposal
+  is handed a database handle and nothing else — no transport, no processor client, no
+  filesystem, no worker. "Arrival is not execution" is not a policy check that could be
+  forgotten; the capability to do anything else simply is not in scope. (§6.3)</li>
+  <li><strong>Authority is constructed, not inherited.</strong> Approving a task issues a
+  one-shot work order carrying an explicit capability vector. The worker is built from
+  nothing to match exactly that grant — rather than built powerful and then restricted.
+  (§12.3)</li>
+  <li><strong>Every effect is durable first.</strong> The store commits
+  <code>running</code>/<code>dispatching</code> before the first byte of any effect
+  leaves. Crash recovery marks anything mid-flight <code>ambiguous</code> — reported as
+  uncertain, never retried automatically, never claimed done. (§13.1, §15.5)</li>
+</ul>
+
+<h2 id="lifecycle">One task's life</h2>
+<p class="deck">
+  Twelve steps, in order, with the commit points where they belong. (§7.2)
+</p>
+
+<ol>
+  <li>The network endpoint authenticates the peer's pinned certificate <em>before</em>
+      reading a request body.</li>
+  <li>Connection, content-length, rate, and parse limits are enforced.</li>
+  <li>The standard A2A object and the recognized Akson extension are validated.</li>
+  <li>The encrypted object and its stable digest are stored transactionally.</li>
+  <li>The A2A response is returned only <em>after</em> the durability commit — a receipt
+      you can hold the sender to.</li>
+  <li>A human (or a standing policy, for non-disclosing work) evaluates the exact
+      immutable contract revision — the risk card.</li>
+  <li>Contract acceptance is signed separately from local authorization.</li>
+  <li>The local issuer creates a one-shot work order for a clean executor.</li>
+  <li>The executor receives only the selected input manifest and typed capabilities.</li>
+  <li>Results pass through size, media-type, recipient, and schema gates.</li>
+  <li>The evidence engine signs statements over the exact inputs, attempt, outputs, and
+      verifier results.</li>
+  <li>The requester validates the bundle independently and signs its own outcome.</li>
+</ol>
+
+<p>
+  Execution is tracked as an <strong>attempt</strong> with a small, closed state machine —
+  the same one the <a href="../proofs/">TLA+ model</a> checks against the code:
+</p>
+
+<figure class="fig" tabindex="0">
+  <svg viewBox="0 0 760 260" role="img" aria-label="Attempt states: pending to claimed to running to completed; failures go to failed; a crash or a cancel while running goes to ambiguous, which is terminal; pending and claimed can be cancelled.">
+    <rect class="bx2" x="30" y="40" width="120" height="40" rx="3"/>
+    <text class="lbl" x="90" y="64" text-anchor="middle">pending</text>
+    <rect class="bx2" x="210" y="40" width="120" height="40" rx="3"/>
+    <text class="lbl" x="270" y="64" text-anchor="middle">claimed</text>
+    <rect class="bx2" x="390" y="40" width="120" height="40" rx="3"/>
+    <text class="lbl" x="450" y="64" text-anchor="middle">running</text>
+    <rect class="bx2" x="590" y="40" width="130" height="40" rx="3"/>
+    <text class="lbl" x="655" y="64" text-anchor="middle">completed</text>
+
+    <line class="ln" x1="150" y1="60" x2="204" y2="60"/>
+    <polygon class="ar" points="210,60 201,55.5 201,64.5"/>
+    <text class="mut" x="180" y="50" text-anchor="middle">claim</text>
+    <line class="ln" x1="330" y1="60" x2="384" y2="60"/>
+    <polygon class="ar" points="390,60 381,55.5 381,64.5"/>
+    <text class="mut" x="360" y="50" text-anchor="middle">spawn</text>
+    <line class="ln" x1="510" y1="60" x2="584" y2="60"/>
+    <polygon class="ar" points="590,60 581,55.5 581,64.5"/>
+    <text class="mut" x="548" y="50" text-anchor="middle">gate ok</text>
+
+    <rect class="bx2" x="330" y="160" width="110" height="40" rx="3"/>
+    <text class="lbl" x="385" y="184" text-anchor="middle">failed</text>
+    <rect class="bx2" x="470" y="160" width="130" height="40" rx="3" style="stroke: var(--warn);"/>
+    <text class="lbl" x="535" y="184" text-anchor="middle">ambiguous</text>
+    <rect class="bx2" x="140" y="160" width="120" height="40" rx="3"/>
+    <text class="lbl" x="200" y="184" text-anchor="middle">cancelled</text>
+
+    <!-- running -> failed -->
+    <line class="ln" x1="420" y1="80" x2="390" y2="154"/>
+    <polygon class="ar" points="388,160 385.5,150 393.9,153.4"/>
+    <!-- running -> ambiguous: crash, or cancel mid-run -->
+    <line class="ln" x1="480" y1="80" x2="525" y2="154"/>
+    <polygon class="ar" points="528,160 519.5,155 527.5,150"/>
+    <text class="mut" x="520" y="104">crash · cancel</text>
+    <!-- claimed -> ambiguous: crash before spawn, routed under the bottom row -->
+    <polyline class="ln" points="270,80 270,225 535,225 535,206"/>
+    <polygon class="ar" points="535,200 530.5,209 539.5,209"/>
+    <text class="mut" x="395" y="220" text-anchor="middle">crash while claimed</text>
+    <!-- pending|claimed -> cancelled -->
+    <line class="ln" x1="90" y1="80" x2="90" y2="180"/>
+    <polyline class="ln" points="90,180 134,180"/>
+    <polygon class="ar" points="140,180 131,175.5 131,184.5"/>
+    <line class="ln" x1="230" y1="80" x2="230" y2="154"/>
+    <polygon class="ar" points="230,160 225.5,151 234.5,151"/>
+    <text class="mut" x="98" y="140">cancel</text>
+
+    <text class="mut" x="30" y="252">recovery at boot: claimed | running → ambiguous · pending is untouched</text>
+  </svg>
+  <figcaption class="fig-cap">The attempt machine from <code>akson-authority</code>. There is no
+  edge out of <code>ambiguous</code>: after a crash, honesty beats optimism. One honest
+  footnote: <code>task fulfill</code> — the trusted, operator-only path — completes a
+  claimed attempt without entering <code>running</code>, an edge the
+  <a href="../proofs/">model</a> does not yet cover. (§10.4)</figcaption>
+</figure>
+
+<h2 id="domains">The two permission domains</h2>
+<p class="deck">
+  Your authority and a peer's grant never share a mechanism — different sockets,
+  different keys, different processes, different rules.
+</p>
+<p>
+  Akson's core principle is that a peer's commands run in a separate, enforced,
+  reduced-authority domain, and your own user-granted authority is never touched. Four
+  mechanisms realize it:
+</p>
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Mechanism</th><th>How it separates the domains</th></tr>
+  <tr>
+    <td>Grant-derived sandbox spec</td>
+    <td>The sandbox is not a generic jail with holes poked in it — it is <em>derived</em>
+        from the approved grant. The named inputs, the single output directory, and (only
+        if granted) one broker channel are constructed in; nothing else exists.</td>
+  </tr>
+  <tr>
+    <td>One-shot work order</td>
+    <td>Approval mints a single-use, nonce-bound order (§12.3). Replaying it is refused
+        by the store's claim transaction; a crash between claim and run resolves to
+        <code>ambiguous</code>, not to a second execution.</td>
+  </tr>
+  <tr>
+    <td>Two control sockets, one broker channel</td>
+    <td>The <strong>admin</strong> socket carries operator authority; the
+        <strong>worker</strong> socket carries only "submit a result". Brokered model
+        calls travel a third, even narrower channel — the pre-opened socketpair the
+        confined worker inherits as a file descriptor. A compromised worker holding
+        both still cannot approve, send, or pair — those ops are not on any surface it
+        can reach.</td>
+  </tr>
+  <tr>
+    <td>Explicit outward grants</td>
+    <td>The two grants that disclose content — <code>processor_use</code> (reach a model)
+        and <code>artifact_export</code> (return files) — must be requested by the task
+        <em>and</em> granted at approval. Auto-approval can never confer them.</td>
+  </tr>
+</table>
+</div>
+
+<h2 id="sandbox" class="chapter-start">The sandbox, layer by layer</h2>
+<p class="deck">
+  Defense in depth, each layer independent, all of it probed by
+  <code>akson doctor</code> and refused rather than degraded. (§13.1)
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Layer</th><th>What it removes</th></tr>
+  <tr><td>User / mount / PID / net / IPC / UTS namespaces</td>
+      <td>The host's users, filesystem, processes, network interfaces, and IPC. The
+          worker sees a private world with only its task directory in it.</td></tr>
+  <tr><td>Default-deny seccomp</td>
+      <td>Every syscall not on the reviewed allowlist — including
+          <code>socket()</code> and <code>connect()</code>, so there is no network path
+          even inside the net namespace. <code>no_new_privs</code> is set.</td></tr>
+  <tr><td>Strict adapter profile</td>
+      <td>For a production adapter (<code>AKSON_WORKER_EXEC</code>), the
+          process-creation family too: no <code>fork</code>, <code>clone</code>, or
+          <code>vfork</code>. A shell reached via <code>execve</code> cannot spawn a
+          single command.</td></tr>
+  <tr><td>cgroups v2</td>
+      <td>Unbounded memory and process count (hard ceilings per run). A delegated
+          subtree is required; without one, <code>task run</code> refuses
+          (<code>503 no-confinement</code>). Wall-clock is a separate daemon-enforced
+          timer; there is no CPU quota yet.</td></tr>
+  <tr><td>Landlock</td>
+      <td>Filesystem reach beyond the constructed paths — applied by the worker
+          entrypoint where the kernel ABI supports the rules. Best-effort depth behind
+          the mount namespace, not part of the fail-closed required set.</td></tr>
+  <tr><td>Private <code>/proc</code>, fd allowlist, empty environment</td>
+      <td>Sight of host processes; inherited descriptors beyond the explicit allowlist
+          (the broker channel is the notable member); ambient credentials in
+          <code>env</code>. No home, no D-Bus, no SSH agent, no keyring, no Docker
+          socket, no cloud metadata.</td></tr>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">Fails closed</span>
+  <p>If the host cannot provide the required set — unprivileged user namespaces, the
+  delegated cgroup subtree, seccomp — execution refuses rather than running a peer's
+  task unconfined. <code>akson doctor</code> names the missing capability. The worker
+  does get a read-only runtime (<code>/usr</code>, <code>/lib*</code>) and a private,
+  task-scoped output directory — what it never gets is your workspace, home,
+  credentials, or a socket. (§13.1)</p>
+</div>
+
+<h2 id="broker">The broker: processor calls are effects</h2>
+<p class="deck">
+  Sending plaintext to a model discloses data and costs money — so every call is a
+  durable sub-attempt with the same crash honesty as execution itself.
+</p>
+
+<p>
+  The confined worker inherits exactly one already-connected file descriptor. It writes a
+  typed request; the daemon makes the real HTTPS call. On the daemon's side of that
+  descriptor, the broker enforces:
+</p>
+<ul>
+  <li><strong>The approved processor and budgets</strong> — bound into the one-shot work
+      order at approval. The broker snapshots that processor's <em>currently configured</em>
+      origin when dispatching, so a configuration change between approval and dispatch
+      is an acknowledged gap rather than a bound value;</li>
+  <li><strong>An egress allowlist and address re-check</strong> — <code>https</code> only,
+      the resolved address re-validated before dialing (global unicast unless a local
+      processor opted in), redirects and ambient proxies disabled — so neither a task nor
+      a DNS rebind can choose a different destination;</li>
+  <li><strong>Credential injection</strong> — the API key is added daemon-side and never
+      enters the worker's domain;</li>
+  <li><strong>A budget</strong> — a per-work-order operation count, response-size cap, and
+      wall-clock limit, counted in the same transaction that admits the call.</li>
+</ul>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">the sub-attempt machine, per call</span></div>
+<pre><code>prepared ──&gt; dispatching ──&gt; completed | failed | ambiguous | cancelled
+
+durable-before-wire: "dispatching" commits before the first byte leaves.
+a crash mid-call resolves to ambiguous — possible disclosure and cost are
+reported to the operator, and never silently retried.</code></pre>
+</div>
+
+<div class="note warn">
+  <span class="tag">Honest limits</span>
+  <p>The broker bounds operations, bytes, destination, and time — <strong>not
+  money</strong>. <code>max_cost_microusd</code> is recorded, not enforced: pricing is
+  per-provider and depends on token usage the broker does not parse. The operation count
+  and size caps bound the blast radius; a true cost ceiling needs per-provider usage
+  accounting and is tracked as follow-up work in the threat model.</p>
+</div>
+
+<h2 id="evidence">Evidence and outcomes</h2>
+<p class="deck">
+  A result is not "some bytes arrived" — it is a signed claim the requester re-verifies
+  from scratch before recording anything.
+</p>
+
+<p>
+  When the performer delivers, two things travel: the output bytes, and a canonical
+  result manifest naming each output with its role, media type, size, and SHA-256 —
+  signed as a DSSE envelope (§14.1–14.2). Findings use plain SARIF, validated against
+  the profile before they are emitted, so a model answering with malformed or
+  oversized findings fails closed on the performer's side.
+</p>
+<p>
+  The requester's daemon then re-verifies the claim independently: the delivery must
+  match an outstanding request, verify under the performer's pinned task-result key, and
+  every output <em>the manifest names</em> must re-hash to the digest it signs. One
+  missing output, one altered byte, one extra part — the whole delivery is refused
+  before anything is recorded (T8). Only then does the requester sign its own
+  <strong>outcome</strong>, a durable disposition grounded in the verified bundle
+  (§14.5). Two honest limits, tracked in the threat model: the manifest is not yet
+  cross-checked against the contract's declared <em>deliverables</em>, and referenced
+  in-toto evidence bytes are not delivered or independently verified in v1.
+</p>
+<p>
+  Before any renderable artifact leaves the performer, it is checked <strong>inert</strong>:
+  SVG, HTML, Markdown, Mermaid, and Graphviz outputs are refused if they carry scripts,
+  event handlers, script-bearing data URIs, external fetches, or DOCTYPE/ENTITY
+  declarations (§11, T4). That is defense in depth for the supported renderable types —
+  not a warranty for arbitrary media or a vulnerable viewer.
+</p>
+
+<div class="note">
+  <span class="tag">Authentic ≠ correct</span>
+  <p>Verification establishes <em>who</em> produced the bytes and that nobody altered
+  them. It does not establish that the content is right, honest, or safe. Treat a
+  verified result as attributable input — the <a href="../guide/#reading">guide says how</a>.</p>
+</div>
+
+<h2 id="wire" class="chapter-start">The wire</h2>
+<p class="deck">
+  Standard A2A 1.0 where a standard exists; a small, versioned extension surface where
+  Akson needs stronger promises. (§3, §10)
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Surface</th><th>Profile</th></tr>
+  <tr>
+    <td>Protocol</td>
+    <td><a href="https://a2a-protocol.org/latest/specification/">A2A 1.0</a> objects
+        over HTTP+JSON — today the <code>SendMessage</code> surface; the wider profiled
+        operation set (<code>GetTask</code>, <code>ListTasks</code>,
+        <code>CancelTask</code>) is specified but not yet implemented. Akson extensions
+        ride the declared extension mechanism: signed task contracts, durable passive
+        delivery, portable evidence.</td>
+  </tr>
+  <tr>
+    <td>Transport</td>
+    <td>TLS 1.3 only, mutual authentication, peer certificates pinned by digest at
+        pairing — no CA chain for peers, no DNS trust. No session resumption, no
+        tickets, no 0-RTT. (§9.1)</td>
+  </tr>
+  <tr>
+    <td>Delivery</td>
+    <td>Durable-before-response: the A2A reply is returned only after the store commit,
+        and every request carries an idempotency commitment over its covered values — an
+        exact replay returns the original response byte-identically; a changed value is a
+        <code>Conflict</code>. (§9.2)</td>
+  </tr>
+  <tr>
+    <td>Encoding</td>
+    <td>Strict I-JSON with hard byte, depth, and node caps; duplicate-key and
+        unsafe-integer rejection; digests computed over original bytes; JCS (RFC 8785)
+        where canonical bytes are needed. Every parser gate fails closed, backed by fuzz
+        targets and hostile-input suites. (§11.1)</td>
+  </tr>
+  <tr>
+    <td>Signing</td>
+    <td>Ed25519 keys, purpose-bound (a proposal key cannot sign a result), exchanged and
+        pinned at pairing; DSSE envelopes for contracts and results; JWS for the agent
+        card.</td>
+  </tr>
+</table>
+</div>
+
+<h2 id="control">The control plane</h2>
+<p class="deck">
+  The CLI, the MCP server, and any client you write all speak one tiny protocol to the
+  daemon: one JSON line in, one JSON line out, over a Unix socket.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>printf '{"op":"who_am_i"}\n' | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/akson/admin.sock"
+<span class="c"># {"outcome":"ok","result":{"issuer":"orgB","agent":"bob", …}}</span></code></pre>
+</div>
+
+<p>
+  Every exchange has that shape; <code>akson whoami</code> is exactly this request. The
+  daemon checks two things before running any op: the connecting process's UID (via
+  <code>SO_PEERCRED</code>) must equal its own, and the op must be allowed on the socket
+  it arrived at:
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Socket</th><th>Surface</th></tr>
+  <tr><td><code>admin.sock</code></td>
+      <td>Authority-bearing operator ops: pair, approve, run, fulfil, deliver, send,
+          configure processors.</td></tr>
+  <tr><td><code>worker.sock</code></td>
+      <td>The narrow surface the worker uses to submit its result. Nothing else — a
+          compromised worker cannot approve a contract or send a task, because those
+          ops do not exist on its socket. (Brokered processor calls do not travel here
+          at all: the confined worker uses the pre-opened broker fd it inherited.)</td></tr>
+</table>
+</div>
+
+<p>
+  The framing, problem shapes, and operation tables:
+  <a href="https://github.com/zarbafian/akson/blob/main/spec/control-protocol.md">spec/control-protocol.md</a>.
+</p>
+
+<h2 id="crates">The crate map</h2>
+<p class="deck">
+  A workspace of small crates, each owning one concern — the boundaries in the code
+  mirror the boundaries in the design.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Crate</th><th>Owns</th></tr>
+  <tr><td><code>aksond</code></td><td>The daemon: receive pipeline, decision surface, issuing, delivery, outcomes.</td></tr>
+  <tr><td><code>akson-cli</code></td><td>The operator CLI — a thin client of the control socket.</td></tr>
+  <tr><td><code>akson-mcp</code></td><td>The MCP server exposing the daemon to an agent harness as tools.</td></tr>
+  <tr><td><code>akson-transport</code></td><td>A2A HTTP+JSON server/client on the pinned mTLS 1.3 profile with the delivery extension.</td></tr>
+  <tr><td><code>akson-proto</code></td><td>Pinned A2A types, JSON mapping, profile validation.</td></tr>
+  <tr><td><code>akson-ext</code></td><td>Akson extension schemas, I-JSON, JCS canonicalization, DSSE envelopes, golden vectors.</td></tr>
+  <tr><td><code>akson-pairing</code></td><td>Invitations, the consume-once bootstrap ledger, pending-to-active pairing, re-pair and removal.</td></tr>
+  <tr><td><code>akson-contract</code></td><td>Contract validation, the revision chain, decisions, risk-card projection.</td></tr>
+  <tr><td><code>akson-authority</code></td><td>Local policy, the capability vector, one-shot work orders, the attempt machine.</td></tr>
+  <tr><td><code>akson-sandbox</code></td><td>The Linux isolation launcher: namespaces, seccomp, cgroups v2, Landlock; fail-closed probing.</td></tr>
+  <tr><td><code>akson-worker</code></td><td>The clean-worker protocol and the output gate, including inertness checks.</td></tr>
+  <tr><td><code>akson-broker</code></td><td>The processor broker: durable sub-attempts; the only egress path for approved plaintext.</td></tr>
+  <tr><td><code>akson-evidence</code></td><td>Result manifests, in-toto statements, the SARIF profile, evidence validation.</td></tr>
+  <tr><td><code>akson-crypto</code></td><td>Key lifecycle, purpose binding, thumbprints, JWS — thin wrappers over reviewed libraries.</td></tr>
+  <tr><td><code>akson-store</code></td><td>Encrypted SQLite state, outbox/inbox, replay tombstones, the audit chain, state-generation checkpoint.</td></tr>
+  <tr><td><code>akson-adapter-sdk</code></td><td>The adapter contract, fixtures, and the §16.3 conformance harness.</td></tr>
+  <tr><td><code>adapters/*</code></td><td>OpenAI-compatible, Anthropic, and Gemini worker adapters, built on the SDK, run under the strict profile.</td></tr>
+</table>
+</div>
+
+<p>
+  Beyond the runtime crates: <code>proof/</code> holds the TLA+ models, and its
+  conformance harness is itself a workspace member so plain
+  <code>cargo test --workspace</code> runs it (see <a href="../proofs/">Proofs</a>);
+  <code>xcheck/</code> is the independent Python cross-checker (deliberately
+  <em>not</em> sharing the workspace); <code>fuzz/</code> carries the contract,
+  I-JSON, and SARIF fuzz targets; <code>spec/</code> the golden vectors, control
+  protocol, and ADRs.
+</p>
+
+<nav class="pagenav" aria-label="Document sequence">
+  <a href="../guide/"><span class="k">previous</span>Guide</a>
+  <a class="next" href="../proofs/"><span class="k">next</span>Proofs</a>
+</nav>
+
+<footer>
+  <p>
+    The § references on this page point into the
+    <a href="https://github.com/zarbafian/akson/blob/main/design/2026-07-16-threads-enterprise-agent-communication.md">design
+    document</a>, which is normative where this page is descriptive. Residual risks are
+    tracked in the
+    <a href="https://github.com/zarbafian/akson/blob/main/design/2026-07-19-threat-model.md">threat model</a>;
+    decisions in the <a href="https://github.com/zarbafian/akson/tree/main/spec/adr">ADRs</a>.
+  </p>
+  <p>Akson is pre-release and under active development.</p>
+</footer>
+
+</main>
+</div>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

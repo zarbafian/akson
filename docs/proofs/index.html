@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proofs — Akson</title>
+<meta name="description" content="What is machine-checked in Akson: seven TLA+ models, inductive proofs, model-to-code conformance in CI, an independent cross-checker — and the stated limits.">
+<link rel="canonical" href="https://akson.cc/proofs/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Proofs — Akson">
+<meta property="og:description" content="Seven TLA+ models, inductive proofs, model-to-code conformance in CI, an independent cross-checker — and the stated limits.">
+<meta property="og:url" content="https://akson.cc/proofs/">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script>
+/* Apply a saved theme before first paint; site.js wires the toggle. */
+(function (root) {
+  try {
+    var saved = localStorage.getItem("akson-theme");
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+})(document.documentElement);
+</script>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<div class="shell">
+<aside class="rail">
+  <div class="rail-head">
+    <a class="rail-mark" href="../">aks<span class="a">o</span><span class="b">n</span></a>
+    <button class="themer" id="themer" type="button" aria-label="Switch colour theme">theme</button>
+  </div>
+  <div class="rail-sub">proofs</div>
+  <nav id="nav">
+    <div class="grp">Site</div>
+    <a href="../">Overview</a>
+    <a href="../guide/">Guide</a>
+    <a href="../internals/">Internals</a>
+    <a href="./" class="here" aria-current="page">Proofs</a>
+    <a href="https://github.com/zarbafian/akson">GitHub</a>
+    <div class="grp">The models</div>
+    <a href="#why">Three copies</a>
+    <a href="#models">Seven models</a>
+    <a href="#invariants">The invariants</a>
+    <div class="grp">Holding them</div>
+    <a href="#conformance">Model ↔ code</a>
+    <a href="#inductive">Unbounded proofs</a>
+    <a href="#negative">Testing the tests</a>
+    <div class="grp">The rest</div>
+    <a href="#xcheck">Second opinion</a>
+    <a href="#limits">What is not proved</a>
+    <a href="#run">Run it yourself</a>
+  </nav>
+</aside>
+
+<main id="top">
+
+<header class="hero">
+  <p class="eyebrow">Proofs · Assurance</p>
+  <h1>The rules are not only prose.</h1>
+  <p class="lede">
+    Akson's security claims live in three places at once: the design document, TLA+
+    models a checker explores end to end, and the Rust state machines. Tooling holds
+    all three together — so the code cannot drift silently from what was modeled, and
+    what was modeled is checked against every interleaving of its world.
+  </p>
+  <div class="pills">
+    <span class="pill">7 TLA+ models</span>
+    <span class="pill">TLC + Apalache</span>
+    <span class="pill">2 proved unbounded</span>
+    <span class="pill">19 harness self-tests</span>
+    <span class="pill">independent cross-checker</span>
+  </div>
+</header>
+
+<h2 id="why">Three copies, held together</h2>
+<p class="deck">
+  A design that only exists as prose drifts. A model that only exists in a paper never
+  meets the code. Akson keeps all three, and makes divergence loud.
+</p>
+
+<figure class="fig" tabindex="0">
+  <svg viewBox="0 0 760 396" role="img" aria-label="A triangle: the design document at the top, the TLA+ models at bottom left, the Rust code at bottom right. The models are transcribed from the design; the code is built to the design; a conformance suite holds models and code equal; TLC and Apalache check the models.">
+    <rect class="bx2" x="270" y="30" width="220" height="54" rx="3"/>
+    <text class="lbl b700" x="286" y="53">the design</text>
+    <text class="mut" x="286" y="71">normative prose — design/ (§)</text>
+
+    <rect class="bx2" x="60" y="250" width="240" height="54" rx="3"/>
+    <text class="lbl b700" x="76" y="273">the TLA+ models</text>
+    <text class="mut" x="76" y="291">7 models + 2 inductive companions</text>
+
+    <rect class="bx2" x="460" y="250" width="240" height="54" rx="3"/>
+    <text class="lbl b700" x="476" y="273">the Rust code</text>
+    <text class="mut" x="476" y="291">crates/ — the state machines</text>
+
+    <line class="ln" x1="322" y1="84" x2="206" y2="244"/>
+    <polygon class="ar" points="202,250 203.5,240 211,245.5"/>
+    <text class="mut" x="248" y="164" text-anchor="end">transcribed, § by §</text>
+
+    <line class="ln" x1="438" y1="84" x2="554" y2="244"/>
+    <polygon class="ar" points="558,250 549,245.5 556.5,240"/>
+    <text class="mut" x="516" y="152">built to the design;</text>
+    <text class="mut" x="516" y="166">traced in PROPERTIES.md</text>
+
+    <line class="ln" x1="306" y1="277" x2="454" y2="277"/>
+    <polygon class="ar" points="460,277 451,272.5 451,281.5"/>
+    <polygon class="ar" points="300,277 309,272.5 309,281.5"/>
+    <text class="mut" x="380" y="240" text-anchor="middle">conformance: every (state, event) pair</text>
+    <text class="mut" x="380" y="322" text-anchor="middle">cargo test — fails on drift</text>
+
+    <path class="ln" d="M 140,304 C 120,352 220,352 190,306"/>
+    <polygon class="ar" points="188,302 187.5,312 196,308"/>
+    <text class="mut" x="180" y="372">TLC · Apalache</text>
+  </svg>
+  <figcaption class="fig-cap">TLC exhaustively explores each model's configured world —
+  crashes at every commit point, endless replays, hostile deliveries — and Apalache
+  removes the run-length bound for two modules. The traceability — which design section,
+  which threat, which invariant, which enforcing function — is a table per model in
+  <a href="https://github.com/zarbafian/akson/blob/main/proof/PROPERTIES.md">proof/PROPERTIES.md</a>.</figcaption>
+</figure>
+
+<h2 id="models">Seven models</h2>
+<p class="deck">
+  Each model is small, adversarial, and aimed at one part of the protocol where a subtle
+  interleaving could break a promise.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Model</th><th>The world it checks</th></tr>
+  <tr>
+    <td><code>TaskLifecycle</code></td>
+    <td>One requester, one performer, a network that may replay every message forever, a
+        daemon that may crash between any two commit points. The attempt machine is the
+        implemented sandboxed-run transition table from <code>akson-authority</code>
+        (the trusted <code>task fulfill</code> edge is not yet modeled — see
+        <a href="#limits">limits</a>).</td>
+  </tr>
+  <tr>
+    <td><code>ContractChain</code></td>
+    <td>The contract revision chain's compare-and-swap head, transcribed 1:1 from
+        <code>akson-contract</code>, under adversarial delivery: replays, competing
+        siblings, skipped revisions, forged predecessors, stale acceptances.</td>
+  </tr>
+  <tr>
+    <td><code>ReceivePipeline</code></td>
+    <td>The real commit order of receiving a proposal — peek, validate, head write, input
+        persist, idempotency commit — with crashes between any two writes and a sender
+        free to put any body under any message id, forever.</td>
+  </tr>
+  <tr>
+    <td><code>PairingLedger</code></td>
+    <td>The consume-once bootstrap ledger behind pairing invitations, under adversarial
+        transcripts and nondeterministic expiry and purging.</td>
+  </tr>
+  <tr>
+    <td><code>BrokerBudget</code></td>
+    <td>Processor calls under one work order: the sub-attempt machine plus the
+        in-transaction budget count, with crashes mapping mid-flight calls to
+        <code>ambiguous</code>, never to a retry.</td>
+  </tr>
+  <tr>
+    <td><code>RollbackAdversary</code></td>
+    <td>An attacker who restores database snapshots to replay consumed one-shot nonces.
+        With rollback detection on, the invariant holds; with the interim custody
+        (detection unavailable), TLC is <em>required</em> to produce the attack trace —
+        the threat model's residual risk as a machine-checked counterexample instead of
+        prose.</td>
+  </tr>
+  <tr>
+    <td><code>TaskLiveness</code></td>
+    <td>The one honest liveness claim: every issued work order eventually reaches a
+        terminal state or expires — assuming time advances, a crashed daemon eventually
+        restarts, crashes are finite, and the daemon enforces deadlines. The worker
+        gets <strong>no</strong> fairness: the property holds even if it never claims
+        or hangs forever.</td>
+  </tr>
+</table>
+</div>
+
+<h2 id="invariants">The invariants, in plain language</h2>
+<p>
+  A selection of what the checkers prove over <em>every</em> reachable interleaving of
+  those worlds — the full list, with the enforcing Rust function for each, is in
+  <a href="https://github.com/zarbafian/akson/blob/main/proof/PROPERTIES.md">PROPERTIES.md</a>:
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Invariant</th><th>Means</th></tr>
+  <tr><td><code>AtMostOnceEffect</code></td>
+      <td>The worker really starts at most once, across every crash-and-replay schedule.</td></tr>
+  <tr><td><code>DurableBeforeEffect</code></td>
+      <td>The durable record advances before the first byte of any effect leaves.</td></tr>
+  <tr><td><code>NoAuthorityWithoutApproval</code></td>
+      <td>Arrival is not execution: no reachable state holds authority that a local
+          approval did not create.</td></tr>
+  <tr><td><code>OneShotWorkOrder</code></td>
+      <td>A work order is claimed at most once, ever — its nonce cannot be reused.
+          ("Ever" assumes the store is not rolled back; interim custody cannot yet
+          detect a rollback — see <a href="#negative">the attack trace</a>.)</td></tr>
+  <tr><td><code>AmbiguousNeverDone</code></td>
+      <td>An attempt interrupted by a crash surfaces as <code>ambiguous</code>, never as
+          success — and nothing ever leaves <code>ambiguous</code> automatically.</td></tr>
+  <tr><td><code>OneTaskPerBody</code></td>
+      <td>However many times a proposal is replayed, exactly one task exists for those
+          bytes, and duplicates are answered byte-identically.</td></tr>
+  <tr><td><code>LockIsFinal</code> · <code>AtMostOneLock</code></td>
+      <td>Accepting a contract locks exactly one revision digest, and nothing — replay,
+          sibling, forged predecessor — changes it afterwards.</td></tr>
+  <tr><td><code>AtMostOnePeer</code> · <code>NoRevival</code></td>
+      <td>A pairing invitation creates at most one peer, ever; a consumed or expired
+          invitation cannot be brought back.</td></tr>
+  <tr><td><code>BudgetBound</code> · <code>AtMostOneTransmit</code></td>
+      <td>No interleaving of calls and crashes exceeds the approved operation budget, and
+          an uncertain call is never silently retransmitted.</td></tr>
+  <tr><td><code>OneShotNonceForever</code></td>
+      <td>With rollback detection, a consumed nonce stays consumed across <em>any</em>
+          number of snapshot/restore cycles — proved inductively for arbitrary
+          generation counts.</td></tr>
+</table>
+</div>
+
+<h2 id="conformance" class="chapter-start">Model ↔ code, as CI</h2>
+<p class="deck">
+  A model of the code is worthless the day the code changes. So the models are pinned to
+  the implementation by tests that run with the ordinary workspace suite.
+</p>
+<p>
+  <code>proof/conformance</code> is a workspace member. For <strong>every</strong>
+  (state, event) pair, it asserts that the implemented pure transition functions equal
+  the TLA+ transition relations: <code>akson-authority::next</code> against
+  <code>TaskLifecycle</code> (49 pairs), <code>akson-broker::next</code> against
+  <code>BrokerBudget</code> (36 pairs), and <code>akson-contract</code>'s
+  <code>apply_revision</code>/<code>accept_head</code> against
+  <code>ContractChain</code>'s guards, exercised with real parsed contracts. A change to
+  either side that forgets the other fails plain <code>cargo test --workspace</code> —
+  it cannot land quietly.
+</p>
+<div class="note">
+  <span class="tag">What this does and does not catch</span>
+  <p>The oracle is a hand-transcribed relation table, not a parse of the
+  <code>.tla</code> files. It catches <strong>code drift</strong> — a Rust change that
+  contradicts the transcribed relation fails the suite — but editing a
+  <code>.tla</code> action <em>and nothing else</em> would not, because the
+  transcription is a third copy. Generating the oracle from the specs is tracked
+  follow-up work; the current guarantee is that the code cannot silently diverge from
+  the transcribed relation.</p>
+</div>
+
+<h2 id="inductive">Beyond bounded runs</h2>
+<p>
+  TLC checks exhaustively, but within configured state-space sizes. For two modules,
+  Apalache discharges the full inductive argument — base case, consecution, and
+  implication — removing the run-length bound entirely:
+</p>
+<ul>
+  <li><strong>PairingLedger</strong>: all six pairing invariants hold after <em>any</em>
+      number of steps.</li>
+  <li><strong>RollbackAdversary</strong>: <code>OneShotNonceForever</code> holds for
+      arbitrary generation counts and any number of snapshot/restore cycles.</li>
+</ul>
+<p>
+  The other five models remain exhaustively checked at their configured sizes;
+  extending induction to <code>BrokerBudget</code> and <code>ContractChain</code> is the
+  named next step in
+  <a href="https://github.com/zarbafian/akson/blob/main/proof/PROPERTIES.md">PROPERTIES.md</a>.
+</p>
+
+<h2 id="negative">Testing the tests</h2>
+<p class="deck">
+  A model checker that never finds anything might be checking nothing. The harness
+  proves its own teeth.
+</p>
+<p>
+  <code>make negative</code> runs 19 self-tests: ten mutated models that each break one
+  protocol rule on purpose — TLC <em>must</em> produce the counterexample trace; four
+  probes whose deliberately false claims <em>must</em> be refuted; a differential, a
+  temporal-fairness dependency, two induction vacuity guards, and an induction-collapse
+  mutant showing the inductive proof genuinely rests on rollback detection:
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">make negative — excerpt</span></div>
+<pre><code>ok    probe: settlement is reachable
+ok    retry-after-crash: Invariant OneShotWorkOrder is violated
+ok    no-dedup:          Invariant NoDuplicateTask  is violated
+ok    ind-no-detection:  consecution collapses without the counter
+…</code></pre>
+</div>
+
+<p>
+  The same discipline runs the other way: the <code>RollbackAdversary</code> model with
+  detection disabled must <em>fail</em>, producing the concrete attack trace for the
+  threat model's open custody risk. When the real keystore backend lands, flipping that
+  switch to "must hold" is the definition of done.
+</p>
+
+<h2 id="xcheck" class="chapter-start">An independent second opinion</h2>
+<p class="deck">
+  Model checking can't tell you your SHA-256 is over the wrong bytes. For everything
+  byte-precise, a second implementation has to agree.
+</p>
+
+<figure class="fig" tabindex="0">
+  <svg viewBox="0 0 760 210" role="img" aria-label="The Rust workspace and an independent Python implementation both derive the frozen golden vectors; both must reproduce every vector byte for byte in CI.">
+    <text class="mut" x="380" y="40" text-anchor="middle">both sides must reproduce every vector, byte for byte, in CI</text>
+
+    <rect class="bx2" x="30" y="70" width="210" height="54" rx="3"/>
+    <text class="lbl b700" x="46" y="93">Rust workspace</text>
+    <text class="mut" x="46" y="111">crates/*/tests/vectors.rs</text>
+
+    <rect class="bxd" x="290" y="70" width="180" height="54" rx="3"/>
+    <text class="lbld b700" x="306" y="93">golden vectors</text>
+    <text class="mutd" x="306" y="111">spec/vectors/ — frozen</text>
+
+    <rect class="bx2" x="520" y="70" width="210" height="54" rx="3"/>
+    <text class="lbl b700" x="536" y="93">Python xcheck</text>
+    <text class="mut" x="536" y="111">shares no code with Rust</text>
+
+    <line class="ln" x1="240" y1="97" x2="284" y2="97"/>
+    <polygon class="ar" points="290,97 281,92.5 281,101.5"/>
+    <polygon class="ar" points="240,97 249,92.5 249,101.5"/>
+    <line class="ln" x1="520" y1="97" x2="476" y2="97"/>
+    <polygon class="ar" points="470,97 479,92.5 479,101.5"/>
+    <polygon class="ar" points="520,97 511,92.5 511,101.5"/>
+
+    <text class="mut" x="380" y="170" text-anchor="middle">a vector is trustworthy only while both sides derive it independently —</text>
+    <text class="mut" x="380" y="186" text-anchor="middle">a frozen vector file is immutable once merged; fixes are new cases</text>
+  </svg>
+  <figcaption class="fig-cap">Golden vectors cover JCS canonical bytes, JWK thumbprints, DSSE
+  pre-authentication encoding and signatures, agent-card JWS, delivery commitments,
+  pairing transcripts, I-JSON acceptance, manifests, and outcomes.</figcaption>
+</figure>
+
+<p>
+  <a href="https://github.com/zarbafian/akson/blob/main/xcheck/README.md"><code>xcheck/</code></a>
+  re-derives every vector with Python libraries that share no code
+  with the workspace. This has already paid for itself: the
+  <code>jcs/utf16-key-sorting</code> vector caught <code>serde_jcs</code> sorting object
+  keys by Unicode code point where RFC 8785 requires UTF-16 code units — which is why
+  the workspace uses <code>json-canon</code> instead (ADR-0001).
+</p>
+<p>
+  Below the byte level, fuzz targets (<code>contract</code>, <code>ijson</code>,
+  <code>sarif</code>) and hostile-input suites hammer the parsers the models treat as
+  atomic.
+</p>
+
+<h2 id="limits">What is not proved</h2>
+<p class="deck">
+  A proof page that hides its edges would be advertising. These are the edges.
+</p>
+<ul>
+  <li><strong>Cryptographic soundness.</strong> Ed25519, HMAC, and DSSE are modeled as
+      perfect primitives. Akson uses reviewed implementations; it does not re-prove
+      them.</li>
+  <li><strong>Sandbox escape.</strong> Kernel-level isolation is enforced and probed, not
+      formally verified — that is the kernel's problem statement, not a TLA+ one.</li>
+  <li><strong>Timing and side channels.</strong> Out of scope in the threat model, and
+      out of scope here.</li>
+  <li><strong>One liveness gap, on record.</strong> The liveness model assumes the daemon
+      drives every claimed attempt to a terminal state at its deadline. The code
+      enforces a wall-clock ceiling once <code>task run</code> starts, but an attempt
+      that is approved and then <em>never run</em> has no deadline sweeper yet — so
+      termination is proved of the model, and holds of the code only for attempts that
+      actually run. PROPERTIES.md carries this note verbatim until the sweeper
+      lands.</li>
+  <li><strong>One unmodeled edge, on record.</strong> <code>task fulfill</code> — the
+      trusted, operator-only path — completes a claimed attempt without entering
+      <code>running</code>. The modeled, conformance-tested machine only reaches
+      success through <code>running</code>; the fulfil edge is not yet in the model,
+      and reconciling the two is tracked work.</li>
+  <li><strong>Interim custody.</strong> Until the real keystore backend, rollback
+      detection is unavailable — and rather than pretend otherwise, the harness requires
+      the attack trace to exist (see <a href="#negative">above</a>).</li>
+</ul>
+
+<h2 id="run">Run it yourself</h2>
+<p>
+  The conformance suite needs nothing beyond the Rust toolchain; the checkers fetch
+  themselves on first use (Java 11+ required). The harness's own documentation is
+  <a href="https://github.com/zarbafian/akson/blob/main/proof/README.md">proof/README.md</a>:
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code>cargo test --workspace        <span class="c"># includes proof/conformance — model ↔ code</span>
+
+cd proof
+make             <span class="c"># exhaustively check every spec (TLC)</span>
+make inductive   <span class="c"># Apalache: same invariants, any run length</span>
+make negative    <span class="c"># the harness proves its own teeth</span>
+make full        <span class="c"># all of the above</span></code></pre>
+</div>
+
+<p>A passing check ends the only way it should:</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">tlc — TaskLifecycle</span></div>
+<pre><code>Model checking completed. No error has been found.
+1602 states generated, 697 distinct states found, 0 states left on queue.</code></pre>
+</div>
+
+<nav class="pagenav" aria-label="Document sequence">
+  <a href="../internals/"><span class="k">previous</span>Internals</a>
+  <a class="next" href="../"><span class="k">start over</span>Overview</a>
+</nav>
+
+<footer>
+  <p>
+    The full traceability — invariant by invariant, with the design section, threat-model
+    entry, and enforcing Rust function for each — is
+    <a href="https://github.com/zarbafian/akson/blob/main/proof/PROPERTIES.md">proof/PROPERTIES.md</a>.
+    The models themselves live in
+    <a href="https://github.com/zarbafian/akson/tree/main/proof/specs">proof/specs/</a>; the golden
+    vectors and their rules in
+    <a href="https://github.com/zarbafian/akson/tree/main/spec/vectors">spec/vectors/</a>.
+  </p>
+  <p>Akson is pre-release and under active development.</p>
+</footer>
+
+</main>
+</div>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

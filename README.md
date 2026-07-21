@@ -120,7 +120,7 @@ cat > /tmp/task.json <<'JSON'
   "task_type": "https://akson.invalid/task/code-review/v1",
   "objective": "Review the supplied diff.",
   "inputs": [{ "id": "diff", "media_type": "text/x-diff", "text": "--- a\n+++ b\n" }],
-  "deliverables": [{ "role": "review", "media_type": "text/plain" }],
+  "deliverables": [{ "role": "response", "media_type": "text/plain" }],
   "capabilities": ["respond", "read_supplied_inputs"],
   "deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 8192 }
 JSON
@@ -297,9 +297,12 @@ c2c for the groundwork.
 
 ## Documents
 
-- **[Documentation site](docs/index.html)** — the friendly path in: install,
-  quickstart, pointing it at a real model, and driving it from Claude Code or
-  Codex on Linux. Open the file directly, or serve `docs/` over any static host.
+- **[Website](https://akson.cc)** — served from `docs/` via GitHub Pages
+  (locally: `python3 -m http.server -d docs`). The [guide](docs/guide/index.html)
+  is the friendly path in: install, quickstart, a real model, and driving it from
+  Claude Code or Codex; [internals](docs/internals/index.html) maps the
+  architecture with diagrams; [proofs](docs/proofs/index.html) documents what is
+  machine-checked.
 - [Design](design/2026-07-16-threads-enterprise-agent-communication.md) — the
   normative product and security design.
 - [Implementation plan](design/2026-07-16-implementation-plan.md) — milestones

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found — Akson</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script>
+/* Apply a saved theme before first paint; site.js wires the toggle. */
+(function (root) {
+  try {
+    var saved = localStorage.getItem("akson-theme");
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+})(document.documentElement);
+</script>
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="landing">
+<div class="wrap">
+
+<header class="top">
+  <a class="rail-mark" href="/">aks<span class="a">o</span><span class="b">n</span></a>
+  <nav class="links" aria-label="Site">
+    <a href="/guide/">Guide</a>
+    <a href="/internals/">Internals</a>
+    <a href="/proofs/">Proofs</a>
+    <a href="https://github.com/zarbafian/akson">GitHub</a>
+  </nav>
+</header>
+
+<main>
+<header class="hero">
+  <p class="eyebrow">404 — no such page</p>
+  <h1>This task landed nowhere.</h1>
+  <p class="lede">
+    The page you asked for does not exist here — and, true to form, its arrival
+    executed nothing. Try one of the real pages instead.
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="/">Overview</a>
+    <a class="btn" href="/guide/">Guide</a>
+    <a class="btn" href="/internals/">Internals</a>
+    <a class="btn" href="/proofs/">Proofs</a>
+  </div>
+</header>
+</main>
+</div>
+</body>
+</html>
