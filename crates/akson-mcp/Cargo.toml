@@ -1,0 +1,22 @@
+[package]
+name = "akson-mcp"
+publish = false
+description = "An MCP server exposing a local Akson daemon to an agent harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "akson-mcp"
+path = "src/main.rs"
+
+[dependencies]
+aksond = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+
+[lints]
+workspace = true

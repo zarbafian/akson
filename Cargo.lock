@@ -228,6 +228,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "akson-mcp"
+version = "0.0.1"
+dependencies = [
+ "aksond",
+ "base64",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "akson-model-conformance"
 version = "0.0.1"
 dependencies = [

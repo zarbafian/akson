@@ -15,6 +15,7 @@ members = [
     "crates/akson-evidence",
     "crates/aksond",
     "crates/akson-cli",
+    "crates/akson-mcp",
     "crates/akson-adapter-sdk",
     "adapters/openai",
     "adapters/anthropic",
