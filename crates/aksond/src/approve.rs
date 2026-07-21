@@ -183,17 +183,28 @@ pub fn deny(
     now: i64,
 ) -> Result<serde_json::Value, Problem> {
     let decided_at = rfc3339(now)?;
+    // The operator's reason is free text — it belongs in `note` (schema: string),
+    // not `reason_code` (schema: slug). Passing it as the code made any reason with
+    // a space or capital fail to sign, so `akson task deny <id> "<free text>"` was
+    // broken (codex review, found while testing the reactor).
     decide(
         store,
         task_id,
         DecisionKind::Reject,
+        Some("operator-declined"),
         Some(reason),
-        None,
         local,
         decision_key,
         &decided_at,
         now,
     )?;
+    // A rejection leaves the head open (only an acceptance locks it), so without
+    // this the reactor's sweep would still find the task and could auto-approve it
+    // under a standing policy. Mark it handled so a denied task is never later
+    // auto-approved (codex review).
+    store
+        .mark_task_reacted(task_id, now)
+        .map_err(store_problem)?;
     Ok(serde_json::json!({
         "denied": true,
         "task_id": task_id,

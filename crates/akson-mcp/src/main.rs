@@ -21,48 +21,103 @@
 //! read-only tools are safe to allow; keep `akson_approve`/`akson_fulfill`/
 //! `akson_deny`/`akson_deliver`/`akson_send` gated so each is a deliberate yes.
 
-use std::io::{BufRead, Write};
+use std::io::{BufReader, Read, Write};
 
 use aksond::{admin_socket_path, send_request, ControlRequest, ControlResponse, FulfillOutput};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-const PROTOCOL_VERSION: &str = "2025-06-18";
+/// The MCP protocol versions this server implements. `initialize` echoes the
+/// client's version only when it is one of these; otherwise it offers the latest.
+const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const PROTOCOL_VERSION: &str = SUPPORTED_VERSIONS[0];
+
+/// The largest single JSON-RPC message the server will buffer — bounded so a
+/// client cannot make it grow memory without limit on a newline-free stream.
+const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 fn main() {
-    let stdin = std::io::stdin();
+    let mut reader = BufReader::new(std::io::stdin());
     let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
+    loop {
+        let line = match read_capped_line(&mut reader, MAX_MESSAGE_BYTES) {
+            LineRead::Line(bytes) => bytes,
+            LineRead::Eof => break,
+            LineRead::TooLarge => {
+                // Cannot know the id; answer with a JSON-RPC parse error (id null).
+                let _ = writeln!(out, "{}", error(None, -32700, "message too large"));
+                let _ = out.flush();
+                break;
+            }
+            LineRead::Err => break,
+        };
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let msg: Value = match serde_json::from_str(&line) {
+        let msg: Value = match serde_json::from_slice(&line) {
             Ok(v) => v,
-            Err(e) => {
-                eprintln!("akson-mcp: bad JSON-RPC line: {e}");
+            Err(_) => {
+                // Malformed frame → JSON-RPC parse error with a null id (the id is
+                // unknowable), so a strict client is not left waiting.
+                let _ = writeln!(out, "{}", error(None, -32700, "parse error"));
+                let _ = out.flush();
                 continue;
             }
         };
         // A message with no `id` is a notification — act on it, never reply.
         let id = msg.get("id").cloned();
+        let is_notification = id.is_none();
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
         let response = match method {
+            _ if is_notification => None, // notifications get no response
             "initialize" => Some(ok(id, initialize_result(&params))),
             "tools/list" => Some(ok(id, json!({ "tools": tool_specs() }))),
             "tools/call" => Some(ok(id, call_tool(&params))),
             "ping" => Some(ok(id, json!({}))),
-            // Notifications (initialized, cancelled, …) need no reply.
-            m if m.starts_with("notifications/") => None,
-            _ if id.is_some() => Some(error(id, -32601, "method not found")),
-            _ => None,
+            _ => Some(error(id, -32601, "method not found")),
         };
         if let Some(response) = response {
             let _ = writeln!(out, "{response}");
             let _ = out.flush();
+        }
+    }
+}
+
+/// The outcome of reading one newline-terminated message, size-capped.
+enum LineRead {
+    Line(Vec<u8>),
+    Eof,
+    TooLarge,
+    Err,
+}
+
+/// Reads bytes up to the next `\n`, at most `cap` bytes, never growing past it.
+fn read_capped_line(reader: &mut impl Read, cap: usize) -> LineRead {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) => {
+                return if buf.is_empty() {
+                    LineRead::Eof
+                } else {
+                    LineRead::Line(buf)
+                }
+            }
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    return LineRead::Line(buf);
+                }
+                if buf.len() >= cap {
+                    return LineRead::TooLarge;
+                }
+                buf.push(byte[0]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return LineRead::Err,
         }
     }
 }
@@ -76,10 +131,13 @@ fn error(id: Option<Value>, code: i64, message: &str) -> Value {
 }
 
 fn initialize_result(params: &Value) -> Value {
-    // Echo the client's protocol version when it offers one we understand.
+    // Echo the client's protocol version only when we actually implement it;
+    // otherwise offer our latest, so the client never believes we agreed to a
+    // version we do not support (codex review).
     let version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
+        .filter(|v| SUPPORTED_VERSIONS.contains(v))
         .unwrap_or(PROTOCOL_VERSION);
     json!({
         "protocolVersion": version,

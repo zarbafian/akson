@@ -603,6 +603,10 @@ impl Store {
             // holder of the revoked certificate. Removing the rows closes that
             // re-pairing bypass (codex review).
             tx.execute("DELETE FROM peer_keys WHERE agent_id = ?1", [agent_id])?;
+            // Drop any standing auto-approval too, so re-pairing a *different*
+            // entity under the same agent id cannot inherit the removed peer's
+            // pre-authorisation (codex review).
+            tx.execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent_id])?;
             audit::append(&tx, now, "peer.removed", agent_id)?;
         }
         tx.commit()?;

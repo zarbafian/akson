@@ -539,6 +539,77 @@ async fn a_performer_can_fulfil_a_task_from_its_own_agent_without_a_sandbox() {
     );
 }
 
+/// A task the operator DENIED must never be auto-approved by a later reactor sweep,
+/// even under a matching standing policy — a rejection leaves the head open, so the
+/// deny path marks it handled (codex review).
+#[tokio::test]
+async fn a_denied_task_is_not_later_auto_approved() {
+    let (alice, bob) = paired_endpoints().await;
+    bob.state
+        .dispatch(&ControlRequest::PeerAutoApprove {
+            agent_id: alice.agent.clone(),
+            task_types: vec!["https://akson.cc/task/design/v1".to_owned()],
+            max_response_bytes: 8192,
+        })
+        .unwrap();
+    let spec = TaskSpec {
+        performer: bob.agent.clone(),
+        task_type: "https://akson.cc/task/design/v1".to_owned(),
+        objective: "would fit the policy".to_owned(),
+        inputs: vec![],
+        deliverables: vec![Deliverable {
+            role: "response".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes: 4096,
+    };
+    let sender = alice.state.clone();
+    let task_id =
+        tokio::task::spawn_blocking(move || sender.dispatch(&ControlRequest::TaskSend(spec)))
+            .await
+            .unwrap()
+            .unwrap()["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+    // The operator denies it before the reactor runs.
+    let deny = bob
+        .state
+        .dispatch(&ControlRequest::TaskDeny {
+            task_id: task_id.clone(),
+            reason: "not this one".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(deny["denied"], true, "deny result: {deny}");
+    let pending = bob
+        .state
+        .store()
+        .lock()
+        .unwrap()
+        .tasks_awaiting_reaction()
+        .unwrap();
+    assert!(
+        pending.iter().all(|t| t.task_id != task_id),
+        "a denied task must be marked handled; still pending: {pending:?}"
+    );
+
+    // A sweep must NOT auto-approve the denied task.
+    aksond::react_once(&bob.state).unwrap();
+    assert!(
+        bob.state
+            .store()
+            .lock()
+            .unwrap()
+            .attempt_for_task(&task_id)
+            .unwrap()
+            .is_none(),
+        "a denied task must never be auto-approved"
+    );
+}
+
 /// A standing per-peer policy auto-approves a fitting task (no human prompt), and
 /// leaves a task outside the policy submitted for a decision. This is the opt-in
 /// half of the trust model: the human pre-authorises a peer, the daemon enforces.

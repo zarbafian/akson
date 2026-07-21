@@ -46,27 +46,45 @@ pub fn run_reactor(state: Arc<DaemonState>) {
 /// store lock released. Public so an integration test can drive a single,
 /// deterministic sweep rather than waiting on the polling loop.
 pub fn react_once(state: &DaemonState) -> Result<(), String> {
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    // Phase 1 (locked): auto-approve what policy allows, and mark each handled.
-    let fired: Vec<(String, bool)> = {
+    let wall = OffsetDateTime::now_utc().unix_timestamp();
+    // Phase 1 (locked): auto-approve what policy allows (idempotent — an accepted
+    // task's head is Locked, so re-running never double-issues).
+    let pending: Vec<(String, bool)> = {
         let store = state.store();
         let store = store.lock().map_err(|_| "store lock poisoned".to_owned())?;
-        let pending = store.tasks_awaiting_reaction().map_err(|e| e.to_string())?;
-        let mut fired = Vec::new();
-        for task in pending {
-            let auto = auto_approve_if_allowed(&store, state, &task.task_id, now);
-            store
-                .mark_task_reacted(&task.task_id, now)
-                .map_err(|e| e.to_string())?;
-            fired.push((task.task_id, auto));
-        }
-        fired
+        // Authority decisions run on the monotonic trusted clock, never the raw
+        // wall clock — a rolled-back host clock must not revive expired authority
+        // (codex review). If time is uncertain, auto-approve nothing this sweep.
+        let trusted = store.trusted_now(wall).ok();
+        let tasks = store.tasks_awaiting_reaction().map_err(|e| e.to_string())?;
+        tasks
+            .into_iter()
+            .map(|t| {
+                let auto = trusted
+                    .map(|now| auto_approve_if_allowed(&store, state, &t.task_id, now))
+                    .unwrap_or(false);
+                (t.task_id, auto)
+            })
+            .collect()
     };
     // Phase 2 (unlocked): poke the harness. Spawning a process must not hold the
     // store lock, and a slow hook must not stall the sweep.
     if let Some(cmd) = state.config().on_task.as_deref() {
-        for (task_id, auto) in &fired {
+        for (task_id, auto) in &pending {
             spawn_hook(cmd, task_id, *auto);
+        }
+    }
+    // Phase 3 (locked): mark each task handled — *after* the hook, so a crash
+    // between re-fires the hook (at-least-once) rather than losing it. An
+    // auto-approved task is already excluded by its Locked head; the mark stops a
+    // still-submitted task's hook from re-firing every sweep.
+    {
+        let store = state.store();
+        let store = store.lock().map_err(|_| "store lock poisoned".to_owned())?;
+        for (task_id, _) in &pending {
+            store
+                .mark_task_reacted(task_id, wall)
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -93,6 +111,14 @@ fn auto_approve_if_allowed(
     };
     let contract = parsed.contract;
 
+    // The requester must be a confirmed-ACTIVE peer. A pending (not-yet-confirmed)
+    // or removed peer is never auto-approved, even if a stale policy row survives —
+    // auto-approval is trust the operator granted a peer they confirmed (codex review).
+    if store.peer_status(&contract.requester.agent).ok().flatten()
+        != Some(akson_store::PeerStatus::Active)
+    {
+        return false;
+    }
     let Ok(Some(policy)) = store.get_auto_approve(&contract.requester.agent) else {
         return false; // no standing policy → always ask
     };

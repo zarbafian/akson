@@ -156,6 +156,16 @@ pub fn submit_result(
         .map_err(store_problem)?
         .ok_or_else(|| problem(500, "missing-work-order", "the work order is missing"))?;
 
+    // A completed attempt's manifest is immutable. A re-submit is idempotent, but
+    // its outputs must NOT be staged again: a *different* second result's new
+    // artifact ids would otherwise be added to the store and then ride along on
+    // delivery, unbound by the original signed manifest, and the requester would
+    // reject the whole (previously deliverable) result as `output-unbound`. So
+    // staging below is skipped once completed — the first result stands (codex
+    // review).
+    let already_completed = store.attempt_state(&work_order_id).map_err(store_problem)?
+        == Some(akson_authority::AttemptState::Succeeded);
+
     // 3. Output gate (§7.2 step 10): every output within its granted scope.
     let proposed: Vec<ProposedOutput> = submission
         .outputs
@@ -261,20 +271,22 @@ pub fn submit_result(
     // manifest commit durably" — so the bytes go in first. A crash between the two
     // leaves staged bytes for a task that never completed, which is inert; the
     // reverse (a completed task whose outputs are gone) is what must not happen.
-    for (ordinal, output) in submission.outputs.iter().enumerate() {
-        store
-            .put_task_output(
-                task_id,
-                &output.artifact_id,
-                ordinal as i64,
-                &output.role,
-                &output.media_type,
-                output.byte_length() as i64,
-                &output.sha256(),
-                &output.content,
-                now,
-            )
-            .map_err(store_problem)?;
+    if !already_completed {
+        for (ordinal, output) in submission.outputs.iter().enumerate() {
+            store
+                .put_task_output(
+                    task_id,
+                    &output.artifact_id,
+                    ordinal as i64,
+                    &output.role,
+                    &output.media_type,
+                    output.byte_length() as i64,
+                    &output.sha256(),
+                    &output.content,
+                    now,
+                )
+                .map_err(store_problem)?;
+        }
     }
     match store
         .complete_attempt_with_result(

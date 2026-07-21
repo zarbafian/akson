@@ -483,6 +483,16 @@ pub fn run_fulfill(
     let mut proposed = Vec::new();
     let mut outputs = Vec::new();
     for out in provided {
+        // Refuse an over-large output by its *encoded* length before decoding, so a
+        // huge base64 blob cannot make the daemon allocate gigabytes ahead of the
+        // gate (codex review). base64 is 4 bytes per 3, so this bounds the decode.
+        if out.content_base64.len() as u64 > (MAX_WORKER_FILE_BYTES / 3) * 4 + 4 {
+            return Err(problem(
+                413,
+                "output-too-large",
+                "a fulfilment output exceeds the maximum size",
+            ));
+        }
         let content = STANDARD.decode(&out.content_base64).map_err(|_| {
             problem(
                 422,
@@ -495,6 +505,17 @@ pub fn run_fulfill(
         } else {
             OutputKind::Artifact
         };
+        // A renderable artifact must be inert, exactly as on the sandboxed path
+        // (collect_artifacts checks this): a trusted agent can still produce active
+        // HTML/SVG that would execute when the requester views it (codex review).
+        check_inert(&out.media_type, &content).map_err(|e| {
+            problem_detail(
+                403,
+                "artifact-not-inert",
+                "an output carries active content and was refused",
+                e,
+            )
+        })?;
         let artifact_id = match kind {
             OutputKind::Response => format!("resp-{task_id}"),
             OutputKind::Artifact => format!("art-{task_id}-{}", out.role),
@@ -531,7 +552,11 @@ pub fn run_fulfill(
     })?;
 
     // Record it, producing the signed manifest and completing the attempt
-    // (Claimed → Succeeded). On failure, mark the attempt Failed so it is terminal.
+    // (Claimed → Succeeded). Unlike a sandboxed run — where a failure means the
+    // worker executed and failed, so the attempt becomes terminal — a rejected
+    // *fulfilment* is the operator handing over bytes the gate refused (a wrong
+    // role, a dup id, an over-budget size). That is a correctable mistake, so the
+    // attempt is left Claimed: a corrected `task fulfill` can retry (codex review).
     let submission = ResultSubmission {
         task_id: task_id.to_owned(),
         outputs,
@@ -548,20 +573,15 @@ pub fn run_fulfill(
             now_unix(),
         )
     };
-    match result {
-        Ok(manifest) => Ok(serde_json::json!({
+    let _ = work_order_id; // retained for context; the attempt stays Claimed on error
+    result.map(|manifest| {
+        serde_json::json!({
             "fulfilled": true,
             "task_id": task_id,
             "outputs": provided.len(),
             "result": manifest,
-        })),
-        Err(e) => {
-            if let Ok(store) = state.store().lock() {
-                let _ = store.advance_attempt(&work_order_id, AttemptEvent::Fail, now_unix());
-            }
-            Err(e)
-        }
-    }
+        })
+    })
 }
 
 /// One artifact the worker declared in `/output/artifacts.json` (mirrors the SDK's
