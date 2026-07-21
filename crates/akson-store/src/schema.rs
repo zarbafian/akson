@@ -302,6 +302,28 @@ CREATE TABLE task_outputs (
 ) STRICT;
 "#;
 
+/// Version 16 (M13, cooperative delegation): the operator's standing per-peer
+/// auto-approval policy, and a record of which received tasks the daemon's reactor
+/// has already handled (fired the arrival hook / considered for auto-approval).
+///
+/// `auto_approve` is the human's pre-authorisation (§12 local authority): a peer
+/// may be trusted to have certain task types run without a per-task prompt, up to
+/// a byte ceiling. `task_types` is a newline-joined allow-list. Absence of a row
+/// means "always ask" — the safe default. `task_reactions` makes the reactor fire
+/// exactly once per task across restarts.
+const V16: &str = r#"
+CREATE TABLE auto_approve (
+    agent_id            TEXT PRIMARY KEY,
+    task_types          TEXT NOT NULL,
+    max_response_bytes  INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+) STRICT;
+CREATE TABLE task_reactions (
+    task_id     TEXT PRIMARY KEY,
+    reacted_at  INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -320,6 +342,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (13, V13),
     (14, V14),
     (15, V15),
+    (16, V16),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

@@ -97,6 +97,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // The reactor: reacts to arriving tasks (standing auto-approval + the arrival
+    // hook) on its own thread, off the inert receive path. Cheap when idle.
+    {
+        let state = state.clone();
+        std::thread::spawn(move || aksond::run_reactor(state));
+    }
+
     // Both surfaces share the one daemon state; each dispatch closure holds its own
     // handle. The worker surface serves on its own thread, the admin on this one.
     let worker_thread = {

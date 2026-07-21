@@ -91,6 +91,12 @@ pub struct DaemonConfig {
     /// it takes precedence over `worker_command`. This is the confined-adapter path
     /// (§13.1/§16.3): a single process that cannot spawn a child or open a socket.
     pub worker_exec: Option<Vec<String>>,
+    /// An optional command the daemon runs when a delegated task arrives
+    /// (`AKSON_ON_TASK`), so a harness is *poked* rather than polling the inbox. Run
+    /// as `/bin/sh -c <cmd>`, detached, with `AKSON_TASK` (the task id) and
+    /// `AKSON_TASK_AUTO` (`1` if a standing policy auto-approved it) in its
+    /// environment. `None` disables the hook.
+    pub on_task: Option<String>,
 }
 
 impl DaemonConfig {
@@ -113,6 +119,7 @@ impl DaemonConfig {
         // split the command line on whitespace into argv. Empty → None.
         let worker_exec = env_nonempty("AKSON_WORKER_EXEC")
             .map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>());
+        let on_task = env_nonempty("AKSON_ON_TASK");
         Self {
             data_dir,
             local_performer: Identity { issuer, agent },
@@ -121,6 +128,7 @@ impl DaemonConfig {
             pair_addr,
             worker_command,
             worker_exec,
+            on_task,
         }
     }
 }
@@ -260,6 +268,39 @@ impl DaemonState {
                     .confirm_peer(agent_id, now_unix())
                     .map_err(|_| internal())?;
                 Ok(serde_json::json!({ "confirmed": confirmed, "agent_id": agent_id }))
+            }
+            ControlRequest::PeerAutoApprove {
+                agent_id,
+                task_types,
+                max_response_bytes,
+            } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                // Empty task types clears the policy — reverts to always-ask.
+                if task_types.is_empty() {
+                    let cleared = store
+                        .delete_auto_approve(agent_id)
+                        .map_err(|_| internal())?;
+                    Ok(
+                        serde_json::json!({ "auto_approve": "off", "cleared": cleared, "agent_id": agent_id }),
+                    )
+                } else {
+                    store
+                        .put_auto_approve(
+                            agent_id,
+                            &akson_store::AutoApprovePolicy {
+                                task_types: task_types.clone(),
+                                max_response_bytes: *max_response_bytes,
+                            },
+                            now_unix(),
+                        )
+                        .map_err(|_| internal())?;
+                    Ok(serde_json::json!({
+                        "auto_approve": "on",
+                        "agent_id": agent_id,
+                        "task_types": task_types,
+                        "max_response_bytes": max_response_bytes,
+                    }))
+                }
             }
             ControlRequest::TaskSent => {
                 let store = self.store.lock().map_err(|_| internal())?;
@@ -617,6 +658,7 @@ mod tests {
             pair_addr: None,
             worker_command: None,
             worker_exec: None,
+            on_task: None,
         }
     }
 

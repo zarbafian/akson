@@ -539,6 +539,75 @@ async fn a_performer_can_fulfil_a_task_from_its_own_agent_without_a_sandbox() {
     );
 }
 
+/// A standing per-peer policy auto-approves a fitting task (no human prompt), and
+/// leaves a task outside the policy submitted for a decision. This is the opt-in
+/// half of the trust model: the human pre-authorises a peer, the daemon enforces.
+#[tokio::test]
+async fn a_standing_policy_auto_approves_within_limits_and_asks_outside_them() {
+    let (alice, bob) = paired_endpoints().await;
+    // Bob's operator pre-authorises alice for this task type, up to 8 KiB.
+    bob.state
+        .dispatch(&ControlRequest::PeerAutoApprove {
+            agent_id: alice.agent.clone(),
+            task_types: vec!["https://akson.cc/task/design/v1".to_owned()],
+            max_response_bytes: 8192,
+        })
+        .unwrap();
+
+    let send = |objective: &str, max_bytes: u64| {
+        let spec = TaskSpec {
+            performer: bob.agent.clone(),
+            task_type: "https://akson.cc/task/design/v1".to_owned(),
+            objective: objective.to_owned(),
+            inputs: vec![],
+            deliverables: vec![Deliverable {
+                role: "response".to_owned(),
+                media_type: "text/plain".to_owned(),
+            }],
+            capabilities: vec!["respond".to_owned()],
+            deadline: "2030-01-01T00:00:00Z".to_owned(),
+            max_response_bytes: max_bytes,
+        };
+        let sender = alice.state.clone();
+        async move {
+            tokio::task::spawn_blocking(move || sender.dispatch(&ControlRequest::TaskSend(spec)))
+                .await
+                .unwrap()
+                .unwrap()["task_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+
+    // A fitting task and one over the byte ceiling.
+    let fits = send("within policy", 4096).await;
+    let over = send("over the byte ceiling", 100_000).await;
+
+    // One reactor sweep on bob.
+    aksond::react_once(&bob.state).unwrap();
+
+    // The fitting task is auto-approved: it now has an issued work order.
+    let has_work_order = |task_id: &str| {
+        bob.state
+            .store()
+            .lock()
+            .unwrap()
+            .attempt_for_task(task_id)
+            .unwrap()
+            .is_some()
+    };
+    assert!(has_work_order(&fits), "the in-policy task is auto-approved");
+    assert!(
+        !has_work_order(&over),
+        "the over-limit task waits for a human decision"
+    );
+
+    // A second sweep does nothing new (the task_reactions row makes it once-only).
+    aksond::react_once(&bob.state).unwrap();
+    assert!(has_work_order(&fits));
+}
+
 /// A fulfilment is gated exactly like a sandboxed run: a result outside the granted
 /// scope (here, over the byte ceiling) is refused, and no outcome is delivered.
 #[tokio::test]
@@ -736,6 +805,7 @@ fn config(dir: &str, agent: &str) -> DaemonConfig {
         pair_addr: None,
         worker_command: None,
         worker_exec: None,
+        on_task: None,
     }
 }
 

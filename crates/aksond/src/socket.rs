@@ -58,6 +58,14 @@ pub enum ControlRequest {
     PeerList,
     /// Confirm a pending peer, promoting it to active (`akson peer confirm`, admin).
     PeerConfirm { agent_id: String },
+    /// Set a peer's standing auto-approval policy (`akson peer auto-approve`, admin):
+    /// tasks of these types from this peer, within the byte ceiling, that ask for no
+    /// outward disclosure, run without a per-task prompt. Empty `task_types` clears it.
+    PeerAutoApprove {
+        agent_id: String,
+        task_types: Vec<String>,
+        max_response_bytes: u64,
+    },
     /// List tasks this daemon sent as requester (`akson task sent`).
     TaskSent,
     /// List recorded requester outcomes (`akson task outcomes`).
@@ -169,6 +177,7 @@ impl ControlRequest {
             | ControlRequest::TaskOutput { .. } => ControlOp::TaskInspect,
             ControlRequest::PeerList => ControlOp::Inspect,
             ControlRequest::PeerConfirm { .. } => ControlOp::Pair,
+            ControlRequest::PeerAutoApprove { .. } => ControlOp::Policy,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }

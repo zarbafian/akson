@@ -266,6 +266,17 @@ pub enum OutcomeWrite {
     AlreadyRecorded { outcome_digest: String },
 }
 
+/// A peer's standing auto-approval policy (design §12): the operator's
+/// pre-authorisation to run certain task types from this peer without a per-task
+/// prompt, up to a byte ceiling. An empty `task_types` matches nothing (so the
+/// policy never fires); tasks requesting outward disclosure (processor use or
+/// artifact export) are never auto-approved regardless — those always ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoApprovePolicy {
+    pub task_types: Vec<String>,
+    pub max_response_bytes: u64,
+}
+
 /// A recorded requester outcome's listing summary (design §14.5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutcomeSummary {
@@ -1160,6 +1171,96 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// The submitted tasks the daemon's reactor has not yet handled — those with an
+    /// open head and no `task_reactions` row. The reactor fires the arrival hook and
+    /// considers auto-approval exactly once per task, surviving restarts.
+    pub fn tasks_awaiting_reaction(&self) -> Result<Vec<TaskHead>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.task_id, h.contract_id, h.revision, h.digest
+             FROM contract_heads h
+             LEFT JOIN task_reactions r ON r.task_id = h.task_id
+             WHERE h.status = 'open' AND r.task_id IS NULL
+             ORDER BY h.task_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(TaskHead {
+                    task_id: r.get(0)?,
+                    contract_id: r.get(1)?,
+                    revision: r.get(2)?,
+                    contract_digest: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Marks a task as handled by the reactor (idempotent).
+    pub fn mark_task_reacted(&self, task_id: &str, now: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO task_reactions (task_id, reacted_at) VALUES (?1, ?2)
+             ON CONFLICT(task_id) DO NOTHING",
+            params![task_id, now],
+        )?;
+        Ok(())
+    }
+
+    /// Sets (or replaces) a peer's standing auto-approval policy — the human's
+    /// pre-authorisation for that peer (§12 local authority).
+    pub fn put_auto_approve(
+        &self,
+        agent_id: &str,
+        policy: &AutoApprovePolicy,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO auto_approve (agent_id, task_types, max_response_bytes, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET
+                 task_types = excluded.task_types,
+                 max_response_bytes = excluded.max_response_bytes,
+                 updated_at = excluded.updated_at",
+            params![
+                agent_id,
+                policy.task_types.join("\n"),
+                policy.max_response_bytes as i64,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A peer's auto-approval policy, or `None` (the safe default: always ask).
+    pub fn get_auto_approve(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AutoApprovePolicy>, StoreError> {
+        let row: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT task_types, max_response_bytes FROM auto_approve WHERE agent_id = ?1",
+                [agent_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(types, max)| AutoApprovePolicy {
+            task_types: types
+                .lines()
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty())
+                .collect(),
+            max_response_bytes: max.max(0) as u64,
+        }))
+    }
+
+    /// Removes a peer's auto-approval policy (reverts to always-ask).
+    pub fn delete_auto_approve(&self, agent_id: &str) -> Result<bool, StoreError> {
+        let n = self
+            .conn
+            .execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent_id])?;
+        Ok(n == 1)
     }
 
     /// Submits a validated revision as an atomic compare-and-swap on the Task's
@@ -3209,6 +3310,42 @@ mod tests {
             .peer_key("other", "contract-proposal")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn auto_approve_policy_round_trips_and_clears() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        assert!(store.get_auto_approve("peer-1").unwrap().is_none());
+        let policy = AutoApprovePolicy {
+            task_types: vec!["t/design/v1".to_owned(), "t/review/v1".to_owned()],
+            max_response_bytes: 8192,
+        };
+        store.put_auto_approve("peer-1", &policy, 100).unwrap();
+        assert_eq!(store.get_auto_approve("peer-1").unwrap().unwrap(), policy);
+        assert!(store.delete_auto_approve("peer-1").unwrap());
+        assert!(store.get_auto_approve("peer-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_task_is_offered_for_reaction_once() {
+        // A submitted task is pending until marked; then never again (once-only,
+        // even across a reactor restart, because the marker is durable).
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        assert!(store.tasks_awaiting_reaction().unwrap().is_empty());
+        // Insert an open head directly (the reactor reads by task id).
+        store
+            .conn
+            .execute(
+                "INSERT INTO contract_heads (task_id, contract_id, revision, digest, status)
+                 VALUES ('task-x', 'c-1', 0, 'd1', 'open')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(store.tasks_awaiting_reaction().unwrap().len(), 1);
+        store.mark_task_reacted("task-x", 101).unwrap();
+        assert!(store.tasks_awaiting_reaction().unwrap().is_empty());
+        // Idempotent mark.
+        store.mark_task_reacted("task-x", 102).unwrap();
     }
 
     #[test]

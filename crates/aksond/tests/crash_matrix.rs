@@ -47,6 +47,7 @@ fn config(dir: &Path) -> DaemonConfig {
         pair_addr: None,
         worker_command: None,
         worker_exec: None,
+        on_task: None,
     }
 }
 

@@ -124,8 +124,63 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(agent) => peer_confirm(&agent),
             None => usage("akson peer confirm <agent-id>"),
         },
-        _ => usage("akson peer {list|confirm <agent-id>}"),
+        Some("auto-approve") => {
+            // akson peer auto-approve <agent> --task-type <t> [--task-type <t>]… [--max-bytes N]
+            // akson peer auto-approve <agent> --off
+            let Some(agent) = next_arg(args) else {
+                return usage(
+                    "akson peer auto-approve <agent> --task-type <t> [--max-bytes N] | --off",
+                );
+            };
+            let mut task_types = Vec::new();
+            let mut max_bytes: u64 = 8192;
+            let mut off = false;
+            while let Some(flag) = next_arg(args) {
+                match flag.as_str() {
+                    "--task-type" => {
+                        if let Some(t) = next_arg(args) {
+                            task_types.push(t);
+                        }
+                    }
+                    "--max-bytes" => {
+                        if let Some(n) = next_arg(args).and_then(|s| s.parse().ok()) {
+                            max_bytes = n;
+                        }
+                    }
+                    "--off" => off = true,
+                    _ => {}
+                }
+            }
+            if !off && task_types.is_empty() {
+                return usage(
+                    "akson peer auto-approve <agent> --task-type <t> [--max-bytes N] | --off",
+                );
+            }
+            peer_auto_approve(&agent, if off { Vec::new() } else { task_types }, max_bytes)
+        }
+        _ => usage("akson peer {list|confirm <agent-id>|auto-approve <agent> …}"),
     }
+}
+
+/// Set or clear a peer's standing auto-approval policy (`akson peer auto-approve`).
+fn peer_auto_approve(agent_id: &str, task_types: Vec<String>, max_response_bytes: u64) -> ExitCode {
+    let result = match call(&ControlRequest::PeerAutoApprove {
+        agent_id: agent_id.to_owned(),
+        task_types: task_types.clone(),
+        max_response_bytes,
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    if result["auto_approve"] == "off" {
+        println!("auto-approve off for {agent_id}");
+    } else {
+        println!(
+            "auto-approve on for {agent_id}: task types [{}], up to {max_response_bytes} B, no processor/artifacts",
+            task_types.join(", ")
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Confirm a pending peer (`akson peer confirm <agent>`).

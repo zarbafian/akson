@@ -30,6 +30,7 @@ mod outcome;
 mod pair_serve;
 mod pairing;
 mod peercred;
+mod reactor;
 mod receive;
 mod receive_http;
 mod receive_serve;
@@ -56,6 +57,7 @@ pub use pairing::run_pair_accept;
 pub use peercred::{
     authenticate_same_uid, current_uid, peer_credentials, AuthError, PeerCredentials,
 };
+pub use reactor::{react_once, run_reactor};
 pub use receive::{dispatch_proposal, DispatchOutcome, Dispatched};
 pub use receive_http::{handle_receive, HttpRequest, HttpResponse, ReceiveConfig};
 pub use receive_serve::{run_receive_listener, ReceiveServeError};

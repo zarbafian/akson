@@ -1013,6 +1013,7 @@ mod tests {
             pair_addr: None,
             worker_command: None,
             worker_exec: None,
+            on_task: None,
         };
         DaemonState::from_parts(store, identity, cert, config)
     }

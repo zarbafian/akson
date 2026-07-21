@@ -119,6 +119,7 @@ async fn a_daemon_accepts_an_invitation_and_pins_the_inviter_with_its_keys() {
         pair_addr: None,
         worker_command: None,
         worker_exec: None,
+        on_task: None,
     };
     let daemon = Arc::new(DaemonState::from_parts(acc_store, acc_id, acc_cert, config));
     let daemon_store = daemon.store();
@@ -172,6 +173,7 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
         pair_addr: Some(format!("127.0.0.1:{a_port}")),
         worker_command: None,
         worker_exec: None,
+        on_task: None,
     };
     let a = Arc::new(DaemonState::from_parts(a_store, a_id, a_cert, a_config));
 
@@ -215,6 +217,7 @@ async fn two_daemons_pair_via_the_daemon_bootstrap_endpoint() {
         pair_addr: None,
         worker_command: None,
         worker_exec: None,
+        on_task: None,
     };
     let b = Arc::new(DaemonState::from_parts(b_store, b_id, b_cert, b_config));
     let b_store_handle = b.store();
