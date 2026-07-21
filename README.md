@@ -218,6 +218,72 @@ other's proposal and task-result keys at pairing.
 - `bench/cooperate.sh` runs the same six rounds across two hosts with a real
   model behind each side's worker.
 
+## Delegate to your own agent
+
+The confined worker (`task run`) is the right executor for an **untrusted** peer:
+a sealed, network-less, context-less process. It is the wrong one for *"my Claude
+asks my Codex, which answers from knowledge only in that Codex session."* There
+the value is your peer's own context, not isolation — and the sandbox is exactly
+what would keep a worker from reaching a live agent session.
+
+So there is a second path: your own agent produces the result, and Akson does
+only what it is good at — gates it against the grant, signs the manifest over
+those exact bytes, and delivers it. The requester's outcome is just as verifiable
+as a sandboxed run's; it simply knows the performer executed in its own trusted
+context.
+
+~~~text
+# their Claude Code (alice) sends a design task — the brief names nothing private
+alice task send design.json
+
+# your Codex (bob) does it IN ITS SESSION (context Akson never sees), then hands it back
+codex exec resume <session-id> "<the design brief>" -o design.md
+bob task approve  <id>
+bob task fulfill  <id> --file design.md      # no sandbox: your agent produced this
+bob task deliver  <id>
+
+# their Claude reads the verified design (its sha256 matches the signed manifest)
+alice task output <id> --role response
+~~~
+
+### Drive it from your harness (MCP)
+
+`akson-mcp` hands the daemon to an agent harness (Claude Code, Codex) as tools, so
+the agent runs the loop and **the harness's own tool-permission prompt is your
+trust decision** — a task is approved, or fulfilled, only when you say yes in the
+harness, with the risk card in front of you.
+
+~~~text
+claude mcp add akson -- akson-mcp        # or an [mcp_servers.akson] block in codex config
+~~~
+
+Then, in a session: *"check my akson inbox"* → the agent lists tasks → shows you
+the risk card → asks to approve → does the work → fulfils and delivers. Read-only
+tools (`akson_inbox`, `akson_task_show`, …) are safe to allow; keep the
+authority-bearing ones (`akson_approve`, `akson_fulfill`, `akson_deliver`,
+`akson_send`) gated, so each is a deliberate yes. See `crates/akson-mcp/README.md`.
+
+### Hands-off receiving, on your terms
+
+You still decide trust, but not per keystroke. Pre-authorise a peer once, for a
+task type within a byte ceiling; anything outside it — a wrong type, an over-limit
+size, or a request to use a **processor or export an artifact** — always asks:
+
+~~~text
+akson peer auto-approve their-codex \
+  --task-type https://akson.cc/task/design/v1 --max-bytes 8192   # or --off to revoke
+~~~
+
+And be poked when a task lands rather than polling the inbox — the daemon runs
+`AKSON_ON_TASK` (detached, with `AKSON_TASK` in its environment) on arrival:
+
+~~~text
+export AKSON_ON_TASK='notify-send "akson: task $AKSON_TASK (auto=$AKSON_TASK_AUTO)"'
+~~~
+
+Auto-approval enacts what a plain `task approve` would — never a processor grant,
+never artifact export — so a standing policy can never widen a task's authority.
+
 ## Acknowledgments
 
 Akson's founding idea comes from **c2c**, a prior agent-communication system:
@@ -242,6 +308,8 @@ c2c for the groundwork.
   defense is realized in the build.
 - [Control protocol](spec/control-protocol.md) — the local socket the `akson` CLI
   speaks to a running `aksond` (framing, surfaces, operations).
+- [MCP server](crates/akson-mcp/README.md) — expose the daemon to an agent harness
+  as tools, so the harness's permission prompt is the trust decision.
 - [ADRs](spec/adr/) — recorded decisions.
 - [Machine-checked proofs](proof/) — TLA+ models of the task lifecycle,
   contract chain, receive pipeline, pairing ledger, broker budget, and rollback

@@ -650,7 +650,9 @@ footer {
     <div class="grp">Go further</div>
     <a href="#model">Use a real model</a>
     <a href="#cooperate">Two agents cooperating</a>
+    <a href="#delegate">Delegate to your agent</a>
     <div class="grp">In your agent</div>
+    <a href="#mcp">The MCP server</a>
     <a href="#claude">From Claude Code</a>
     <a href="#codex">From Codex</a>
     <div class="grp">Reference</div>
@@ -975,6 +977,7 @@ sha256sum /tmp/out                                       <span class="c"># match
   <tr><td><code>akson pair accept &lt;file&gt;</code></td><td>Accept a peer's invitation.</td></tr>
   <tr><td><code>akson peer list</code></td><td>Peers and their status.</td></tr>
   <tr><td><code>akson peer confirm &lt;agent&gt;</code></td><td>Promote a pending peer to active. A human's yes.</td></tr>
+  <tr><td><code>akson peer auto-approve &lt;agent&gt; …</code></td><td>Standing policy: run a peer's task type up to a byte cap without a prompt. <a href="#delegate">More</a>.</td></tr>
   <tr><td><code>akson task send &lt;spec.json&gt;</code></td><td>Sign and post a task to a peer.</td></tr>
   <tr><td><code>akson task inbox</code></td><td>Tasks awaiting your decision.</td></tr>
   <tr><td><code>akson task show &lt;id&gt;</code></td><td>The risk card for one task.</td></tr>
@@ -983,6 +986,7 @@ sha256sum /tmp/out                                       <span class="c"># match
       <code>--artifacts</code> also grants artifact export.</td></tr>
   <tr><td><code>akson task deny &lt;id&gt; &lt;reason&gt;</code></td><td>Sign a refusal.</td></tr>
   <tr><td><code>akson task run &lt;id&gt;</code></td><td>Run the worker in the sandbox.</td></tr>
+  <tr><td><code>akson task fulfill &lt;id&gt; --file &lt;path&gt;</code></td><td>Hand over a result <em>your own agent</em> produced — no sandbox. Still gated and signed. <a href="#delegate">More</a>.</td></tr>
   <tr><td><code>akson task deliver &lt;id&gt;</code></td><td>Send the signed result back.</td></tr>
   <tr><td><code>akson task sent</code></td><td>Tasks you sent as requester.</td></tr>
   <tr><td><code>akson task outcomes</code></td><td>Signed dispositions you recorded.</td></tr>
@@ -1006,6 +1010,7 @@ sha256sum /tmp/out                                       <span class="c"># match
   <tr><td><code>AKSON_PAIR_ADDR</code></td><td>Address to listen on for pairing.</td></tr>
   <tr><td><code>AKSON_WORKER_CMD</code></td><td>Worker as a shell command. Convenient; for demos.</td></tr>
   <tr><td><code>AKSON_WORKER_EXEC</code></td><td>Worker as a direct program. Stricter sandbox — use this in production.</td></tr>
+  <tr><td><code>AKSON_ON_TASK</code></td><td>A command the daemon runs when a task arrives (with <code>AKSON_TASK</code> in its environment), so a harness is poked rather than polling.</td></tr>
 </table>
 </div>
 
@@ -1133,10 +1138,118 @@ bob   task deliver &lt;id&gt;
       model behind each side's worker.</li>
 </ul>
 
+<h2 id="delegate">Delegate to your own agent</h2>
+<p class="deck">
+  The sandbox is for an <em>untrusted</em> peer. When the peer is <em>your own</em>
+  Codex or Claude, the point is its context — so let it do the work and hand the
+  result back.
+</p>
+<p>
+  <code>akson task run</code> executes a peer's task in a sealed, network-less,
+  context-less sandbox — exactly right when you don't trust the peer. But that
+  sealing is also what would stop a worker from reaching a live agent session. So
+  there is a second path: <strong>your own agent produces the result, and Akson
+  gates it against the grant, signs the manifest over those exact bytes, and
+  delivers it.</strong> The requester's outcome is just as verifiable as a
+  sandboxed run's; it simply knows you executed in your own trusted context — one
+  Akson never sees into.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">delegate to your Codex</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># their Claude Code (alice) sends a design task — the brief names nothing private</span>
+alice task send design.json
+
+<span class="c"># your Codex (bob) does it IN ITS SESSION (context akson never sees), then hands it back</span>
+codex exec resume &lt;session-id&gt; "&lt;the design brief&gt;" -o design.md
+bob task approve  &lt;id&gt;
+bob task fulfill  &lt;id&gt; --file design.md      <span class="c"># no sandbox: your agent produced this</span>
+bob task deliver  &lt;id&gt;
+
+<span class="c"># their Claude reads the verified design — its sha256 matches the signed manifest</span>
+alice task output &lt;id&gt; --role response</code></pre>
+</div>
+
+<p>
+  <code>task fulfill</code> is gated exactly like <code>task run</code>: the result
+  must fit the granted scope (recipient, media type, size, count), a renderable
+  artifact must be inert, and the manifest is signed over the bytes you provided.
+  The only difference is who executed — your agent, not a sandbox.
+</p>
+
+<h2 id="mcp">The MCP server: your harness is the console</h2>
+<p class="deck">
+  So the human never types Akson commands, but still decides trust — the harness's
+  own permission prompt is the yes.
+</p>
+<p>
+  <code>akson-mcp</code> hands the daemon to an agent harness (Claude Code, Codex)
+  as a set of tools. The agent runs the whole loop; <strong>when it wants to
+  approve or fulfil a task, the harness asks you to permit that tool call</strong> —
+  that prompt, with the risk card in front of you, is the trust decision.
+</p>
+
+<div class="cmd">
+  <div class="cmd-head"><span class="who">register it once</span><button class="copy">Copy</button></div>
+<pre><code>claude mcp add akson -- akson-mcp        <span class="c"># Claude Code</span>
+<span class="c"># or, in ~/.codex/config.toml:</span>
+<span class="c">#   [mcp_servers.akson]</span>
+<span class="c">#   command = "akson-mcp"</span></code></pre>
+</div>
+
+<p>
+  Then, in a session: <em>"check my akson inbox"</em> → the agent lists tasks →
+  shows you the risk card → asks to approve → does the work → fulfils and delivers.
+  The read-only tools (<code>akson_inbox</code>, <code>akson_task_show</code>,
+  <code>akson_output</code>) are safe to allow; keep the authority-bearing ones
+  (<code>akson_approve</code>, <code>akson_fulfill</code>, <code>akson_deliver</code>,
+  <code>akson_send</code>) gated, so each is a deliberate yes.
+</p>
+
+<div class="note">
+  <span class="tag">A thin bridge</span>
+  <p>The MCP server is not a second authority: every call goes to the same daemon
+  over the same socket the CLI uses, which enforces the grant, signs the manifest,
+  and records the audit. Run it as the same user, with the same
+  <code>XDG_RUNTIME_DIR</code>, as <code>aksond serve</code> — it inherits the
+  daemon's authority, so run it only where the CLI would.</p>
+</div>
+
+<h3>Hands-off receiving, on your terms</h3>
+<p>
+  You decide trust once, not per keystroke. Pre-authorise a peer for a task type
+  within a byte ceiling; anything outside it — a wrong type, an over-limit size, or
+  a request to use a <strong>processor</strong> or export an <strong>artifact</strong>
+  — always asks:
+</p>
+
+<div class="cmd">
+  <div class="cmd-head"><span class="who">a standing policy</span><button class="copy">Copy</button></div>
+<pre><code>akson peer auto-approve their-codex \
+  --task-type https://akson.cc/task/design/v1 --max-bytes 8192
+akson peer auto-approve their-codex --off        <span class="c"># revoke it</span>
+
+<span class="c"># and be poked when a task lands, rather than polling the inbox:</span>
+export AKSON_ON_TASK='notify-send "akson: task $AKSON_TASK (auto=$AKSON_TASK_AUTO)"'</code></pre>
+</div>
+
+<div class="note">
+  <span class="tag">Never widens a grant</span>
+  <p>Auto-approval enacts exactly what a plain <code>task approve</code> would —
+  never a processor grant, never artifact export — so a standing policy can only
+  ever let through the non-disclosing work you already allow. A denied task is
+  never later auto-approved, and a peer must be confirmed-active first.</p>
+</div>
+
 <h2 id="claude">Driving it from Claude Code</h2>
 <p class="deck">
-  Akson is a CLI, so Claude Code drives it with Bash. The work is in scoping what it may
-  run and teaching it the verbs.
+  The <a href="#mcp">MCP server</a> is the clean way — the harness's tool-permission
+  prompt becomes your trust gate. This section is the CLI-over-Bash alternative, for
+  when you'd rather scope shell verbs than register a server.
+</p>
+<p>
+  Akson is a CLI, so Claude Code can also drive it with Bash. The work is then in
+  scoping what it may run and teaching it the verbs.
 </p>
 
 <h3>1 · Allow the akson verbs, and only those</h3>
