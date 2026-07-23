@@ -45,3 +45,6 @@ Index:
 | [0010](0010-unknown-fields.md) | Unknown-field handling for standard A2A objects | accepted |
 | [0011](0011-tls-stack.md) | TLS stack and self-issued endpoint certificates | accepted |
 | [0012](0012-dsse-envelope-media-type.md) | One DSSE-envelope media type for all signed extension objects | accepted |
+| [0013](0013-identity-token-container.md) | Identity-token container — key-only bech32m | proposed |
+| [0014](0014-contract-identity-root-thumbprint.md) | Contract identity carries the root-key thumbprint | proposed |
+| [0015](0015-introduction-protocol.md) | The introduction protocol | proposed |
