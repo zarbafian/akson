@@ -158,8 +158,9 @@ impl<R: PeerResolver> ReceiveState<R> {
         self
     }
 
-    /// Introduction requests: bound the source, lock the store, hand to the
-    /// responder. Every pre-verification failure is the one generic refusal.
+    /// Introduction requests: hand to the responder, which scopes the store
+    /// lock itself (never across signature work). The rate gate ran pre-body
+    /// in [`handle`]. The bool says the connection must close.
     #[allow(clippy::too_many_arguments)]
     fn respond_intro(
         &self,
@@ -168,24 +169,22 @@ impl<R: PeerResolver> ReceiveState<R> {
         exporter: Option<&[u8; 32]>,
         pending: &PendingIntro,
         path: &str,
+        method: &str,
+        content_type: &str,
         body: &[u8],
         wall_now_unix: i64,
-    ) -> (u16, String, Vec<u8>) {
+    ) -> (u16, String, Vec<u8>, bool) {
         let Some(intro) = &self.intro else {
-            return problem_403();
-        };
-        if !self.intro_rate_admit(source, wall_now_unix) {
-            return problem_403();
-        }
-        let store = match self.store.lock() {
-            Ok(s) => s,
-            Err(_) => return problem_500(),
+            let (code, ct, body) = intro_refused();
+            return (code, ct, body, true);
         };
         respond_introduction(
             intro,
-            &store,
+            &self.store,
             pending,
             path,
+            method,
+            content_type,
             &source.to_string(),
             peer_fp,
             exporter,
@@ -194,19 +193,36 @@ impl<R: PeerResolver> ReceiveState<R> {
         )
     }
 
-    /// Fixed-window limiter: a small hello budget per source per minute, with
-    /// the map pruned past a cap so source-rotating scanners cannot grow it.
+    /// Whether a client certificate resolves to an admitted peer — the cheap
+    /// pre-body gate: an unknown certificate cannot force the 1 MiB read
+    /// (slice-2 security review).
+    fn peer_known(&self, fp: &str) -> bool {
+        self.store
+            .lock()
+            .map(|store| self.resolver.resolve(&store, fp).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Fixed-window limiter over source *buckets* (a v4 address, a v6 /64 —
+    /// rotating inside a delegated v6 prefix must not mint fresh budgets).
+    /// The map is pruned at the cap and fails closed for NEW buckets while
+    /// full, so a source-rotating scanner can neither grow it nor starve
+    /// established sources (slice-2 security review).
     fn intro_rate_admit(&self, source: IpAddr, now: i64) -> bool {
         const WINDOW_SECS: i64 = 60;
         const MAX_PER_WINDOW: u32 = 10;
         const MAX_TRACKED: usize = 1024;
+        let bucket = rate_bucket(source);
         let Ok(mut map) = self.intro_rate.lock() else {
             return false;
         };
-        if map.len() > MAX_TRACKED {
+        if map.len() >= MAX_TRACKED {
             map.retain(|_, (_, start)| now - *start < WINDOW_SECS);
+            if map.len() >= MAX_TRACKED && !map.contains_key(&bucket) {
+                return false;
+            }
         }
-        let entry = map.entry(source).or_insert((0, now));
+        let entry = map.entry(bucket).or_insert((0, now));
         if now - entry.1 >= WINDOW_SECS {
             *entry = (0, now);
         }
@@ -352,7 +368,7 @@ async fn serve_with_limits<R: PeerResolver>(
             // RFC 9266 exporter, and one pending-hello slot per connection —
             // one authentication instance, per RFC 9266 §4.1.
             let exporter = akson_transport::tls::channel_binding(tls.get_ref().1);
-            let pending: Arc<PendingIntro> = Arc::new(Mutex::new(None));
+            let pending: Arc<PendingIntro> = Arc::new(Mutex::new(Default::default()));
             let svc = service_fn(move |req| {
                 handle(
                     state.clone(),
@@ -391,6 +407,26 @@ async fn handle<R: PeerResolver>(
     // resolver, with their own (much smaller) body cap (ADR-0015).
     let path = req.uri().path().to_owned();
     let is_intro = path == HELLO_PATH || path == COMPLETE_PATH;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+
+    // Pre-body gates (slice-2 security review): a refused caller must not be
+    // able to force the body read/allocation first.
+    if is_intro {
+        if !state.intro_rate_admit(source, now) {
+            let (code, ct, body) = intro_refused();
+            return Ok(close_response(code, &ct, body));
+        }
+    } else {
+        // The A2A path admits only resolvable peers; an unknown certificate
+        // is refused before the 1 MiB budget, and its connection closes so it
+        // cannot squat a receive slot with keep-alive.
+        let known = peer_fp.as_deref().is_some_and(|fp| state.peer_known(fp));
+        if !known {
+            let (code, ct, body) = problem_403();
+            return Ok(close_response(code, &ct, body));
+        }
+    }
+
     let body_cap = if is_intro {
         MAX_INTRODUCTION_BODY
     } else {
@@ -399,14 +435,22 @@ async fn handle<R: PeerResolver>(
     let content_type = header(req.headers(), CONTENT_TYPE).unwrap_or_default();
     let a2a_version = header_named(req.headers(), "a2a-version");
     let content_digest = header_named(req.headers(), "content-digest");
-    let activated: Vec<String> = header_named(req.headers(), "a2a-extensions")
-        .map(|s| {
-            s.split(',')
-                .map(|x| x.trim().to_owned())
-                .filter(|x| !x.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    // Bounded (and skipped entirely on the introduction routes): a header must
+    // not expand into an unbounded Vec of owned strings pre-admission.
+    const MAX_ACTIVATED_EXTENSIONS: usize = 32;
+    let activated: Vec<String> = if is_intro {
+        Vec::new()
+    } else {
+        header_named(req.headers(), "a2a-extensions")
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_owned())
+                    .filter(|x| !x.is_empty())
+                    .take(MAX_ACTIVATED_EXTENSIONS)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     // Cap the body before reading it into memory (§9.1), and bound the time to read
     // it so a slow-body sender is cut off (408) rather than holding the connection.
@@ -421,19 +465,20 @@ async fn handle<R: PeerResolver>(
         Err(_) => return Ok(status(408)),
     };
 
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let (code, content_type_out, out_body) = if is_intro {
+    let (code, content_type_out, out_body, close) = if is_intro {
         state.respond_intro(
             source,
             peer_fp.as_deref(),
             exporter.as_ref(),
             &pending,
             &path,
+            &method,
+            &content_type,
             &body,
             now,
         )
     } else {
-        state.respond(
+        let (code, ct, body) = state.respond(
             peer_fp.as_deref(),
             &method,
             &content_type,
@@ -442,7 +487,10 @@ async fn handle<R: PeerResolver>(
             &activated,
             &body,
             now,
-        )
+        );
+        // A refusal on the work path also closes: no keep-alive squatting.
+        let close = code == 403;
+        (code, ct, body, close)
     };
 
     let mut out = Response::new(Full::new(Bytes::from(out_body)));
@@ -450,7 +498,48 @@ async fn handle<R: PeerResolver>(
     if let Ok(value) = content_type_out.parse() {
         out.headers_mut().insert(CONTENT_TYPE, value);
     }
+    if close {
+        out.headers_mut()
+            .insert(hyper::header::CONNECTION, "close".parse().unwrap_or_else(|_| unreachable!()));
+    }
     Ok(out)
+}
+
+/// The introduction's uniform generic refusal, shaped exactly like the
+/// responder's (ADR-0015: rate-limit and service-off refusals must be
+/// indistinguishable from every other pre-verification refusal).
+fn intro_refused() -> (u16, String, Vec<u8>) {
+    problem(
+        403,
+        "introduction-refused",
+        "the introduction was refused",
+    )
+}
+
+/// A response that also closes the connection.
+fn close_response(code: u16, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    let mut out = Response::new(Full::new(Bytes::from(body)));
+    *out.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if let Ok(value) = content_type.parse() {
+        out.headers_mut().insert(CONTENT_TYPE, value);
+    }
+    out.headers_mut()
+        .insert(hyper::header::CONNECTION, "close".parse().unwrap_or_else(|_| unreachable!()));
+    out
+}
+
+/// The limiter's bucket: a v4 address as-is, a v6 address truncated to its
+/// /64 — one delegated prefix, one budget.
+fn rate_bucket(source: IpAddr) -> IpAddr {
+    match source {
+        IpAddr::V4(_) => source,
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            IpAddr::V6(std::net::Ipv6Addr::new(
+                seg[0], seg[1], seg[2], seg[3], 0, 0, 0, 0,
+            ))
+        }
+    }
 }
 
 fn header(headers: &HeaderMap, name: hyper::header::HeaderName) -> Option<String> {

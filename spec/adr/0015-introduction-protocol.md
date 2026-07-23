@@ -67,8 +67,9 @@ handler, and the pinned-cert send path must not be loosened.
 
 ### Transcript
 
-The bytes every proof signs — DSSE-style PAE over the RFC 8785 canonical
-JSON of:
+The bytes every proof signs are **exactly the RFC 8785 canonical JSON** of
+the object below — the domain string is a field inside it, so there is one
+canonicalization and nothing else for a second implementation to agree on:
 
 ```json
 { "domain": "akson-introduction-v1",

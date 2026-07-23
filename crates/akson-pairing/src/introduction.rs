@@ -48,8 +48,9 @@ pub const MAX_INTRODUCTION_BODY: usize = 64 * 1024;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const TOKEN_VERSION: u32 = 1;
 
-/// The transcript's domain-separation string.
-const DOMAIN: &[u8] = b"akson-introduction-v1";
+/// The transcript's domain-separation string — a field INSIDE the canonical
+/// JSON (ADR-0015), so there is exactly one serialization to agree on.
+const DOMAIN: &str = "akson-introduction-v1";
 
 /// Flight 1: the dialer names both roots and is refused generically before any
 /// signature work unless `claimed_root` is imported on the responder. Carries
@@ -118,18 +119,17 @@ pub struct IntroTranscript {
 }
 
 impl IntroTranscript {
-    /// The exact signed bytes: `len(domain) ‖ domain ‖ len(jcs) ‖ jcs`, both
-    /// lengths u64 little-endian — a PAE, so the domain can never collide with
-    /// content.
+    /// The exact signed bytes: the RFC 8785 canonical JSON of this struct with
+    /// `"domain": "akson-introduction-v1"` injected as a field. One
+    /// canonicalization, self-describing — a second implementation has nothing
+    /// beyond JCS to agree on, and no other Akson signature shares the shape.
     pub fn signing_bytes(&self) -> Vec<u8> {
-        // A fixed struct of strings and integers cannot fail to canonicalize.
-        let body = json_canon::to_vec(self).unwrap_or_default();
-        let mut out = Vec::with_capacity(16 + DOMAIN.len() + body.len());
-        out.extend_from_slice(&(DOMAIN.len() as u64).to_le_bytes());
-        out.extend_from_slice(DOMAIN);
-        out.extend_from_slice(&(body.len() as u64).to_le_bytes());
-        out.extend_from_slice(&body);
-        out
+        // A fixed struct of strings and integers cannot fail to serialize.
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("domain".to_owned(), Value::String(DOMAIN.to_owned()));
+        }
+        json_canon::to_vec(&v).unwrap_or_default()
     }
 }
 
@@ -563,6 +563,11 @@ mod tests {
         let mut b = a.clone();
         b.nonce = "ZGlmZmVyZW50LW5vbmNlLWRpZmZlcmVudC1ub25jZQ".to_owned();
         assert_ne!(a.signing_bytes(), b.signing_bytes());
-        assert!(a.signing_bytes().windows(DOMAIN.len()).any(|w| w == DOMAIN));
+        let bytes = a.signing_bytes();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            text.contains(r#""domain":"akson-introduction-v1""#),
+            "the domain field must ride inside the canonical JSON"
+        );
     }
 }

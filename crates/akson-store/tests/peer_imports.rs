@@ -291,3 +291,24 @@ fn a_second_root_behind_an_existing_name_is_refused() {
         IntroCommitOutcome::NameCollision
     );
 }
+
+#[test]
+fn a_renamed_subject_under_the_same_root_suspends_not_forks() {
+    // Slice-2 review: a root re-introducing under a DIFFERENT self-declared
+    // agent name must not sidestep detect_change by landing on a fresh row.
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
+        .unwrap();
+    assert!(matches!(
+        s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude-two", 3), &some_keys(), 300)
+            .unwrap(),
+        IntroCommitOutcome::Suspended(_)
+    ));
+    // The EXISTING relationship suspended; no second active row appeared.
+    assert!(matches!(
+        s.peer_status("claude").unwrap(),
+        Some(PeerStatus::Suspended(_))
+    ));
+    assert!(s.peer_status("claude-two").unwrap().is_none());
+}

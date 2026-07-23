@@ -51,8 +51,8 @@ pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};
 pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use introduce::{
-    dial_introduction, intro_profile, respond_introduction, IntroIdentity, IntroduceError,
-    PendingIntro,
+    dial_introduction, intro_profile, respond_introduction, IntroConnState, IntroIdentity,
+    IntroduceError, PendingIntro,
 };
 pub use issue::{issue_for_accepted, IssueConfig};
 pub use keys::IdentityKeys;

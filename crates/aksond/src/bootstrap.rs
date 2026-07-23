@@ -199,6 +199,60 @@ impl DaemonState {
         }
     }
 
+    /// Resolves a task spec's `performer` for sending (design §8.2): a label
+    /// naming a live import resolves to its pinned peer's agent id — running
+    /// the introduction first when this is the relationship's first contact —
+    /// while anything else passes through unchanged (a legacy agent id, whose
+    /// existence `run_send` checks itself).
+    fn resolve_performer(&self, performer: &str) -> Result<String, Problem> {
+        let import = {
+            let store = self.store.lock().map_err(|_| internal())?;
+            let Some(import) = store.peer_import_by_label(performer).map_err(|_| internal())?
+            else {
+                return Ok(performer.to_owned());
+            };
+            if let Some((agent_id, status)) = store
+                .peer_by_root(&import.root_thumbprint)
+                .map_err(|_| internal())?
+            {
+                if status == "active" {
+                    return Ok(agent_id);
+                }
+                // Suspended stays the operator's call — never auto-heal (§8.4).
+                return Err(Problem::new(
+                    409,
+                    "peer-suspended",
+                    "this peer is suspended pending review; re-add it to start a fresh relationship",
+                ));
+            }
+            import
+        };
+        // First contact: introduce, then send (the store lock is NOT held —
+        // the dial re-locks to commit).
+        let me = crate::introduce::IntroIdentity::from_state(self)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| internal())?;
+        let (peer, _) = runtime
+            .block_on(crate::introduce::dial_introduction(
+                &me,
+                self.store.clone(),
+                &import,
+                OffsetDateTime::now_utc(),
+            ))
+            .map_err(|e| match e {
+                crate::introduce::IntroduceError::Refused => {
+                    Problem::new(403, "introduction-refused", &e.to_string())
+                }
+                crate::introduce::IntroduceError::NoEndpoint => {
+                    Problem::new(400, "no-endpoint", &e.to_string())
+                }
+                other => Problem::new(502, "introduction-failed", &other.to_string()),
+            })?;
+        Ok(peer.agent_id)
+    }
+
     /// A shared handle to the store — cloned into each socket's dispatch closure
     /// and, later, the receive server.
     pub fn store(&self) -> Arc<Mutex<Store>> {
@@ -603,7 +657,19 @@ impl DaemonState {
                 crate::run_fulfill(self, task_id, outputs)
             }
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
-            ControlRequest::TaskSend(spec) => run_send(self, spec),
+            ControlRequest::TaskSend(spec) => {
+                // The spec's performer may be an operator label (design §8.2):
+                // resolve it to the pinned peer, introducing first if this is
+                // the first contact — exactly what `peer ping` would run.
+                let resolved = self.resolve_performer(&spec.performer)?;
+                if resolved == spec.performer {
+                    run_send(self, spec)
+                } else {
+                    let mut spec = spec.clone();
+                    spec.performer = resolved;
+                    run_send(self, &spec)
+                }
+            }
             ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),
             ControlRequest::PairInvite => run_pair_invite(self),
             ControlRequest::RequestProcessorCall {

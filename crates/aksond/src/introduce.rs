@@ -138,9 +138,24 @@ fn binding_keys(
 
 // ---------------------------------------------------------------- responder
 
-/// Per-connection introduction state: the hello this TLS session presented.
-/// One hello, one complete — RFC 9266's one-instance rule (ADR-0015).
-pub type PendingIntro = Mutex<Option<Hello>>;
+/// Per-connection introduction state (ADR-0015): one hello, one complete,
+/// then terminal — RFC 9266's one-instance rule. `Pending` snapshots the
+/// import epoch observed at admission, and the commit CAS runs against THAT
+/// epoch: a removal (or remove-and-re-add) between the flights refuses the
+/// stale handshake instead of resurrecting it (slice-2 security review).
+#[derive(Debug, Default)]
+pub enum IntroConnState {
+    #[default]
+    Fresh,
+    Pending {
+        hello: Hello,
+        epoch: u64,
+    },
+    Done,
+}
+
+/// The per-connection slot the receive server allocates.
+pub type PendingIntro = Mutex<IntroConnState>;
 
 /// The single generic refusal for every pre-verification failure: one type,
 /// one shape, no distinguishing detail (ADR-0015).
@@ -172,56 +187,128 @@ fn problem(status: u16, kind: &str, title: &str) -> (u16, String, Vec<u8>) {
     )
 }
 
-/// Handles one introduction request on the receive listener (the caller has
-/// already routed by path, capped the body, rate-limited the source, and
-/// locked the store). `source` feeds the knock log only.
+/// A knock entry's claimed root, sanitized: the log stores only a plausible
+/// RFC 7638 thumbprint (43 chars of base64url), so an unauthenticated sender
+/// cannot use the log as a byte sink; anything else records as `malformed`
+/// with the claim dropped.
+fn sane_claim(claimed: &str) -> (String, bool) {
+    let plausible = claimed.len() == 43
+        && claimed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if plausible {
+        (claimed.to_owned(), true)
+    } else {
+        (String::new(), false)
+    }
+}
+
+/// Handles one introduction request on the receive listener. The caller has
+/// routed by path, capped the body, and rate-limited the source; the store
+/// lock is taken HERE, scoped to the membership read and the commit — never
+/// held across signing or verification (slice-2 security review). Returns the
+/// response plus whether the connection must close (everything except a
+/// successful hello: the complete must ride the hello's connection, and
+/// nothing may follow a terminal state).
 #[allow(clippy::too_many_arguments)]
 pub fn respond_introduction(
     me: &IntroIdentity,
-    store: &Store,
+    store: &Mutex<Store>,
     pending: &PendingIntro,
     path: &str,
+    method: &str,
+    content_type: &str,
     source: &str,
     dialer_tls_sha256: Option<&str>,
     exporter: Option<&[u8; 32]>,
     body: &[u8],
     now_unix: i64,
-) -> (u16, String, Vec<u8>) {
+) -> (u16, String, Vec<u8>, bool) {
+    let (resp, close) = respond_introduction_inner(
+        me,
+        store,
+        pending,
+        path,
+        method,
+        content_type,
+        source,
+        dialer_tls_sha256,
+        exporter,
+        body,
+        now_unix,
+    );
+    (resp.0, resp.1, resp.2, close)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn respond_introduction_inner(
+    me: &IntroIdentity,
+    store: &Mutex<Store>,
+    pending: &PendingIntro,
+    path: &str,
+    method: &str,
+    content_type: &str,
+    source: &str,
+    dialer_tls_sha256: Option<&str>,
+    exporter: Option<&[u8; 32]>,
+    body: &[u8],
+    now_unix: i64,
+) -> ((u16, String, Vec<u8>), bool) {
+    // Uniform gate: wrong method or media type is the same generic refusal as
+    // every other pre-verification failure (ADR-0015 error matrix).
+    if method != "POST" || !content_type.starts_with(INTRODUCTION_MEDIA_TYPE) {
+        return (refused(), true);
+    }
     // Both flights need the session facts; without them nothing verifies.
     let (Some(dialer_tls), Some(exporter)) = (dialer_tls_sha256, exporter) else {
-        return refused();
+        return (refused(), true);
     };
-    let Ok(mut pending) = pending.lock() else {
-        return problem(500, "internal", "the request could not be processed");
+    let Ok(mut slot) = pending.lock() else {
+        return (
+            problem(500, "internal", "the request could not be processed"),
+            true,
+        );
     };
 
     if path == HELLO_PATH {
-        // One authentication instance per connection (RFC 9266 §4.1).
-        if pending.is_some() {
-            return refused();
+        // One authentication instance per connection (RFC 9266 §4.1): only a
+        // fresh connection may hello; a completed or pending one may not.
+        if !matches!(*slot, IntroConnState::Fresh) {
+            *slot = IntroConnState::Done;
+            return (refused(), true);
         }
         let Ok(hello) = serde_json::from_slice::<Hello>(body) else {
-            return refused();
+            return (refused(), true);
         };
-        if hello.protocol_version != PROTOCOL_VERSION || hello.token_version != TOKEN_VERSION {
-            let _ = store.record_knock(&hello.claimed_root, source, "bad-version", now_unix);
-            return refused();
-        }
-        if hello.target_root != me.own_root {
-            let _ = store.record_knock(&hello.claimed_root, source, "wrong-target", now_unix);
-            return refused();
-        }
-        // THE admission gate: a table lookup, before any signature work.
-        match store.peer_import(&hello.claimed_root) {
-            Ok(Some(_)) => {}
-            _ => {
-                let _ = store.record_knock(&hello.claimed_root, source, "not-imported", now_unix);
-                return refused();
+        let (claim, plausible) = sane_claim(&hello.claimed_root);
+        // THE admission gate: cheap checks and one table lookup, before any
+        // signature work. Knocks record the sanitized claim only.
+        let admitted_epoch = {
+            let Ok(store) = store.lock() else {
+                return (
+                    problem(500, "internal", "the request could not be processed"),
+                    true,
+                );
+            };
+            if hello.protocol_version != PROTOCOL_VERSION || hello.token_version != TOKEN_VERSION {
+                let _ = store.record_knock(&claim, source, "bad-version", now_unix);
+                return (refused(), true);
             }
-        }
-        // Admitted: the responder proves FIRST (the dialer can already check
-        // this against its import; nothing about the dialer is known yet
-        // beyond an unauthenticated claim).
+            if hello.target_root != me.own_root || !plausible {
+                let class = if plausible { "wrong-target" } else { "malformed" };
+                let _ = store.record_knock(&claim, source, class, now_unix);
+                return (refused(), true);
+            }
+            match store.peer_import(&hello.claimed_root) {
+                Ok(Some(import)) => import.epoch,
+                _ => {
+                    let _ = store.record_knock(&claim, source, "not-imported", now_unix);
+                    return (refused(), true);
+                }
+            }
+        };
+        // Admitted: the responder proves FIRST — outside the store lock; the
+        // material is signing over session facts, not store state.
         let t = transcript(
             Role::Responder,
             &hello.claimed_root,
@@ -241,32 +328,39 @@ pub fn respond_introduction(
             NOT_AFTER,
             0,
         ) else {
-            return problem(500, "internal", "the request could not be processed");
+            return (
+                problem(500, "internal", "the request could not be processed"),
+                true,
+            );
         };
-        *pending = Some(hello);
-        let Ok(body) = serde_json::to_vec(&material) else {
-            return problem(500, "internal", "the request could not be processed");
+        let Ok(out) = serde_json::to_vec(&material) else {
+            return (
+                problem(500, "internal", "the request could not be processed"),
+                true,
+            );
         };
-        return (200, INTRODUCTION_MEDIA_TYPE.to_owned(), body);
+        *slot = IntroConnState::Pending {
+            hello,
+            epoch: admitted_epoch,
+        };
+        // The ONE response that keeps the connection open: the complete must
+        // ride the same TLS session the exporter identifies.
+        return ((200, INTRODUCTION_MEDIA_TYPE.to_owned(), out), false);
     }
 
     if path == COMPLETE_PATH {
-        // A complete consumes the hello: a second one is a fresh refusal.
-        let Some(hello) = pending.take() else {
-            return refused();
+        // A complete consumes the hello and the connection is terminal after
+        // it — success or failure, nothing else runs on this session.
+        let IntroConnState::Pending { hello, epoch } =
+            std::mem::replace(&mut *slot, IntroConnState::Done)
+        else {
+            return (refused(), true);
         };
         let Ok(material) = serde_json::from_slice::<IntroMaterial>(body) else {
-            return refused();
+            return (refused(), true);
         };
-        // Re-read the import inside the same store lock: the commit CAS runs
-        // against the epoch as of NOW, so a removal since the hello refuses.
-        let import = match store.peer_import(&hello.claimed_root) {
-            Ok(Some(i)) => i,
-            _ => {
-                let _ = store.record_knock(&hello.claimed_root, source, "not-imported", now_unix);
-                return refused();
-            }
-        };
+        // Verification runs with NO store lock held — it is attacker-paced
+        // crypto and must not stall the A2A path.
         let t = transcript(
             Role::Dialer,
             &hello.claimed_root,
@@ -287,25 +381,38 @@ pub fn respond_introduction(
         ) {
             Ok(v) => v,
             Err(_) => {
-                let _ = store.record_knock(&hello.claimed_root, source, "bad-proof", now_unix);
-                return refused();
+                if let Ok(store) = store.lock() {
+                    let (claim, _) = sane_claim(&hello.claimed_root);
+                    let _ = store.record_knock(&claim, source, "bad-proof", now_unix);
+                }
+                return (refused(), true);
             }
         };
         let Ok(identity) = peer_identity_from(&verified.bindings, &material.extended_card) else {
-            return refused();
+            return (refused(), true);
         };
         let peer = StoredPeer {
             identity,
             local_note: String::new(),
         };
         let keys = binding_keys(&verified.bindings);
-        match store.commit_introduced_peer(&hello.claimed_root, import.epoch, &peer, &keys, now_unix)
-        {
+        // Commit against the epoch observed at ADMISSION — a removal (even a
+        // remove-and-re-add) between the flights fails this CAS.
+        let outcome = {
+            let Ok(store) = store.lock() else {
+                return (
+                    problem(500, "internal", "the request could not be processed"),
+                    true,
+                );
+            };
+            store.commit_introduced_peer(&hello.claimed_root, epoch, &peer, &keys, now_unix)
+        };
+        let resp = match outcome {
             Ok(IntroCommitOutcome::Committed) | Ok(IntroCommitOutcome::AlreadyActive) => {
-                let Ok(body) = serde_json::to_vec(&IntroAck { ok: true }) else {
-                    return problem(500, "internal", "the request could not be processed");
-                };
-                (200, INTRODUCTION_MEDIA_TYPE.to_owned(), body)
+                match serde_json::to_vec(&IntroAck { ok: true }) {
+                    Ok(body) => (200, INTRODUCTION_MEDIA_TYPE.to_owned(), body),
+                    Err(_) => problem(500, "internal", "the request could not be processed"),
+                }
             }
             // Post-proof, the parties are mutually authenticated — specific
             // problems are allowed (ADR-0015).
@@ -321,9 +428,10 @@ pub fn respond_introduction(
             ),
             Ok(IntroCommitOutcome::EpochChanged) | Ok(IntroCommitOutcome::NotImported) => refused(),
             Err(_) => problem(500, "internal", "the request could not be processed"),
-        }
+        };
+        (resp, true)
     } else {
-        refused()
+        (refused(), true)
     }
 }
 
@@ -479,8 +587,13 @@ pub async fn dial_introduction(
         serde_json::to_vec(&my_material).map_err(|e| IntroduceError::Http(e.to_string()))?,
     )
     .await?;
-    let _ack: IntroAck =
+    let ack: IntroAck =
         serde_json::from_slice(&ack_body).map_err(|_| IntroduceError::Verify("bad ack".into()))?;
+    if !ack.ok {
+        // An authenticated responder declined to commit — do NOT activate
+        // one-sidedly (slice-2 security review).
+        return Err(IntroduceError::Verify("the peer declined the introduction".into()));
+    }
 
     // Commit under the epoch this dial started from; a racing removal refuses.
     let identity = peer_identity_from(&verified.bindings, &their_material.extended_card)

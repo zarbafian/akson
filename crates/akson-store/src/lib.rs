@@ -1590,6 +1590,28 @@ impl Store {
         }
 
         let agent_id = peer.identity.agent_id.clone();
+        // One root, one relationship: if this root already pinned a peer under a
+        // DIFFERENT self-declared name, that is changed identity material — the
+        // existing row suspends per §8.4 and nothing new is written. Without
+        // this, a renamed subject would sidestep detect_change entirely
+        // (slice-2 security review).
+        if let Some((existing_agent, _)) = self.peer_by_root(root_thumbprint)? {
+            if existing_agent != agent_id {
+                self.conn.execute(
+                    "UPDATE peers SET status = ?2 WHERE agent_id = ?1",
+                    params![
+                        existing_agent,
+                        PeerStatus::Suspended(
+                            akson_pairing::lifecycle::SuspendReason::SubjectChanged
+                        )
+                        .as_column()
+                    ],
+                )?;
+                audit::append(&tx, now, "peer.suspended", &existing_agent)?;
+                tx.commit()?;
+                return Ok(IntroCommitOutcome::Suspended("SubjectChanged".to_owned()));
+            }
+        }
         let was_pinned = if let Some(existing) = self.get_peer(&agent_id)? {
             let existing_root: String = self.conn.query_row(
                 "SELECT root_thumbprint FROM peers WHERE agent_id = ?1",

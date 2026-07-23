@@ -53,6 +53,9 @@ pub enum SuspendReason {
     EndpointChanged,
     KeyChanged,
     ProjectionChanged,
+    /// The peer re-introduced under a different self-declared agent name for
+    /// the same identity root (introduction path; ADR-0015 review).
+    SubjectChanged,
 }
 
 impl SuspendReason {
@@ -63,6 +66,7 @@ impl SuspendReason {
             SuspendReason::EndpointChanged => "endpoint",
             SuspendReason::KeyChanged => "key",
             SuspendReason::ProjectionChanged => "projection",
+            SuspendReason::SubjectChanged => "subject",
         }
     }
 
@@ -72,6 +76,7 @@ impl SuspendReason {
             "endpoint" => Some(SuspendReason::EndpointChanged),
             "key" => Some(SuspendReason::KeyChanged),
             "projection" => Some(SuspendReason::ProjectionChanged),
+            "subject" => Some(SuspendReason::SubjectChanged),
             _ => None,
         }
     }

@@ -227,3 +227,122 @@ async fn an_unimported_dialer_is_refused_generically_and_knocks() {
         .unwrap()
         .is_none());
 }
+
+/// The slice-2 review's ABA case, at the responder: a handshake admitted
+/// under epoch E must not commit after a removal — even when a re-add has
+/// made the import live again under E+1. And the connection is terminal
+/// after its one complete (RFC 9266 one-instance rule).
+#[test]
+fn removal_between_flights_refuses_the_stale_handshake() {
+    use akson_pairing::introduction::{
+        build_intro_material, Hello, IntroTranscript, Role, COMPLETE_PATH, HELLO_PATH,
+        INTRODUCTION_MEDIA_TYPE, PROTOCOL_VERSION, TOKEN_VERSION,
+    };
+    use aksond::{respond_introduction, PendingIntro};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    let now = 1_800_000_000i64;
+    let alice = identity("alice", 3);
+    let bob = identity("bob", 5);
+    let store_b = store();
+    store_b
+        .lock()
+        .unwrap()
+        .add_peer_import(&alice.own_root, "alice", "", now)
+        .unwrap();
+
+    let pending = PendingIntro::default();
+    let exporter = [9u8; 32];
+    let alice_tls = alice.cert.fingerprint.value.clone();
+    let nonce = URL_SAFE_NO_PAD.encode([7u8; 32]);
+
+    // Flight 1: hello admits under epoch 1 and keeps the connection open.
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        token_version: TOKEN_VERSION,
+        target_root: bob.own_root.clone(),
+        claimed_root: alice.own_root.clone(),
+        nonce: nonce.clone(),
+    };
+    let (code, _, _, close) = respond_introduction(
+        &bob,
+        &store_b,
+        &pending,
+        HELLO_PATH,
+        "POST",
+        INTRODUCTION_MEDIA_TYPE,
+        "203.0.113.7",
+        Some(&alice_tls),
+        Some(&exporter),
+        &serde_json::to_vec(&hello).unwrap(),
+        now,
+    );
+    assert_eq!((code, close), (200, false), "hello admits, connection stays");
+
+    // The operator removes AND re-adds between the flights: the import is
+    // live again — under a new epoch.
+    {
+        let s = store_b.lock().unwrap();
+        assert!(s.remove_peer_import(&alice.own_root, now + 1).unwrap());
+        s.add_peer_import(&alice.own_root, "alice-again", "", now + 2)
+            .unwrap();
+    }
+
+    // Flight 3: a perfectly valid complete for THIS session — refused, and
+    // nothing pinned: the CAS ran against the admission-time epoch.
+    let t = IntroTranscript {
+        protocol_version: PROTOCOL_VERSION,
+        token_version: TOKEN_VERSION,
+        role: Role::Dialer,
+        dialer_root: alice.own_root.clone(),
+        responder_root: bob.own_root.clone(),
+        dialer_tls_sha256: alice_tls.clone(),
+        responder_tls_sha256: bob.cert.fingerprint.value.clone(),
+        tls_exporter: URL_SAFE_NO_PAD.encode(exporter),
+        nonce: nonce.clone(),
+        key_binding_sha256: String::new(),
+    };
+    let material = build_intro_material(
+        &t,
+        "local",
+        "alice",
+        &alice.signed_card,
+        &alice.keys,
+        "2020-01-01T00:00:00Z",
+        "2035-01-01T00:00:00Z",
+        0,
+    )
+    .unwrap();
+    let (code, _, _, close) = respond_introduction(
+        &bob,
+        &store_b,
+        &pending,
+        COMPLETE_PATH,
+        "POST",
+        INTRODUCTION_MEDIA_TYPE,
+        "203.0.113.7",
+        Some(&alice_tls),
+        Some(&exporter),
+        &serde_json::to_vec(&material).unwrap(),
+        now + 3,
+    );
+    assert_eq!((code, close), (403, true), "stale handshake must not commit");
+    assert!(store_b.lock().unwrap().peer_status("alice").unwrap().is_none());
+
+    // The connection is terminal: another hello on it refuses too.
+    let (code, _, _, close) = respond_introduction(
+        &bob,
+        &store_b,
+        &pending,
+        HELLO_PATH,
+        "POST",
+        INTRODUCTION_MEDIA_TYPE,
+        "203.0.113.7",
+        Some(&alice_tls),
+        Some(&exporter),
+        &serde_json::to_vec(&hello).unwrap(),
+        now + 4,
+    );
+    assert_eq!((code, close), (403, true), "one instance per connection");
+}
