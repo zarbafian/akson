@@ -34,15 +34,35 @@ fn main() -> ExitCode {
         Some("doctor") => doctor(),
         Some("status") => status(),
         Some("whoami") => whoami(),
+        Some("token") => token(),
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
         Some("pair") => pair(&mut args),
         _ => {
-            eprintln!("akson: commands: doctor, status, whoami, task {{…}}, processor {{…}}, peer {{list|confirm}}, pair {{invite|accept}}");
+            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|confirm|auto-approve}}, pair {{invite|accept}}");
             ExitCode::from(2)
         }
     }
+}
+
+/// This endpoint's identity token (`akson token`, design §8.2 step 1): the
+/// public line to hand a peer over any channel whose integrity you trust.
+fn token() -> ExitCode {
+    let result = match call(&ControlRequest::Token) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!(
+        "  identity token (public — hand this to whoever you want to work with):\n"
+    );
+    println!("  {}\n", result["presentation"].as_str().unwrap_or("?"));
+    println!(
+        "  root key  {}   (full thumbprint; compare over a second channel if unsure)",
+        result["root_thumbprint"].as_str().unwrap_or("?"),
+    );
+    println!("  they import it with:  akson peer add <that-line> <a-label-they-choose>");
+    ExitCode::SUCCESS
 }
 
 /// Routes the `akson pair …` subcommands over the admin control socket (§8.2).
@@ -120,6 +140,35 @@ fn pair_accept(invitation_file: &str) -> ExitCode {
 fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
     match args.next().as_deref().and_then(OsStr::to_str) {
         Some("list") => peer_list(),
+        Some("add") => {
+            // akson peer add <token[@host:port]> <label> [--endpoint host:port] [--update]
+            let (Some(token), Some(label)) = (next_arg(args), next_arg(args)) else {
+                return usage("akson peer add <token[@host:port]> <label> [--endpoint host:port] [--update]");
+            };
+            let mut endpoint = None;
+            let mut update = false;
+            while let Some(flag) = next_arg(args) {
+                match flag.as_str() {
+                    "--endpoint" => endpoint = next_arg(args),
+                    "--update" => update = true,
+                    _ => {}
+                }
+            }
+            peer_add(&token, &label, endpoint, update)
+        }
+        Some("label") => match (next_arg(args), next_arg(args)) {
+            (Some(old), Some(new)) => peer_label(&old, &new),
+            _ => usage("akson peer label <old-label> <new-label>"),
+        },
+        Some("remove") => match next_arg(args) {
+            Some(label) => peer_remove(&label),
+            None => usage("akson peer remove <label>"),
+        },
+        Some("knocks") => peer_knocks(),
+        Some("ping") => match next_arg(args) {
+            Some(label) => peer_ping(&label),
+            None => usage("akson peer ping <label>"),
+        },
         Some("confirm") => match next_arg(args) {
             Some(agent) => peer_confirm(&agent),
             None => usage("akson peer confirm <agent-id>"),
@@ -158,8 +207,108 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             }
             peer_auto_approve(&agent, if off { Vec::new() } else { task_types }, max_bytes)
         }
-        _ => usage("akson peer {list|confirm <agent-id>|auto-approve <agent> …}"),
+        _ => usage(
+            "akson peer {add <token> <label>|list|label <old> <new>|remove <label>|knocks|ping <label>|confirm <agent-id>|auto-approve <agent> …}",
+        ),
     }
+}
+
+/// Import a peer's identity token under a locally chosen label — the one
+/// trust decision of pairing (`akson peer add`, design §8.2 step 3).
+fn peer_add(token: &str, label: &str, endpoint: Option<String>, update: bool) -> ExitCode {
+    let result = match call(&ControlRequest::PeerAdd {
+        token: token.to_owned(),
+        label: label.to_owned(),
+        endpoint,
+        update,
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!(
+        "imported {label}  root {}",
+        result["root_thumbprint"].as_str().unwrap_or("?"),
+    );
+    match result["endpoint_hint"].as_str() {
+        Some(hint) if !hint.is_empty() => {
+            println!("the channel opens on first contact (`akson peer ping {label}` or a task send to it)");
+            let _ = hint;
+        }
+        _ => println!(
+            "no endpoint hint — add one with `akson peer add <token> {label} --endpoint host:port --update`, or let them dial you"
+        ),
+    }
+    ExitCode::SUCCESS
+}
+
+/// Rename a peer's local label (`akson peer label`). Purely local.
+fn peer_label(old: &str, new: &str) -> ExitCode {
+    match call(&ControlRequest::PeerLabel {
+        label: old.to_owned(),
+        new_label: new.to_owned(),
+    }) {
+        Ok(_) => {
+            println!("relabeled {old} -> {new}");
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+/// Remove an imported peer (`akson peer remove`): tombstones the import,
+/// advances its epoch, and drops the pinned peer state.
+fn peer_remove(label: &str) -> ExitCode {
+    match call(&ControlRequest::PeerImportRemove {
+        label: label.to_owned(),
+    }) {
+        Ok(_) => {
+            println!("removed {label}; re-adding it later starts a fresh relationship");
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+/// The knock log (`akson peer knocks`): refused introductions, claims only.
+fn peer_knocks() -> ExitCode {
+    let result = match call(&ControlRequest::PeerKnocks) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let knocks = result["knocks"].as_array().cloned().unwrap_or_default();
+    if knocks.is_empty() {
+        println!("no refused introductions recorded.");
+        return ExitCode::SUCCESS;
+    }
+    println!("refused introductions (claims are unauthenticated):");
+    for k in &knocks {
+        println!(
+            "  claimed {}  from {}  [{} x{}]",
+            k["claimed_root"].as_str().unwrap_or("?"),
+            k["source"].as_str().unwrap_or("?"),
+            k["refusal"].as_str().unwrap_or("?"),
+            k["count"].as_u64().unwrap_or(0),
+        );
+    }
+    println!("if a peer you added appears here: they still need `akson peer add <your token>`.");
+    ExitCode::SUCCESS
+}
+
+/// Dial the introduction now (`akson peer ping <label>`).
+fn peer_ping(label: &str) -> ExitCode {
+    let result = match call(&ControlRequest::PeerPing {
+        label: label.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!(
+        "introduced {label}: {} ({}/{})",
+        result["introduced"].as_str().unwrap_or("?"),
+        result["peer"]["issuer"].as_str().unwrap_or("?"),
+        result["peer"]["agent"].as_str().unwrap_or("?"),
+    );
+    ExitCode::SUCCESS
 }
 
 /// Set or clear a peer's standing auto-approval policy (`akson peer auto-approve`).
@@ -205,19 +354,38 @@ fn peer_list() -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
+    let imports = result["imports"].as_array().cloned().unwrap_or_default();
     let peers = result["peers"].as_array().cloned().unwrap_or_default();
-    if peers.is_empty() {
-        println!("no paired peers.");
+    if imports.is_empty() && peers.is_empty() {
+        println!("no peers. exchange identity tokens and `akson peer add <token> <label>`.");
         return ExitCode::SUCCESS;
     }
-    println!("paired peers ({}):", peers.len());
-    for p in &peers {
-        println!(
-            "  {}  {}  [{}]",
-            p["agent_id"].as_str().unwrap_or("?"),
-            p["endpoint"].as_str().unwrap_or("?"),
-            p["status"].as_str().unwrap_or("?"),
-        );
+    if !imports.is_empty() {
+        println!("peers ({}):", imports.len());
+        for i in &imports {
+            let claims = i["claims"]
+                .as_str()
+                .map(|c| format!("  claims {c}"))
+                .unwrap_or_default();
+            println!(
+                "  {}  [{}]  {}{}",
+                i["label"].as_str().unwrap_or("?"),
+                i["status"].as_str().unwrap_or("?"),
+                i["endpoint_hint"].as_str().unwrap_or(""),
+                claims,
+            );
+        }
+    }
+    if !peers.is_empty() {
+        println!("invitation-paired peers ({}):", peers.len());
+        for p in &peers {
+            println!(
+                "  {}  {}  [{}]",
+                p["agent_id"].as_str().unwrap_or("?"),
+                p["endpoint"].as_str().unwrap_or("?"),
+                p["status"].as_str().unwrap_or("?"),
+            );
+        }
     }
     ExitCode::SUCCESS
 }

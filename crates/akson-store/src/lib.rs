@@ -1658,6 +1658,21 @@ impl Store {
         })
     }
 
+    /// The pinned peer behind a root thumbprint, if an introduction committed
+    /// one: `(agent_id, status_column)`. The label → root → peer join the CLI
+    /// renders and the send path resolves.
+    pub fn peer_by_root(&self, root_thumbprint: &str) -> Result<Option<(String, String)>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT agent_id, status FROM peers
+                 WHERE root_thumbprint = ?1 AND root_thumbprint != '' LIMIT 1",
+                [root_thumbprint],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// The knock log, most recent first — what `akson peer knocks` renders.
     pub fn knocks(&self) -> Result<Vec<Knock>, StoreError> {
         let mut stmt = self.conn.prepare(

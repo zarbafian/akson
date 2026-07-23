@@ -56,6 +56,30 @@ pub enum ControlRequest {
     TaskShow { task_id: String },
     /// List paired peers (`akson peer list`).
     PeerList,
+    /// This endpoint's identity token (`akson token`).
+    Token,
+    /// Import a peer's identity token under a local label — the trust decision
+    /// of identity-token pairing (`akson peer add`, admin; design §8.2 step 3).
+    /// `token` may carry the `@host:port` presentation suffix; an explicit
+    /// `endpoint` wins over it. `update` refreshes label/hint of a live import.
+    PeerAdd {
+        token: String,
+        label: String,
+        #[serde(default)]
+        endpoint: Option<String>,
+        #[serde(default)]
+        update: bool,
+    },
+    /// Rename a peer's local label (`akson peer label`, admin). Purely local.
+    PeerLabel { label: String, new_label: String },
+    /// Remove an imported peer: tombstone the import, advance its epoch, and
+    /// drop the pinned peer state (`akson peer remove`, admin; §8.2 step 7).
+    PeerImportRemove { label: String },
+    /// The knock log — refused introductions (`akson peer knocks`).
+    PeerKnocks,
+    /// Dial the introduction toward an imported peer now (`akson peer ping`,
+    /// admin) — the same handshake the first `task send` would trigger.
+    PeerPing { label: String },
     /// Confirm a pending peer, promoting it to active (`akson peer confirm`, admin).
     PeerConfirm { agent_id: String },
     /// Set a peer's standing auto-approval policy (`akson peer auto-approve`, admin):
@@ -169,13 +193,19 @@ impl ControlRequest {
     /// The authorization unit for this request (design §16.2).
     pub fn op(&self) -> ControlOp {
         match self {
-            ControlRequest::Diagnose | ControlRequest::WhoAmI => ControlOp::Diagnose,
+            ControlRequest::Diagnose | ControlRequest::WhoAmI | ControlRequest::Token => {
+                ControlOp::Diagnose
+            }
             ControlRequest::TaskInbox
             | ControlRequest::TaskShow { .. }
             | ControlRequest::TaskSent
             | ControlRequest::TaskOutcomes
             | ControlRequest::TaskOutput { .. } => ControlOp::TaskInspect,
-            ControlRequest::PeerList => ControlOp::Inspect,
+            ControlRequest::PeerList | ControlRequest::PeerKnocks => ControlOp::Inspect,
+            ControlRequest::PeerAdd { .. }
+            | ControlRequest::PeerLabel { .. }
+            | ControlRequest::PeerImportRemove { .. }
+            | ControlRequest::PeerPing { .. } => ControlOp::Pair,
             ControlRequest::PeerConfirm { .. } => ControlOp::Pair,
             ControlRequest::PeerAutoApprove { .. } => ControlOp::Policy,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {

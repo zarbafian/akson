@@ -250,6 +250,27 @@ impl DaemonState {
             }
             ControlRequest::PeerList => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                // Token-imported relationships, under the operator's labels
+                // (design §8.2): status joins the pinned peer when the
+                // introduction has committed one.
+                let imports: Vec<_> = store
+                    .list_peer_imports()
+                    .map_err(|_| internal())?
+                    .iter()
+                    .map(|i| {
+                        let (claims, status) = store
+                            .peer_by_root(&i.root_thumbprint)
+                            .ok()
+                            .flatten()
+                            .map(|(agent, status)| (Some(agent), status))
+                            .unwrap_or((None, "imported".to_owned()));
+                        serde_json::json!({
+                            "label": i.label, "root_thumbprint": i.root_thumbprint,
+                            "endpoint_hint": i.endpoint_hint, "status": status,
+                            "claims": claims,
+                        })
+                    })
+                    .collect();
                 let items: Vec<_> = store
                     .list_peers()
                     .map_err(|_| internal())?
@@ -260,7 +281,7 @@ impl DaemonState {
                         })
                     })
                     .collect();
-                Ok(serde_json::json!({ "peers": items }))
+                Ok(serde_json::json!({ "peers": items, "imports": imports }))
             }
             ControlRequest::PeerConfirm { agent_id } => {
                 let store = self.store.lock().map_err(|_| internal())?;
@@ -268,6 +289,184 @@ impl DaemonState {
                     .confirm_peer(agent_id, now_unix())
                     .map_err(|_| internal())?;
                 Ok(serde_json::json!({ "confirmed": confirmed, "agent_id": agent_id }))
+            }
+            ControlRequest::Token => {
+                let root = self
+                    .identity
+                    .purpose_key(akson_crypto::purpose::KeyPurpose::AgentCard)
+                    .verifying()
+                    .to_public_bytes();
+                let token = akson_crypto::token::encode_token(&root);
+                // The presentation hint is the advertised interface's host:port;
+                // scheme and path are implied by the token format (ADR-0013).
+                let hint = host_port_of(&self.config.interface_url);
+                let presentation = match &hint {
+                    Some(h) => format!("{token}@{h}"),
+                    None => token.clone(),
+                };
+                let thumb = self
+                    .identity
+                    .purpose_key(akson_crypto::purpose::KeyPurpose::AgentCard)
+                    .verifying()
+                    .to_jwk()
+                    .thumbprint();
+                Ok(serde_json::json!({
+                    "token": token,
+                    "presentation": presentation,
+                    "root_thumbprint": thumb,
+                    "hint": hint,
+                }))
+            }
+            ControlRequest::PeerAdd {
+                token,
+                label,
+                endpoint,
+                update,
+            } => {
+                let (tok, suffix) = akson_crypto::token::split_presentation(token);
+                let decoded = akson_crypto::token::decode_token(tok)
+                    .map_err(|e| Problem::new(400, "bad-token", &e.to_string()))?;
+                let thumb = root_thumbprint(&decoded.root_key)?;
+                let own = self
+                    .identity
+                    .purpose_key(akson_crypto::purpose::KeyPurpose::AgentCard)
+                    .verifying()
+                    .to_jwk()
+                    .thumbprint();
+                if thumb == own {
+                    return Err(Problem::new(
+                        400,
+                        "own-token",
+                        "this is your own identity token — hand it to a peer instead",
+                    ));
+                }
+                // An explicit --endpoint wins over the @suffix (both unauthenticated).
+                let hint = endpoint.clone().or_else(|| suffix.map(str::to_owned));
+                let store = self.store.lock().map_err(|_| internal())?;
+                let outcome = if *update {
+                    store
+                        .update_peer_import(&thumb, Some(label), hint.as_deref())
+                        .map_err(|_| internal())?
+                } else {
+                    store
+                        .add_peer_import(&thumb, label, hint.as_deref().unwrap_or(""), now_unix())
+                        .map_err(|_| internal())?
+                };
+                use akson_store::ImportOutcome as IO;
+                match outcome {
+                    IO::Added | IO::Updated => Ok(serde_json::json!({
+                        "imported": true, "label": label, "root_thumbprint": thumb,
+                        "endpoint_hint": hint,
+                    })),
+                    IO::DuplicateRoot => Err(Problem::new(
+                        409,
+                        "already-imported",
+                        "this identity is already imported — `peer add --update` refreshes its label or endpoint",
+                    )),
+                    IO::LabelTaken => Err(Problem::new(
+                        409,
+                        "label-taken",
+                        "another peer already holds this label — pick a different one",
+                    )),
+                    IO::UnknownRoot => Err(Problem::new(
+                        404,
+                        "unknown-peer",
+                        "no live import holds this identity — add it without --update first",
+                    )),
+                }
+            }
+            ControlRequest::PeerLabel { label, new_label } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let import = store
+                    .peer_import_by_label(label)
+                    .map_err(|_| internal())?
+                    .ok_or_else(|| unknown_label(label))?;
+                use akson_store::ImportOutcome as IO;
+                match store
+                    .update_peer_import(&import.root_thumbprint, Some(new_label), None)
+                    .map_err(|_| internal())?
+                {
+                    IO::Updated => Ok(serde_json::json!({ "label": new_label })),
+                    IO::LabelTaken => Err(Problem::new(
+                        409,
+                        "label-taken",
+                        "another peer already holds this label",
+                    )),
+                    _ => Err(internal()),
+                }
+            }
+            ControlRequest::PeerImportRemove { label } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let import = store
+                    .peer_import_by_label(label)
+                    .map_err(|_| internal())?
+                    .ok_or_else(|| unknown_label(label))?;
+                // Tombstone + epoch bump first (kills racing introductions),
+                // then drop any pinned peer state behind the root.
+                let removed = store
+                    .remove_peer_import(&import.root_thumbprint, now_unix())
+                    .map_err(|_| internal())?;
+                if let Some((agent_id, _)) = store
+                    .peer_by_root(&import.root_thumbprint)
+                    .map_err(|_| internal())?
+                {
+                    let _ = store.remove_peer(&agent_id, now_unix());
+                }
+                Ok(serde_json::json!({ "removed": removed, "label": label }))
+            }
+            ControlRequest::PeerKnocks => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let items: Vec<_> = store
+                    .knocks()
+                    .map_err(|_| internal())?
+                    .iter()
+                    .map(|k| {
+                        serde_json::json!({
+                            "claimed_root": k.claimed_root, "source": k.source,
+                            "refusal": k.refusal_class, "count": k.count,
+                            "first_at": k.first_at, "last_at": k.last_at,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "knocks": items }))
+            }
+            ControlRequest::PeerPing { label } => {
+                let import = {
+                    let store = self.store.lock().map_err(|_| internal())?;
+                    store
+                        .peer_import_by_label(label)
+                        .map_err(|_| internal())?
+                        .ok_or_else(|| unknown_label(label))?
+                };
+                let me = crate::introduce::IntroIdentity::from_state(self)?;
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| internal())?;
+                let (peer, outcome) = runtime
+                    .block_on(crate::introduce::dial_introduction(
+                        &me,
+                        self.store.clone(),
+                        &import,
+                        time::OffsetDateTime::now_utc(),
+                    ))
+                    .map_err(|e| match e {
+                        crate::introduce::IntroduceError::Refused => {
+                            Problem::new(403, "introduction-refused", &e.to_string())
+                        }
+                        crate::introduce::IntroduceError::NoEndpoint => {
+                            Problem::new(400, "no-endpoint", &e.to_string())
+                        }
+                        other => Problem::new(502, "introduction-failed", &other.to_string()),
+                    })?;
+                Ok(serde_json::json!({
+                    "introduced": format!("{outcome:?}"),
+                    "peer": {
+                        "issuer": peer.issuer, "agent": peer.agent_id,
+                        "root_thumbprint": peer.agent_card_key.value,
+                        "label": label,
+                    }
+                }))
             }
             ControlRequest::PeerAutoApprove {
                 agent_id,
@@ -620,6 +819,40 @@ fn internal() -> Problem {
     }
 }
 
+fn unknown_label(label: &str) -> Problem {
+    Problem::new(
+        404,
+        "unknown-peer",
+        &format!("no imported peer is labeled {label:?}"),
+    )
+}
+
+/// `https://host:port/…` → `host:port` — the token's presentation hint
+/// (scheme and path are implied by the token format, ADR-0013). A URL without
+/// an explicit port yields no hint: the hint must be dialable as written.
+fn host_port_of(interface_url: &str) -> Option<String> {
+    let rest = interface_url.strip_prefix("https://")?;
+    let end = rest.find('/').unwrap_or(rest.len());
+    let hp = &rest[..end];
+    (!hp.is_empty() && hp.contains(':')).then(|| hp.to_owned())
+}
+
+/// The RFC 7638 thumbprint of a token's root key — the store's peer handle.
+fn root_thumbprint(root_key: &[u8; 32]) -> Result<String, Problem> {
+    akson_crypto::keypair::PurposeVerifyingKey::from_public_bytes(
+        akson_crypto::purpose::KeyPurpose::AgentCard,
+        root_key,
+    )
+    .map(|vk| vk.to_jwk().thumbprint())
+    .map_err(|_| {
+        Problem::new(
+            400,
+            "bad-token",
+            "the token does not carry a valid Ed25519 key",
+        )
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -664,6 +897,80 @@ mod tests {
 
     fn proposal_key() -> PurposeKey {
         PurposeKey::from_seed(KeyPurpose::ContractProposal, &[4u8; 32])
+    }
+
+    /// The token verbs over dispatch (design §8.2 steps 1–3): mint, import
+    /// under a label, list, relabel, remove — the whole local pairing surface
+    /// short of the network introduction.
+    #[test]
+    fn token_import_label_remove_roundtrip() {
+        let a = DaemonState::bootstrap(&config(temp_dir("tok-a"))).unwrap();
+        let b = DaemonState::bootstrap(&config(temp_dir("tok-b"))).unwrap();
+
+        let token_b = b.dispatch(&ControlRequest::Token).unwrap();
+        let token_str = token_b["token"].as_str().unwrap();
+        assert!(token_str.starts_with("akson1"));
+        assert_eq!(token_str.len(), 65);
+        akson_crypto::token::decode_token(token_str).expect("own token decodes");
+
+        // A imports B's token under a label A chose.
+        let added = a
+            .dispatch(&ControlRequest::PeerAdd {
+                token: format!("{token_str}@127.0.0.1:18444"),
+                label: "bob-codex".to_owned(),
+                endpoint: None,
+                update: false,
+            })
+            .unwrap();
+        assert_eq!(added["endpoint_hint"].as_str(), Some("127.0.0.1:18444"));
+
+        // Importing your OWN token is caught.
+        let own = a.dispatch(&ControlRequest::Token).unwrap();
+        let own_err = a
+            .dispatch(&ControlRequest::PeerAdd {
+                token: own["token"].as_str().unwrap().to_owned(),
+                label: "me".to_owned(),
+                endpoint: None,
+                update: false,
+            })
+            .unwrap_err();
+        assert_eq!(own_err.status, 400);
+
+        // A duplicate import is guided to --update, not overwritten.
+        let dup = a
+            .dispatch(&ControlRequest::PeerAdd {
+                token: token_str.to_owned(),
+                label: "other".to_owned(),
+                endpoint: None,
+                update: false,
+            })
+            .unwrap_err();
+        assert_eq!(dup.status, 409);
+
+        // The list shows the import, status `imported`, no claims yet.
+        let list = a.dispatch(&ControlRequest::PeerList).unwrap();
+        let imports = list["imports"].as_array().unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0]["label"].as_str(), Some("bob-codex"));
+        assert_eq!(imports[0]["status"].as_str(), Some("imported"));
+        assert!(imports[0]["claims"].is_null());
+
+        // Relabel is local and free; remove tombstones.
+        a.dispatch(&ControlRequest::PeerLabel {
+            label: "bob-codex".to_owned(),
+            new_label: "dana".to_owned(),
+        })
+        .unwrap();
+        a.dispatch(&ControlRequest::PeerImportRemove {
+            label: "dana".to_owned(),
+        })
+        .unwrap();
+        let list = a.dispatch(&ControlRequest::PeerList).unwrap();
+        assert!(list["imports"].as_array().unwrap().is_empty());
+
+        // Nothing knocked in any of this.
+        let knocks = a.dispatch(&ControlRequest::PeerKnocks).unwrap();
+        assert!(knocks["knocks"].as_array().unwrap().is_empty());
     }
 
     fn ident(agent: &str) -> Identity {

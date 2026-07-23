@@ -127,6 +127,16 @@ pub struct Problem {
 }
 
 impl Problem {
+    /// A problem with a `urn:akson:error:*` tag and no detail.
+    pub fn new(status: u16, kind: &str, title: &str) -> Self {
+        Self {
+            type_: format!("urn:akson:error:{kind}"),
+            title: title.to_owned(),
+            status,
+            detail: None,
+        }
+    }
+
     /// A `403 Forbidden` for an operation not permitted on the caller's surface.
     /// The detail names only the surface, never the operation's internals.
     pub fn forbidden_surface(surface: Surface) -> Self {
