@@ -476,11 +476,6 @@ fn respond_introduction_inner(
                 "peer-suspended",
                 "pinned identity material changed; operator review required",
             ),
-            Ok(IntroCommitOutcome::NameCollision) => problem(
-                409,
-                "name-collision",
-                "a different identity already holds this agent name here",
-            ),
             Ok(IntroCommitOutcome::EpochChanged) | Ok(IntroCommitOutcome::NotImported) => refused(),
             Err(_) => problem(500, "internal", "the request could not be processed"),
         };

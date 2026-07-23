@@ -277,19 +277,43 @@ fn changed_material_suspends_and_stays_suspended() {
 }
 
 #[test]
-fn a_second_root_behind_an_existing_name_is_refused() {
+fn same_named_peers_coexist_under_different_roots() {
+    // The #2 fix, structural: two peers who both self-declare "claude" are
+    // two relationships under two roots — both active, independently.
     let s = store();
     s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
     s.add_peer_import(ROOT_B, "sam", "b:1", 100).unwrap();
-    s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
-        .unwrap();
-    // ROOT_B's peer also self-declares "claude": refused pre-cutover, exactly
-    // like the invitation path's hijack guard.
+    let mut peer_b = introduced_peer("claude", 5);
+    peer_b.identity.agent_card_key.value = ROOT_B.to_owned();
     assert_eq!(
-        s.commit_introduced_peer(ROOT_B, 1, &introduced_peer("claude", 5), &some_keys(), 300)
+        s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
             .unwrap(),
-        IntroCommitOutcome::NameCollision
+        IntroCommitOutcome::Committed
     );
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_B, 1, &peer_b, &some_keys(), 300)
+            .unwrap(),
+        IntroCommitOutcome::Committed
+    );
+    assert!(matches!(
+        s.peer_status_by_root(ROOT_A).unwrap(),
+        Some(PeerStatus::Active)
+    ));
+    assert!(matches!(
+        s.peer_status_by_root(ROOT_B).unwrap(),
+        Some(PeerStatus::Active)
+    ));
+    // A name-scoped authority decision now refuses to guess between them.
+    assert!(s.sole_peer_named("claude").unwrap().is_none());
+    // Removing ONE relationship leaves the other untouched.
+    assert!(s.remove_relationship(ROOT_A, 400).unwrap());
+    assert!(s.peer_status_by_root(ROOT_A).unwrap().is_none());
+    assert!(matches!(
+        s.peer_status_by_root(ROOT_B).unwrap(),
+        Some(PeerStatus::Active)
+    ));
+    // With one left, the name resolves again.
+    assert!(s.sole_peer_named("claude").unwrap().is_some());
 }
 
 #[test]
@@ -339,7 +363,7 @@ fn remove_relationship_is_one_transaction_and_total() {
         .peer_key(&introduced_peer("claude", 3).identity.tls_cert.value, "contract-proposal")
         .unwrap()
         .is_none());
-    assert!(s.get_auto_approve("claude").unwrap().is_none());
+    assert!(s.auto_approve_for_root(ROOT_A).unwrap().is_none());
     // Nothing live: a second removal reports so.
     assert!(!s.remove_relationship(ROOT_A, 400).unwrap());
     // And the epoch advanced: the pre-removal handshake cannot commit.
@@ -364,17 +388,25 @@ fn auto_approve_root_binds_standing_authority() {
         100,
     )
     .unwrap();
-    assert_eq!(s.auto_approve_root("claude").unwrap().as_deref(), Some(ROOT_A));
-    // A different root replacing the policy replaces the binding with it.
+    assert!(s.auto_approve_for_root(ROOT_A).unwrap().is_some());
+    // Policies key by root: a second root's policy is a second row, and a
+    // same-named peer inherits nothing.
     s.put_auto_approve(
         "claude",
         ROOT_B,
         &akson_store::AutoApprovePolicy {
-            task_types: vec!["t/x".to_owned()],
-            max_response_bytes: 1024,
+            task_types: vec!["t/y".to_owned()],
+            max_response_bytes: 2048,
         },
         200,
     )
     .unwrap();
-    assert_eq!(s.auto_approve_root("claude").unwrap().as_deref(), Some(ROOT_B));
+    assert_eq!(
+        s.auto_approve_for_root(ROOT_A).unwrap().unwrap().task_types,
+        vec!["t/x".to_owned()]
+    );
+    assert_eq!(
+        s.auto_approve_for_root(ROOT_B).unwrap().unwrap().task_types,
+        vec!["t/y".to_owned()]
+    );
 }

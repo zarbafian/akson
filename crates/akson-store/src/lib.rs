@@ -179,6 +179,8 @@ pub struct PeerKey {
     pub agent_id: String,
     pub issuer: String,
     pub public_key: [u8; 32],
+    /// The relationship's root thumbprint; empty on legacy fixture rows.
+    pub root_thumbprint: String,
 }
 
 /// A submitted Task's open head (design §10.1) — one row of the operator inbox.
@@ -340,9 +342,6 @@ pub enum IntroCommitOutcome {
     /// The peer is (or just became) suspended per §8.4: pinned material
     /// changed, or a prior suspension stands. Never silently re-pinned.
     Suspended(String),
-    /// A different root already holds this self-declared agent id — refused
-    /// until the store keys peers by root (the invitation-era guard).
-    NameCollision,
 }
 
 /// The verdict of an import mutation. Domain refusals are values, not errors:
@@ -583,28 +582,38 @@ impl Store {
     }
 
     /// Inserts a peer with `status_on_insert`, or updates the identity of an
-    /// existing row. A conflict never changes an existing row's status: an
-    /// idempotent re-store must not silently downgrade an active peer to pending
-    /// (or re-open a pending one). Status transitions go through
-    /// [`confirm_peer`](Self::confirm_peer) alone.
+    /// existing row. Keyed by the identity ROOT (the agent-card key thumbprint,
+    /// design §8.1) — same-named peers coexist under different roots. A
+    /// conflict never changes an existing row's status: an idempotent re-store
+    /// must not silently reopen or downgrade a relationship.
     fn put_peer_status(
         &self,
         peer: &StoredPeer,
         status_on_insert: PeerStatus,
     ) -> Result<(), StoreError> {
+        let id = &peer.identity;
+        let root = id.agent_card_key.value.clone();
+        if root.is_empty() {
+            return Err(StoreError::Corrupt(
+                "a peer must carry an identity root thumbprint".to_owned(),
+            ));
+        }
         let sealed = self
             .dek
             .seal(PEER_RECORD_CONTEXT, &serde_json::to_vec(peer)?);
-        let id = &peer.identity;
         self.conn.execute(
-            "INSERT INTO peers (agent_id, issuer, endpoint_id, agent_card_thumbprint, record, created_generation, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(agent_id) DO UPDATE SET
+            "INSERT INTO peers
+                 (root_thumbprint, agent_id, issuer, endpoint_id,
+                  agent_card_thumbprint, record, created_generation, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(root_thumbprint) DO UPDATE SET
+                 agent_id = excluded.agent_id,
                  issuer = excluded.issuer,
                  endpoint_id = excluded.endpoint_id,
                  agent_card_thumbprint = excluded.agent_card_thumbprint,
                  record = excluded.record",
             params![
+                root,
                 id.agent_id,
                 id.issuer,
                 id.endpoint_id,
@@ -623,8 +632,30 @@ impl Store {
         let s: Option<String> = self
             .conn
             .query_row(
-                "SELECT status FROM peers WHERE agent_id = ?1",
+                "SELECT status FROM peers WHERE agent_id = ?1
+                 ORDER BY root_thumbprint LIMIT 1",
                 [agent_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match s {
+            Some(text) => PeerStatus::from_column(&text)
+                .map(Some)
+                .ok_or_else(|| StoreError::Corrupt(format!("unknown peer status {text:?}"))),
+            None => Ok(None),
+        }
+    }
+
+    /// A peer's lifecycle status by its root — the production gate.
+    pub fn peer_status_by_root(
+        &self,
+        root_thumbprint: &str,
+    ) -> Result<Option<PeerStatus>, StoreError> {
+        let s: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT status FROM peers WHERE root_thumbprint = ?1",
+                [root_thumbprint],
                 |r| r.get(0),
             )
             .optional()?;
@@ -673,7 +704,8 @@ impl Store {
         let sealed: Option<Vec<u8>> = self
             .conn
             .query_row(
-                "SELECT record FROM peers WHERE agent_id = ?1",
+                "SELECT record FROM peers WHERE agent_id = ?1
+                 ORDER BY root_thumbprint LIMIT 1",
                 [agent_id],
                 |r| r.get(0),
             )
@@ -685,6 +717,58 @@ impl Store {
             }
             None => Ok(None),
         }
+    }
+
+    /// The pinned peer behind a root — the production lookup (peers key by
+    /// root since the cutover; names are display).
+    pub fn get_peer_by_root(&self, root_thumbprint: &str) -> Result<Option<StoredPeer>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT record FROM peers WHERE root_thumbprint = ?1",
+                [root_thumbprint],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => {
+                let json = self.dek.open(PEER_RECORD_CONTEXT, &bytes)?;
+                Ok(Some(serde_json::from_slice(&json)?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The ONE peer answering to `agent_id`, fail-closed on ambiguity: with
+    /// same-named peers coexisting, a name-scoped authority decision (reactor
+    /// policy, requester matching at delivery) must refuse rather than guess.
+    /// `None` means zero OR several — indistinguishable on purpose. Retired
+    /// once ADR-0014 puts the root inside the contract.
+    pub fn sole_peer_named(&self, agent_id: &str) -> Result<Option<StoredPeer>, StoreError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM peers WHERE agent_id = ?1",
+            [agent_id],
+            |r| r.get(0),
+        )?;
+        if count != 1 {
+            return Ok(None);
+        }
+        self.get_peer(agent_id)
+    }
+
+    /// Whether any pinned peer answers to `agent_id` under a DIFFERENT root —
+    /// the label-shadowing guard's query.
+    pub fn peer_named_with_other_root(
+        &self,
+        agent_id: &str,
+        root_thumbprint: &str,
+    ) -> Result<bool, StoreError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM peers WHERE agent_id = ?1 AND root_thumbprint != ?2",
+            params![agent_id, root_thumbprint],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Every paired peer's listing summary, ordered by agent id (`akson peer list`).
@@ -755,17 +839,17 @@ impl Store {
         tls_fingerprint: &str,
         purpose: &str,
     ) -> Result<Option<PeerKey>, StoreError> {
-        let row: Option<(String, String, Vec<u8>)> = self
+        let row: Option<(String, String, Vec<u8>, String)> = self
             .conn
             .query_row(
-                "SELECT agent_id, issuer, public_key FROM peer_keys
+                "SELECT agent_id, issuer, public_key, root_thumbprint FROM peer_keys
                  WHERE tls_fingerprint = ?1 AND purpose = ?2",
                 params![tls_fingerprint, purpose],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
         match row {
-            Some((agent_id, issuer, key)) => {
+            Some((agent_id, issuer, key, root_thumbprint)) => {
                 let public_key: [u8; 32] = key
                     .as_slice()
                     .try_into()
@@ -774,6 +858,7 @@ impl Store {
                     agent_id,
                     issuer,
                     public_key,
+                    root_thumbprint,
                 }))
             }
             None => Ok(None),
@@ -1063,49 +1148,37 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO auto_approve
-                 (agent_id, task_types, max_response_bytes, updated_at, root_thumbprint)
+                 (root_thumbprint, agent_id, task_types, max_response_bytes, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(agent_id) DO UPDATE SET
+             ON CONFLICT(root_thumbprint) DO UPDATE SET
+                 agent_id = excluded.agent_id,
                  task_types = excluded.task_types,
                  max_response_bytes = excluded.max_response_bytes,
-                 updated_at = excluded.updated_at,
-                 root_thumbprint = excluded.root_thumbprint",
+                 updated_at = excluded.updated_at",
             params![
+                root_thumbprint,
                 agent_id,
                 policy.task_types.join("\n"),
                 policy.max_response_bytes as i64,
-                now,
-                root_thumbprint
+                now
             ],
         )?;
         Ok(())
     }
 
-    /// The root a standing policy is bound to (slice-3 review): the reactor
-    /// requires it to equal the requesting peer's pinned root, so a later
-    /// identity that merely CLAIMS the same agent name cannot inherit
-    /// pre-authorisation.
-    pub fn auto_approve_root(&self, agent_id: &str) -> Result<Option<String>, StoreError> {
-        self.conn
-            .query_row(
-                "SELECT root_thumbprint FROM auto_approve WHERE agent_id = ?1",
-                [agent_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    /// A peer's auto-approval policy, or `None` (the safe default: always ask).
-    pub fn get_auto_approve(
+    /// A root's standing policy, or `None` (the safe default: always ask).
+    /// Standing authority keys by the introduced ROOT — a name is never an
+    /// authority handle (slice-3 review; root-key cutover).
+    pub fn auto_approve_for_root(
         &self,
-        agent_id: &str,
+        root_thumbprint: &str,
     ) -> Result<Option<AutoApprovePolicy>, StoreError> {
         let row: Option<(String, i64)> = self
             .conn
             .query_row(
-                "SELECT task_types, max_response_bytes FROM auto_approve WHERE agent_id = ?1",
-                [agent_id],
+                "SELECT task_types, max_response_bytes FROM auto_approve
+                 WHERE root_thumbprint = ?1",
+                [root_thumbprint],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -1119,11 +1192,12 @@ impl Store {
         }))
     }
 
-    /// Removes a peer's auto-approval policy (reverts to always-ask).
-    pub fn delete_auto_approve(&self, agent_id: &str) -> Result<bool, StoreError> {
-        let n = self
-            .conn
-            .execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent_id])?;
+    /// Removes a root's auto-approval policy (reverts to always-ask).
+    pub fn delete_auto_approve(&self, root_thumbprint: &str) -> Result<bool, StoreError> {
+        let n = self.conn.execute(
+            "DELETE FROM auto_approve WHERE root_thumbprint = ?1",
+            [root_thumbprint],
+        )?;
         Ok(n == 1)
     }
 
@@ -1289,10 +1363,7 @@ impl Store {
                 "DELETE FROM auto_approve WHERE root_thumbprint = ?1 AND root_thumbprint != ''",
                 [root_thumbprint],
             )?;
-            if let Some(agent) = agent {
-                self.conn
-                    .execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent])?;
-            }
+            let _ = agent; // policy rows key by root; the by-root delete above covered it
             audit::append(&tx, now, "peer.removed", root_thumbprint)?;
         }
         tx.commit()?;
@@ -1381,10 +1452,10 @@ impl Store {
     /// full identity tuple and verification keys under `(root, epoch)` as one
     /// compare-and-swap. A removal that raced the handshake fails the CAS
     /// (`EpochChanged`); identical re-introduction is idempotent; changed
-    /// material for a pinned peer suspends per §8.4, never re-pins; and until
-    /// the agent-id key cutover, a second root behind an existing name is
-    /// refused (`NameCollision`), exactly like the invitation path's guard.
-    /// `keys` are the counterparty's verification keys as (purpose, public).
+    /// material — including a renamed subject — suspends per §8.4, never
+    /// re-pins and never forks. Same-named peers under different roots simply
+    /// coexist (the #2 fix). `keys` are the counterparty's verification keys
+    /// as (purpose, public).
     pub fn commit_introduced_peer(
         &self,
         root_thumbprint: &str,
@@ -1411,51 +1482,41 @@ impl Store {
         }
 
         let agent_id = peer.identity.agent_id.clone();
-        // One root, one relationship: if this root already pinned a peer under a
-        // DIFFERENT self-declared name, that is changed identity material — the
-        // existing row suspends per §8.4 and nothing new is written. Without
-        // this, a renamed subject would sidestep detect_change entirely
-        // (slice-2 security review).
-        if let Some((existing_agent, _)) = self.peer_by_root(root_thumbprint)? {
-            if existing_agent != agent_id {
+        let was_pinned = if let Some(existing) = self.get_peer_by_root(root_thumbprint)? {
+            // Any change to the pinned material — a rotated certificate, a
+            // renamed subject, moved keys — suspends for review (§8.4).
+            if let Some(reason) =
+                akson_pairing::lifecycle::detect_change(&existing.identity, &peer.identity)
+            {
                 self.conn.execute(
-                    "UPDATE peers SET status = ?2 WHERE agent_id = ?1",
+                    "UPDATE peers SET status = ?2 WHERE root_thumbprint = ?1",
+                    params![root_thumbprint, PeerStatus::Suspended(reason).as_column()],
+                )?;
+                audit::append(&tx, now, "peer.suspended", root_thumbprint)?;
+                tx.commit()?;
+                return Ok(IntroCommitOutcome::Suspended(format!("{reason:?}")));
+            }
+            if existing.identity.agent_id != agent_id {
+                self.conn.execute(
+                    "UPDATE peers SET status = ?2 WHERE root_thumbprint = ?1",
                     params![
-                        existing_agent,
+                        root_thumbprint,
                         PeerStatus::Suspended(
                             akson_pairing::lifecycle::SuspendReason::SubjectChanged
                         )
                         .as_column()
                     ],
                 )?;
-                audit::append(&tx, now, "peer.suspended", &existing_agent)?;
+                audit::append(&tx, now, "peer.suspended", root_thumbprint)?;
                 tx.commit()?;
                 return Ok(IntroCommitOutcome::Suspended("SubjectChanged".to_owned()));
             }
-        }
-        let was_pinned = if let Some(existing) = self.get_peer(&agent_id)? {
-            let existing_root: String = self.conn.query_row(
-                "SELECT root_thumbprint FROM peers WHERE agent_id = ?1",
-                [agent_id.as_str()],
-                |r| r.get(0),
-            )?;
-            if !existing_root.is_empty() && existing_root != root_thumbprint {
-                return Ok(IntroCommitOutcome::NameCollision);
-            }
-            if let Some(reason) =
-                akson_pairing::lifecycle::detect_change(&existing.identity, &peer.identity)
-            {
-                self.conn.execute(
-                    "UPDATE peers SET status = ?2 WHERE agent_id = ?1",
-                    params![agent_id, PeerStatus::Suspended(reason).as_column()],
-                )?;
-                audit::append(&tx, now, "peer.suspended", &agent_id)?;
-                tx.commit()?;
-                return Ok(IntroCommitOutcome::Suspended(format!("{reason:?}")));
-            }
             // Identical material. A suspended peer stays suspended — review is
             // the operator's, not the wire's.
-            if matches!(self.peer_status(&agent_id)?, Some(PeerStatus::Suspended(_))) {
+            if matches!(
+                self.peer_status_by_root(root_thumbprint)?,
+                Some(PeerStatus::Suspended(_))
+            ) {
                 return Ok(IntroCommitOutcome::Suspended("previously-suspended".to_owned()));
             }
             true
@@ -1465,8 +1526,8 @@ impl Store {
 
         self.put_peer_status(peer, PeerStatus::Active)?;
         self.conn.execute(
-            "UPDATE peers SET status = 'active', root_thumbprint = ?2 WHERE agent_id = ?1",
-            params![agent_id, root_thumbprint],
+            "UPDATE peers SET status = 'active' WHERE root_thumbprint = ?1",
+            params![root_thumbprint],
         )?;
         let issuer = peer.identity.issuer.clone().unwrap_or_default();
         let tls_fp = &peer.identity.tls_cert.value;
@@ -1492,7 +1553,7 @@ impl Store {
                 ],
             )?;
         }
-        audit::append(&tx, now, "peer.introduced", &agent_id)?;
+        audit::append(&tx, now, "peer.introduced", root_thumbprint)?;
         tx.commit()?;
         Ok(if was_pinned {
             IntroCommitOutcome::AlreadyActive
@@ -1507,8 +1568,7 @@ impl Store {
     pub fn peer_by_root(&self, root_thumbprint: &str) -> Result<Option<(String, String)>, StoreError> {
         self.conn
             .query_row(
-                "SELECT agent_id, status FROM peers
-                 WHERE root_thumbprint = ?1 AND root_thumbprint != '' LIMIT 1",
+                "SELECT agent_id, status FROM peers WHERE root_thumbprint = ?1",
                 [root_thumbprint],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -3529,15 +3589,15 @@ mod tests {
     #[test]
     fn auto_approve_policy_round_trips_and_clears() {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
-        assert!(store.get_auto_approve("peer-1").unwrap().is_none());
+        assert!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().is_none());
         let policy = AutoApprovePolicy {
             task_types: vec!["t/design/v1".to_owned(), "t/review/v1".to_owned()],
             max_response_bytes: 8192,
         };
         store.put_auto_approve("peer-1", ROOT_FOR_TEST, &policy, 100).unwrap();
-        assert_eq!(store.get_auto_approve("peer-1").unwrap().unwrap(), policy);
-        assert!(store.delete_auto_approve("peer-1").unwrap());
-        assert!(store.get_auto_approve("peer-1").unwrap().is_none());
+        assert_eq!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().unwrap(), policy);
+        assert!(store.delete_auto_approve(ROOT_FOR_TEST).unwrap());
+        assert!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().is_none());
     }
 
     #[test]

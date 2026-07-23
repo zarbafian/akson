@@ -111,34 +111,24 @@ fn auto_approve_if_allowed(
     };
     let contract = parsed.contract;
 
-    // The requester must be a confirmed-ACTIVE peer. A pending (not-yet-confirmed)
-    // or removed peer is never auto-approved, even if a stale policy row survives —
-    // auto-approval is trust the operator granted a peer they confirmed (codex review).
-    if store.peer_status(&contract.requester.agent).ok().flatten()
+    // The contract names the requester only by its self-declared tuple (until
+    // ADR-0014 carries the root), so a name-scoped authority decision must be
+    // fail-closed on ambiguity: EXACTLY one pinned peer may answer to the
+    // name, it must be ACTIVE, and the standing policy must be bound to that
+    // peer's root — a later identity claiming the same name inherits nothing
+    // (slice-3 review; root-key cutover).
+    let Ok(Some(requester)) = store.sole_peer_named(&contract.requester.agent) else {
+        return false; // zero or several same-named peers → always ask
+    };
+    let root = requester.identity.agent_card_key.value.clone();
+    if store.peer_status_by_root(&root).ok().flatten()
         != Some(akson_store::PeerStatus::Active)
     {
         return false;
     }
-    let Ok(Some(policy)) = store.get_auto_approve(&contract.requester.agent) else {
+    let Ok(Some(policy)) = store.auto_approve_for_root(&root) else {
         return false; // no standing policy → always ask
     };
-    // The policy is bound to the introduced ROOT, not the self-declared name:
-    // a later identity that merely claims the same agent name must not
-    // inherit pre-authorisation (slice-3 review).
-    let policy_root = store
-        .auto_approve_root(&contract.requester.agent)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let peer_root = store
-        .get_peer(&contract.requester.agent)
-        .ok()
-        .flatten()
-        .map(|p| p.identity.agent_card_key.value)
-        .unwrap_or_default();
-    if policy_root.is_empty() || policy_root != peer_root {
-        return false;
-    }
     if !policy.task_types.iter().any(|t| t == &contract.task_type) {
         return false;
     }

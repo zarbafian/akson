@@ -193,35 +193,36 @@ impl DaemonState {
     }
 
     /// Resolves a task spec's `performer` for sending (design §8.2): a label
-    /// naming a live import resolves to its pinned peer's agent id — running
-    /// the introduction first when this is the relationship's first contact —
-    /// while anything else passes through unchanged (a legacy agent id, whose
-    /// existence `run_send` checks itself).
-    fn resolve_performer(&self, performer: &str) -> Result<String, Problem> {
+    /// naming a live import resolves to its pinned peer's `(root, agent)` —
+    /// running the introduction first when this is the relationship's first
+    /// contact — while anything else returns `None` and passes through as a
+    /// bare agent name (honored downstream only while unambiguous).
+    fn resolve_performer(&self, performer: &str) -> Result<Option<(String, String)>, Problem> {
         let import = {
             let store = self.store.lock().map_err(|_| internal())?;
             let Some(import) = store.peer_import_by_label(performer).map_err(|_| internal())?
             else {
-                return Ok(performer.to_owned());
+                return Ok(None);
             };
             // A label must not silently shadow a real agent id (slice-3
             // review): if a DIFFERENT pinned peer also answers to this exact
             // string as its agent id, refuse rather than guess.
-            if let Some(other) = store.get_peer(performer).map_err(|_| internal())? {
-                if other.identity.agent_card_key.value != import.root_thumbprint {
-                    return Err(Problem::new(
-                        409,
-                        "ambiguous-performer",
-                        "this name is both a local label and another peer's agent id — rename the label",
-                    ));
-                }
+            if store
+                .peer_named_with_other_root(performer, &import.root_thumbprint)
+                .map_err(|_| internal())?
+            {
+                return Err(Problem::new(
+                    409,
+                    "ambiguous-performer",
+                    "this name is both a local label and another peer's agent id — rename the label",
+                ));
             }
             if let Some((agent_id, status)) = store
                 .peer_by_root(&import.root_thumbprint)
                 .map_err(|_| internal())?
             {
                 if status == "active" {
-                    return Ok(agent_id);
+                    return Ok(Some((import.root_thumbprint, agent_id)));
                 }
                 // Suspended stays the operator's call — never auto-heal (§8.4).
                 return Err(Problem::new(
@@ -264,7 +265,7 @@ impl DaemonState {
                 }
                 other => Problem::new(502, "introduction-failed", &other.to_string()),
             })?;
-        Ok(peer.agent_id)
+        Ok(Some((peer.agent_card_key.value.clone(), peer.agent_id)))
     }
 
     /// A shared handle to the store — cloned into each socket's dispatch closure
@@ -583,8 +584,9 @@ impl DaemonState {
                 };
                 // Empty task types clears the policy — reverts to always-ask.
                 if task_types.is_empty() {
+                    let _ = &agent_id;
                     let cleared = store
-                        .delete_auto_approve(&agent_id)
+                        .delete_auto_approve(&import.root_thumbprint)
                         .map_err(|_| internal())?;
                     Ok(
                         serde_json::json!({ "auto_approve": "off", "cleared": cleared, "label": identifier }),
@@ -714,15 +716,17 @@ impl DaemonState {
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => {
                 // The spec's performer may be an operator label (design §8.2):
-                // resolve it to the pinned peer, introducing first if this is
-                // the first contact — exactly what `peer ping` would run.
-                let resolved = self.resolve_performer(&spec.performer)?;
-                if resolved == spec.performer {
-                    run_send(self, spec)
-                } else {
-                    let mut spec = spec.clone();
-                    spec.performer = resolved;
-                    run_send(self, &spec)
+                // resolve it to the pinned peer's ROOT — the relationship key —
+                // introducing first on first contact, exactly like `peer ping`.
+                // A bare agent name passes through and is honored downstream
+                // only while it is unambiguous.
+                match self.resolve_performer(&spec.performer)? {
+                    Some((root, agent)) => {
+                        let mut spec = spec.clone();
+                        spec.performer = agent;
+                        run_send(self, &spec, Some(&root))
+                    }
+                    None => run_send(self, spec, None),
                 }
             }
             ControlRequest::RequestProcessorCall {

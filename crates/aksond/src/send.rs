@@ -86,23 +86,30 @@ pub fn prepare_send(
     local: &Identity,
     proposal_key: &PurposeKey,
     spec: &TaskSpec,
+    performer_root: Option<&str>,
     created_at: &str,
 ) -> Result<SendPrepared, Problem> {
-    let peer = store
-        .get_peer(&spec.performer)
-        .map_err(store_problem)?
-        .ok_or_else(|| {
-            problem(
-                409,
-                "unknown-performer",
-                "the performer is not a paired peer",
-            )
-        })?;
+    // A label-resolved send carries the ROOT (the relationship key); a bare
+    // agent name is honored only while it is unambiguous — with same-named
+    // peers coexisting, guessing would sign confidential inputs over to the
+    // wrong one (root-key cutover).
+    let peer = match performer_root {
+        Some(root) => store.get_peer_by_root(root).map_err(store_problem)?,
+        None => store
+            .sole_peer_named(&spec.performer)
+            .map_err(store_problem)?,
+    }
+    .ok_or_else(|| {
+        problem(
+            409,
+            "unknown-performer",
+            "the performer is not a paired peer (or the name is ambiguous — use your label)",
+        )
+    })?;
     // Only an ACTIVE peer may be sent work, however it was addressed: a
     // suspended relationship stays the operator's call (§8.4; slice-3 review).
-    if store
-        .peer_status(&peer.identity.agent_id)
-        .map_err(store_problem)?
+    let root = peer.identity.agent_card_key.value.clone();
+    if store.peer_status_by_root(&root).map_err(store_problem)?
         != Some(akson_store::PeerStatus::Active)
     {
         return Err(problem(
@@ -259,7 +266,11 @@ pub async fn send_prepared(
 
 /// Prepares, sends, and records a task (design §10.2). Assembles under the store
 /// lock, runs the network I/O on a dedicated runtime, then records the sent request.
-pub fn run_send(state: &DaemonState, spec: &TaskSpec) -> Result<serde_json::Value, Problem> {
+pub fn run_send(
+    state: &DaemonState,
+    spec: &TaskSpec,
+    performer_root: Option<&str>,
+) -> Result<serde_json::Value, Problem> {
     let now = OffsetDateTime::now_utc();
     let created_at = now
         .format(&Rfc3339)
@@ -276,6 +287,7 @@ pub fn run_send(state: &DaemonState, spec: &TaskSpec) -> Result<serde_json::Valu
             &state.config().local_performer,
             &state.identity().purpose_key(KeyPurpose::ContractProposal),
             spec,
+            performer_root,
             &created_at,
         )?
     };

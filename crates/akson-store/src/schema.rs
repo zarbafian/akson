@@ -375,6 +375,48 @@ DELETE FROM invitations;
 DELETE FROM pending_pairs;
 "#;
 
+/// Version 19 (identity-token pairing, the root-key cutover): `peers` and
+/// `auto_approve` re-key by the identity root thumbprint — the design §8.1
+/// relationship key — so peers who self-declare the same agent name simply
+/// coexist under different roots (the #2 fix, structural). `agent_id` stays a
+/// queryable display column, indexed for the name-scoped fail-closed lookups
+/// the wire needs until ADR-0014 puts the root inside the contract.
+const V19: &str = r#"
+CREATE TABLE peers_v19 (
+    root_thumbprint       TEXT PRIMARY KEY,
+    agent_id              TEXT NOT NULL,
+    issuer                TEXT,
+    endpoint_id           TEXT NOT NULL,
+    agent_card_thumbprint TEXT NOT NULL,
+    record                BLOB NOT NULL,
+    created_generation    INTEGER NOT NULL,
+    status                TEXT NOT NULL
+) STRICT;
+INSERT INTO peers_v19
+    (root_thumbprint, agent_id, issuer, endpoint_id, agent_card_thumbprint,
+     record, created_generation, status)
+  SELECT root_thumbprint, agent_id, issuer, endpoint_id, agent_card_thumbprint,
+         record, created_generation, status
+  FROM peers WHERE root_thumbprint != '';
+DROP TABLE peers;
+ALTER TABLE peers_v19 RENAME TO peers;
+CREATE INDEX peers_by_agent ON peers (agent_id);
+
+CREATE TABLE auto_approve_v19 (
+    root_thumbprint     TEXT PRIMARY KEY,
+    agent_id            TEXT NOT NULL,
+    task_types          TEXT NOT NULL,
+    max_response_bytes  INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+) STRICT;
+INSERT INTO auto_approve_v19
+    (root_thumbprint, agent_id, task_types, max_response_bytes, updated_at)
+  SELECT root_thumbprint, agent_id, task_types, max_response_bytes, updated_at
+  FROM auto_approve WHERE root_thumbprint != '';
+DROP TABLE auto_approve;
+ALTER TABLE auto_approve_v19 RENAME TO auto_approve;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -396,6 +438,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (16, V16),
     (17, V17),
     (18, V18),
+    (19, V19),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

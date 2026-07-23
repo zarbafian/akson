@@ -85,9 +85,17 @@ impl PeerResolver for StorePeerResolver {
             .peer_key(tls_fingerprint, PROPOSAL_KEY_PURPOSE)
             .ok()
             .flatten()?;
-        // The peer must be operator-confirmed ACTIVE — a surviving key row for a
-        // pending, removed, or re-paired peer must not admit work (codex review).
-        if store.peer_status(&pk.agent_id).ok().flatten() != Some(PeerStatus::Active) {
+        // The peer must be ACTIVE — a surviving key row for a suspended or
+        // removed peer must not admit work (codex review). Status resolves by
+        // the key row's ROOT (names are display since the cutover); a legacy
+        // fixture row with no root falls back to the name-scoped lookup.
+        let active = if pk.root_thumbprint.is_empty() {
+            store.peer_status(&pk.agent_id).ok().flatten() == Some(PeerStatus::Active)
+        } else {
+            store.peer_status_by_root(&pk.root_thumbprint).ok().flatten()
+                == Some(PeerStatus::Active)
+        };
+        if !active {
             return None;
         }
         let proposal_key =
