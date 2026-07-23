@@ -19,3 +19,4 @@ pub mod jws;
 pub mod keypair;
 pub mod keystore;
 pub mod purpose;
+pub mod token;
