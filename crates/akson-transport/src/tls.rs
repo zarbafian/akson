@@ -260,6 +260,100 @@ impl ClientCertVerifier for AcceptAnyClientVerifier {
     }
 }
 
+/// Introduction-only server verifier's client-side mirror: accepts *any*
+/// time-valid server certificate but still verifies the handshake signature,
+/// so possession of the presented key is proven and its fingerprint can be
+/// captured for the introduction transcript (ADR-0015). Identity is not
+/// carried by TLS on first contact — it is proven against the imported root
+/// commitment inside the handshake that follows. Never used for A2A traffic.
+#[derive(Debug)]
+struct AcceptAnyServerVerifier {
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for AcceptAnyServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        // No pin yet; the fingerprint is captured post-handshake and bound into
+        // the signed transcript. The certificate must be within its validity
+        // window — an introduction must not pin an already-expired cert.
+        check_cert_time(end_entity, now)?;
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        tls12_disabled()
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// The introduction client config (design §8.2 step 4, ADR-0015): presents our
+/// certificate, provisionally accepts the server's (see
+/// [`AcceptAnyServerVerifier`]). The introduction protocol on top verifies the
+/// server against the imported root and binds both certificates plus this
+/// session's exporter into every proof; ordinary sends keep [`client_config`]'s
+/// pinning untouched.
+pub fn introduction_client_config(
+    endpoint_key: &PurposeKey,
+    cert: &EndpointCert,
+) -> Result<ClientConfig, TlsError> {
+    let provider = provider();
+    let verifier = Arc::new(AcceptAnyServerVerifier {
+        provider: provider.clone(),
+    });
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(
+            vec![CertificateDer::from(cert.der.clone())],
+            private_key(endpoint_key)?,
+        )?;
+    // §9.1: no resumption/tickets, no 0-RTT.
+    config.resumption = rustls::client::Resumption::disabled();
+    config.enable_early_data = false;
+    Ok(config)
+}
+
+/// The RFC 9266 `tls-exporter` channel binding of a completed TLS 1.3
+/// connection (ADR-0015): 32 bytes under the fixed label with an empty
+/// context. Every introduction proof signs over it, so a proof can never be
+/// replayed onto another connection.
+pub fn channel_binding<Data>(conn: &rustls::ConnectionCommon<Data>) -> Option<[u8; 32]> {
+    conn.export_keying_material([0u8; 32], b"EXPORTER-Channel-Binding", None)
+        .ok()
+}
+
 /// The bootstrap server config (design §8.2): presents the inviter's `cert`
 /// (which the accepter pinned from the invitation) and requests a client
 /// certificate it accepts unpinned, capturing the accepter's fingerprint for

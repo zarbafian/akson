@@ -85,8 +85,18 @@ pub fn verify_proof_of_possession(
     transcript: &Transcript,
     proofs: &BTreeMap<String, String>,
 ) -> Result<(), PopError> {
-    let message = transcript.to_bytes();
+    verify_proofs_over(bindings, &transcript.to_bytes(), proofs)
+}
 
+/// The transcript-agnostic core of proof-of-possession: every advertised key
+/// must have signed exactly `message`, and no unadvertised proof may appear.
+/// The invitation flow signs a [`Transcript`]; the introduction (ADR-0015)
+/// signs its own session-bound transcript — both land here.
+pub fn verify_proofs_over(
+    bindings: &KeyBindingSet,
+    message: &[u8],
+    proofs: &BTreeMap<String, String>,
+) -> Result<(), PopError> {
     for (purpose, entry) in &bindings.keys {
         let proof = proofs.get(purpose).ok_or_else(|| PopError::MissingProof {
             purpose: purpose.clone(),
@@ -106,7 +116,7 @@ pub fn verify_proof_of_possession(
         // attacker-controlled at pairing, so reject small-order keys and
         // non-canonical R — the same discipline as DSSE/JWS. Otherwise a
         // small-order "key" could yield a passing proof without possession.
-        key.verify_strict(&message, &signature)
+        key.verify_strict(message, &signature)
             .map_err(|_| PopError::BadProof {
                 purpose: purpose.clone(),
             })?;

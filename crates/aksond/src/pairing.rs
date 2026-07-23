@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use akson_crypto::keypair::PurposeKey;
 use akson_crypto::purpose::KeyPurpose;
 use akson_pairing::handler::BootstrapMaterial;
 use akson_pairing::invitation::Invitation;
@@ -24,35 +25,9 @@ use crate::control::Problem;
 /// verify everything this endpoint later signs — proposals, decisions, results,
 /// evidence, outcomes.
 pub(crate) fn bootstrap_material(state: &DaemonState) -> Result<BootstrapMaterial, Problem> {
-    let identity = state.identity();
     let local = &state.config().local_performer;
-
-    let card_value = serde_json::json!({
-        "name": local.agent,
-        "description": "akson endpoint",
-        "version": "1.0.0",
-        "supportedInterfaces": [{
-            "url": state.config().interface_url,
-            "protocolBinding": "HTTP+JSON",
-            "protocolVersion": "1.0",
-        }],
-        "capabilities": { "streaming": false, "pushNotifications": false },
-    });
-    let mut card: AgentCard = serde_json::from_value(card_value)
-        .map_err(|_| problem(500, "internal", "the agent card could not be built"))?;
-    let sig = card_sig::sign_card(&card, &identity.purpose_key(KeyPurpose::AgentCard))
-        .map_err(|_| problem(500, "card-sign", "the agent card could not be signed"))?;
-    card.signatures.push(sig);
-
-    // The key-binding carries only the STATEMENT verification keys (a closed set);
-    // TLS identity is pinned by the certificate digest, not advertised here.
-    let mut keys = BTreeMap::new();
-    for purpose in KeyPurpose::PAIRED {
-        if purpose == KeyPurpose::TlsEndpoint {
-            continue;
-        }
-        keys.insert(purpose, identity.purpose_key(purpose));
-    }
+    let card = signed_endpoint_card(state)?;
+    let keys = statement_keys(state);
     Ok(BootstrapMaterial {
         tls_sha256: state.endpoint_cert().fingerprint.value.clone(),
         subject_issuer: local.issuer.clone(),
@@ -63,6 +38,60 @@ pub(crate) fn bootstrap_material(state: &DaemonState) -> Result<BootstrapMateria
         not_after: "2035-01-01T00:00:00Z".to_owned(),
         generation: 0,
     })
+}
+
+/// This endpoint's signed extended Agent Card, **profile-valid**: HTTP+JSON v1
+/// interface, streaming/push off, extended card, the full required-extension
+/// set, and mandatory mTLS. The introduction (ADR-0015) verifies the
+/// counterparty's card with `validate_agent_card`, so the card this endpoint
+/// presents must pass the same bar.
+pub(crate) fn signed_endpoint_card(state: &DaemonState) -> Result<AgentCard, Problem> {
+    let identity = state.identity();
+    let local = &state.config().local_performer;
+    let extensions: Vec<serde_json::Value> = akson_ext::namespace::required_extension_uris()
+        .into_iter()
+        .map(|uri| serde_json::json!({ "uri": uri, "required": true }))
+        .collect();
+    let card_value = serde_json::json!({
+        "name": local.agent,
+        "description": "akson endpoint",
+        "version": "1.0.0",
+        "supportedInterfaces": [{
+            "url": state.config().interface_url,
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": "1.0",
+        }],
+        "capabilities": {
+            "streaming": false,
+            "pushNotifications": false,
+            "extendedAgentCard": true,
+            "extensions": extensions,
+        },
+        "securitySchemes": {
+            "mtls": { "mtlsSecurityScheme": { "description": "pinned mutual TLS" } }
+        },
+        "securityRequirements": [{ "schemes": { "mtls": { "list": [] } } }],
+    });
+    let mut card: AgentCard = serde_json::from_value(card_value)
+        .map_err(|_| problem(500, "internal", "the agent card could not be built"))?;
+    let sig = card_sig::sign_card(&card, &identity.purpose_key(KeyPurpose::AgentCard))
+        .map_err(|_| problem(500, "card-sign", "the agent card could not be signed"))?;
+    card.signatures.push(sig);
+    Ok(card)
+}
+
+/// The STATEMENT verification keys this endpoint advertises (a closed set);
+/// TLS identity is pinned by the certificate digest, not advertised here.
+pub(crate) fn statement_keys(state: &DaemonState) -> BTreeMap<KeyPurpose, PurposeKey> {
+    let identity = state.identity();
+    let mut keys = BTreeMap::new();
+    for purpose in KeyPurpose::PAIRED {
+        if purpose == KeyPurpose::TlsEndpoint {
+            continue;
+        }
+        keys.insert(purpose, identity.purpose_key(purpose));
+    }
+    keys
 }
 
 /// Accepts a pairing invitation (design §8.2 steps 3–7). Blocks on its own runtime,

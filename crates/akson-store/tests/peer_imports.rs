@@ -166,3 +166,128 @@ fn knock_log_is_capped_but_known_triples_still_count() {
         .unwrap();
     assert_eq!((bumped.count, bumped.last_at), (2, 6000));
 }
+
+// ---- introduction commit (ADR-0015 step 5) ----
+
+use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+use akson_store::{IntroCommitOutcome, PeerStatus, StoredPeer};
+
+fn introduced_peer(agent: &str, tls_seed: u8) -> StoredPeer {
+    StoredPeer {
+        identity: PeerIdentity {
+            issuer: Some("local".to_owned()),
+            agent_id: agent.to_owned(),
+            workload_id: None,
+            endpoint_id: "https://peer.example/a2a".to_owned(),
+            tls_cert: Fingerprint::cert_sha256(&[tls_seed; 4]),
+            agent_card_key: Fingerprint {
+                kind: FingerprintKind::Jwk7638,
+                value: ROOT_A.to_owned(),
+            },
+            key_bindings: vec![],
+            security_projection_digest: Fingerprint::json_sha256(b"{}"),
+            full_card_digest: Fingerprint::json_sha256(b"{}"),
+        },
+        local_note: String::new(),
+    }
+}
+
+fn some_keys() -> Vec<(String, [u8; 32])> {
+    vec![
+        ("contract-proposal".to_owned(), [1u8; 32]),
+        ("task-result".to_owned(), [2u8; 32]),
+    ]
+}
+
+#[test]
+fn commit_pins_an_active_peer_with_keys_under_the_root() {
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    let peer = introduced_peer("claude", 3);
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        IntroCommitOutcome::Committed
+    );
+    assert_eq!(s.peer_status("claude").unwrap(), Some(PeerStatus::Active));
+    let pk = s
+        .peer_key(&peer.identity.tls_cert.value, "contract-proposal")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pk.agent_id, "claude");
+    // Re-introducing identical material is idempotent.
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 300).unwrap(),
+        IntroCommitOutcome::AlreadyActive
+    );
+}
+
+#[test]
+fn commit_without_an_import_writes_nothing() {
+    let s = store();
+    let peer = introduced_peer("claude", 3);
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        IntroCommitOutcome::NotImported
+    );
+    assert!(s.peer_status("claude").unwrap().is_none());
+}
+
+#[test]
+fn a_removal_racing_the_handshake_fails_the_cas() {
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    // The handshake began under epoch 1; the operator removes (and even
+    // re-adds) meanwhile — the old handshake must not commit.
+    s.remove_peer_import(ROOT_A, 150).unwrap();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 160).unwrap();
+    let peer = introduced_peer("claude", 3);
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        IntroCommitOutcome::EpochChanged
+    );
+    assert!(s.peer_status("claude").unwrap().is_none());
+    // Under the current epoch it commits.
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 2, &peer, &some_keys(), 210).unwrap(),
+        IntroCommitOutcome::Committed
+    );
+}
+
+#[test]
+fn changed_material_suspends_and_stays_suspended() {
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    let peer = introduced_peer("claude", 3);
+    s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap();
+    // Same root, different TLS certificate — §8.4: suspend, never re-pin.
+    let changed = introduced_peer("claude", 4);
+    assert!(matches!(
+        s.commit_introduced_peer(ROOT_A, 1, &changed, &some_keys(), 300).unwrap(),
+        IntroCommitOutcome::Suspended(_)
+    ));
+    assert!(matches!(
+        s.peer_status("claude").unwrap(),
+        Some(PeerStatus::Suspended(_))
+    ));
+    // Even the ORIGINAL material cannot silently reactivate a suspended peer.
+    assert!(matches!(
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 400).unwrap(),
+        IntroCommitOutcome::Suspended(_)
+    ));
+}
+
+#[test]
+fn a_second_root_behind_an_existing_name_is_refused() {
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    s.add_peer_import(ROOT_B, "sam", "b:1", 100).unwrap();
+    s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
+        .unwrap();
+    // ROOT_B's peer also self-declares "claude": refused pre-cutover, exactly
+    // like the invitation path's hijack guard.
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_B, 1, &introduced_peer("claude", 5), &some_keys(), 300)
+            .unwrap(),
+        IntroCommitOutcome::NameCollision
+    );
+}

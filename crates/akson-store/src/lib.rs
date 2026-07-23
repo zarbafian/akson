@@ -325,6 +325,30 @@ pub struct Knock {
     pub count: u64,
 }
 
+/// The verdict of [`Store::commit_introduced_peer`] (ADR-0015 step 5): the
+/// compare-and-swap over `(root, epoch)` that turns a verified introduction
+/// into a pinned, active peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntroCommitOutcome {
+    /// The full tuple and keys were pinned; the peer is active.
+    Committed,
+    /// Identical material was already pinned — an idempotent re-introduction
+    /// (simultaneous dials, or a crash between the two sides' commits).
+    AlreadyActive,
+    /// No live import for this root: the operator never said yes (or a
+    /// removal landed first). Nothing written.
+    NotImported,
+    /// The import's epoch moved past the one this handshake started under —
+    /// a removal raced it. Nothing written.
+    EpochChanged,
+    /// The peer is (or just became) suspended per §8.4: pinned material
+    /// changed, or a prior suspension stands. Never silently re-pinned.
+    Suspended(String),
+    /// A different root already holds this self-declared agent id — refused
+    /// until the store keys peers by root (the invitation-era guard).
+    NameCollision,
+}
+
 /// The verdict of an import mutation. Domain refusals are values, not errors:
 /// the CLI renders each as guidance, and nothing is ever overwritten.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1530,6 +1554,108 @@ impl Store {
             params![claimed_root, source, refusal_class, now],
         )?;
         Ok(())
+    }
+
+    /// Commits a verified introduction (design §8.2 step 4, ADR-0015): pins the
+    /// full identity tuple and verification keys under `(root, epoch)` as one
+    /// compare-and-swap. A removal that raced the handshake fails the CAS
+    /// (`EpochChanged`); identical re-introduction is idempotent; changed
+    /// material for a pinned peer suspends per §8.4, never re-pins; and until
+    /// the agent-id key cutover, a second root behind an existing name is
+    /// refused (`NameCollision`), exactly like the invitation path's guard.
+    /// `keys` are the counterparty's verification keys as (purpose, public).
+    pub fn commit_introduced_peer(
+        &self,
+        root_thumbprint: &str,
+        expected_epoch: u64,
+        peer: &StoredPeer,
+        keys: &[(String, [u8; 32])],
+        now: i64,
+    ) -> Result<IntroCommitOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let epoch: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT epoch FROM peer_imports
+                 WHERE root_thumbprint = ?1 AND tombstoned_at IS NULL",
+                [root_thumbprint],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(epoch) = epoch else {
+            return Ok(IntroCommitOutcome::NotImported);
+        };
+        if epoch.max(0) as u64 != expected_epoch {
+            return Ok(IntroCommitOutcome::EpochChanged);
+        }
+
+        let agent_id = peer.identity.agent_id.clone();
+        let was_pinned = if let Some(existing) = self.get_peer(&agent_id)? {
+            let existing_root: String = self.conn.query_row(
+                "SELECT root_thumbprint FROM peers WHERE agent_id = ?1",
+                [agent_id.as_str()],
+                |r| r.get(0),
+            )?;
+            if !existing_root.is_empty() && existing_root != root_thumbprint {
+                return Ok(IntroCommitOutcome::NameCollision);
+            }
+            if let Some(reason) =
+                akson_pairing::lifecycle::detect_change(&existing.identity, &peer.identity)
+            {
+                self.conn.execute(
+                    "UPDATE peers SET status = ?2 WHERE agent_id = ?1",
+                    params![agent_id, PeerStatus::Suspended(reason).as_column()],
+                )?;
+                audit::append(&tx, now, "peer.suspended", &agent_id)?;
+                tx.commit()?;
+                return Ok(IntroCommitOutcome::Suspended(format!("{reason:?}")));
+            }
+            // Identical material. A suspended peer stays suspended — review is
+            // the operator's, not the wire's.
+            if matches!(self.peer_status(&agent_id)?, Some(PeerStatus::Suspended(_))) {
+                return Ok(IntroCommitOutcome::Suspended("previously-suspended".to_owned()));
+            }
+            true
+        } else {
+            false
+        };
+
+        self.put_peer_status(peer, PeerStatus::Active)?;
+        self.conn.execute(
+            "UPDATE peers SET status = 'active', root_thumbprint = ?2 WHERE agent_id = ?1",
+            params![agent_id, root_thumbprint],
+        )?;
+        let issuer = peer.identity.issuer.clone().unwrap_or_default();
+        let tls_fp = &peer.identity.tls_cert.value;
+        for (purpose, public_key) in keys {
+            self.conn.execute(
+                "INSERT INTO peer_keys
+                     (tls_fingerprint, purpose, agent_id, issuer, public_key, updated_at, root_thumbprint)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(tls_fingerprint, purpose) DO UPDATE SET
+                     agent_id = excluded.agent_id,
+                     issuer = excluded.issuer,
+                     public_key = excluded.public_key,
+                     updated_at = excluded.updated_at,
+                     root_thumbprint = excluded.root_thumbprint",
+                params![
+                    tls_fp,
+                    purpose,
+                    agent_id,
+                    issuer,
+                    public_key.as_slice(),
+                    now,
+                    root_thumbprint
+                ],
+            )?;
+        }
+        audit::append(&tx, now, "peer.introduced", &agent_id)?;
+        tx.commit()?;
+        Ok(if was_pinned {
+            IntroCommitOutcome::AlreadyActive
+        } else {
+            IntroCommitOutcome::Committed
+        })
     }
 
     /// The knock log, most recent first — what `akson peer knocks` renders.

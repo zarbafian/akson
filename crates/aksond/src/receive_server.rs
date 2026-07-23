@@ -13,8 +13,9 @@
 //! pairing) is the remaining piece; the resolver seam keeps this server testable
 //! and correct regardless of where those keys are stored.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,10 +37,12 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
+use akson_pairing::introduction::{COMPLETE_PATH, HELLO_PATH, MAX_INTRODUCTION_BODY};
 use akson_transport::limits::{
     BODY_READ_TIMEOUT, HANDSHAKE_TIMEOUT, HEADER_READ_TIMEOUT, MAX_CONCURRENT_CONNECTIONS,
 };
 
+use crate::introduce::{respond_introduction, IntroIdentity, PendingIntro};
 use crate::receive_http::{handle_receive, HttpRequest, ReceiveConfig};
 
 /// The A2A request-body cap (design §9.1 — bounded before allocation).
@@ -113,6 +116,12 @@ pub struct ReceiveState<R: PeerResolver> {
     /// This endpoint's requester-outcome key. `Some` iff the endpoint accepts
     /// delivered results (acts as a requester); `None` accepts only proposals.
     outcome_key: Option<akson_crypto::keypair::PurposeKey>,
+    /// Introduction service (design §8.2 step 4, ADR-0015), when this endpoint
+    /// accepts first contact over identity tokens.
+    intro: Option<Arc<IntroIdentity>>,
+    /// Fixed-window per-source limiter for the introduction route — the
+    /// listener-level ceiling in front of the store-level admission gate.
+    intro_rate: Mutex<HashMap<IpAddr, (u32, i64)>>,
 }
 
 impl<R: PeerResolver> ReceiveState<R> {
@@ -130,6 +139,8 @@ impl<R: PeerResolver> ReceiveState<R> {
             required_extensions,
             interface_url,
             outcome_key: None,
+            intro: None,
+            intro_rate: Mutex::new(HashMap::new()),
         }
     }
 
@@ -138,6 +149,69 @@ impl<R: PeerResolver> ReceiveState<R> {
     pub fn accepting_results(mut self, outcome_key: akson_crypto::keypair::PurposeKey) -> Self {
         self.outcome_key = Some(outcome_key);
         self
+    }
+
+    /// Also serve first-contact introductions (design §8.2 step 4) as this
+    /// identity.
+    pub fn with_introduction(mut self, identity: Arc<IntroIdentity>) -> Self {
+        self.intro = Some(identity);
+        self
+    }
+
+    /// Introduction requests: bound the source, lock the store, hand to the
+    /// responder. Every pre-verification failure is the one generic refusal.
+    #[allow(clippy::too_many_arguments)]
+    fn respond_intro(
+        &self,
+        source: IpAddr,
+        peer_fp: Option<&str>,
+        exporter: Option<&[u8; 32]>,
+        pending: &PendingIntro,
+        path: &str,
+        body: &[u8],
+        wall_now_unix: i64,
+    ) -> (u16, String, Vec<u8>) {
+        let Some(intro) = &self.intro else {
+            return problem_403();
+        };
+        if !self.intro_rate_admit(source, wall_now_unix) {
+            return problem_403();
+        }
+        let store = match self.store.lock() {
+            Ok(s) => s,
+            Err(_) => return problem_500(),
+        };
+        respond_introduction(
+            intro,
+            &store,
+            pending,
+            path,
+            &source.to_string(),
+            peer_fp,
+            exporter,
+            body,
+            wall_now_unix,
+        )
+    }
+
+    /// Fixed-window limiter: a small hello budget per source per minute, with
+    /// the map pruned past a cap so source-rotating scanners cannot grow it.
+    fn intro_rate_admit(&self, source: IpAddr, now: i64) -> bool {
+        const WINDOW_SECS: i64 = 60;
+        const MAX_PER_WINDOW: u32 = 10;
+        const MAX_TRACKED: usize = 1024;
+        let Ok(mut map) = self.intro_rate.lock() else {
+            return false;
+        };
+        if map.len() > MAX_TRACKED {
+            map.retain(|_, (_, start)| now - *start < WINDOW_SECS);
+        }
+        let entry = map.entry(source).or_insert((0, now));
+        if now - entry.1 >= WINDOW_SECS {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        entry.0 <= MAX_PER_WINDOW
     }
 
     /// Resolves the peer, then runs the receive handler — the synchronous core the
@@ -253,7 +327,7 @@ async fn serve_with_limits<R: PeerResolver>(
     // connection so a flood cannot spawn unbounded tasks (§9.1).
     let limiter = Arc::new(Semaphore::new(max_concurrent));
     loop {
-        let (tcp, _) = listener.accept().await?;
+        let (tcp, peer_addr) = listener.accept().await?;
         // Wait for a concurrency slot; the semaphore is never closed, so this only
         // errors on a bug — drop the connection if so.
         let Ok(permit) = limiter.clone().acquire_owned().await else {
@@ -274,8 +348,21 @@ async fn serve_with_limits<R: PeerResolver>(
                 .peer_certificates()
                 .and_then(|certs| certs.first())
                 .map(|cert| Fingerprint::cert_sha256(cert.as_ref()).value);
+            // The introduction's session facts (ADR-0015): this connection's
+            // RFC 9266 exporter, and one pending-hello slot per connection —
+            // one authentication instance, per RFC 9266 §4.1.
+            let exporter = akson_transport::tls::channel_binding(tls.get_ref().1);
+            let pending: Arc<PendingIntro> = Arc::new(Mutex::new(None));
             let svc = service_fn(move |req| {
-                handle(state.clone(), peer_fp.clone(), req, body_read_timeout)
+                handle(
+                    state.clone(),
+                    peer_fp.clone(),
+                    peer_addr.ip(),
+                    exporter,
+                    pending.clone(),
+                    req,
+                    body_read_timeout,
+                )
             });
             // header_read_timeout bounds each request's head and re-arms while a
             // keep-alive connection waits for the next request, so a slow-header
@@ -293,10 +380,22 @@ async fn serve_with_limits<R: PeerResolver>(
 async fn handle<R: PeerResolver>(
     state: Arc<ReceiveState<R>>,
     peer_fp: Option<String>,
+    source: IpAddr,
+    exporter: Option<[u8; 32]>,
+    pending: Arc<PendingIntro>,
     req: Request<Incoming>,
     body_read_timeout: Duration,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().as_str().to_owned();
+    // The introduction routes are matched by path BEFORE the A2A peer
+    // resolver, with their own (much smaller) body cap (ADR-0015).
+    let path = req.uri().path().to_owned();
+    let is_intro = path == HELLO_PATH || path == COMPLETE_PATH;
+    let body_cap = if is_intro {
+        MAX_INTRODUCTION_BODY
+    } else {
+        MAX_RECEIVE_BODY
+    };
     let content_type = header(req.headers(), CONTENT_TYPE).unwrap_or_default();
     let a2a_version = header_named(req.headers(), "a2a-version");
     let content_digest = header_named(req.headers(), "content-digest");
@@ -313,7 +412,7 @@ async fn handle<R: PeerResolver>(
     // it so a slow-body sender is cut off (408) rather than holding the connection.
     let body = match timeout(
         body_read_timeout,
-        Limited::new(req.into_body(), MAX_RECEIVE_BODY).collect(),
+        Limited::new(req.into_body(), body_cap).collect(),
     )
     .await
     {
@@ -323,16 +422,28 @@ async fn handle<R: PeerResolver>(
     };
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
-    let (code, content_type_out, out_body) = state.respond(
-        peer_fp.as_deref(),
-        &method,
-        &content_type,
-        a2a_version.as_deref(),
-        content_digest.as_deref(),
-        &activated,
-        &body,
-        now,
-    );
+    let (code, content_type_out, out_body) = if is_intro {
+        state.respond_intro(
+            source,
+            peer_fp.as_deref(),
+            exporter.as_ref(),
+            &pending,
+            &path,
+            &body,
+            now,
+        )
+    } else {
+        state.respond(
+            peer_fp.as_deref(),
+            &method,
+            &content_type,
+            a2a_version.as_deref(),
+            content_digest.as_deref(),
+            &activated,
+            &body,
+            now,
+        )
+    };
 
     let mut out = Response::new(Full::new(Bytes::from(out_body)));
     *out.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

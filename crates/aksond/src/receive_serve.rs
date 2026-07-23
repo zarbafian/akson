@@ -33,6 +33,8 @@ pub enum ReceiveServeError {
     Cert(#[from] akson_crypto::cert::CertError),
     #[error("tls: {0}")]
     Tls(String),
+    #[error("introduction identity: {0}")]
+    Identity(String),
 }
 
 /// Serves the mTLS A2A receive listener on `addr` until it errors (design §9.1),
@@ -47,6 +49,12 @@ pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), R
         .map_err(|e| ReceiveServeError::Tls(e.to_string()))?;
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
+    // First contact over identity tokens is served on this same listener
+    // (design §8.2 step 4): route-matched before the A2A resolver, gated by
+    // the operator's imports.
+    let intro = crate::introduce::IntroIdentity::from_state(&state)
+        .map_err(|p| ReceiveServeError::Identity(p.title))?;
+
     // The daemon acts as both performer (receives proposals) and requester
     // (accepts delivered results and signs its outcome), so it accepts results too.
     let receive_state = Arc::new(
@@ -57,7 +65,8 @@ pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), R
             BTreeSet::new(),
             state.config().interface_url.clone(),
         )
-        .accepting_results(state.identity().purpose_key(KeyPurpose::RequesterOutcome)),
+        .accepting_results(state.identity().purpose_key(KeyPurpose::RequesterOutcome))
+        .with_introduction(Arc::new(intro)),
     );
 
     let runtime = tokio::runtime::Builder::new_current_thread()

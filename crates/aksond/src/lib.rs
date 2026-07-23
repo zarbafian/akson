@@ -24,6 +24,7 @@ mod control;
 mod control_dispatch;
 mod decision;
 mod delivery;
+mod introduce;
 mod issue;
 mod keys;
 mod outcome;
@@ -49,6 +50,10 @@ pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
 pub use decision::{decide, DecisionRecord};
 pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
+pub use introduce::{
+    dial_introduction, intro_profile, respond_introduction, IntroIdentity, IntroduceError,
+    PendingIntro,
+};
 pub use issue::{issue_for_accepted, IssueConfig};
 pub use keys::IdentityKeys;
 pub use outcome::finalize_result;

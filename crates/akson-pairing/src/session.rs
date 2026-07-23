@@ -220,7 +220,15 @@ pub fn to_peer_identity(
     verified: &VerifiedAccepter,
     extended_card: &AgentCard,
 ) -> Result<PeerIdentity, PeerError> {
-    let bindings = &verified.bindings;
+    peer_identity_from(&verified.bindings, extended_card)
+}
+
+/// [`to_peer_identity`] over bare verified bindings — the introduction
+/// (ADR-0015) verifies without a [`VerifiedAccepter`] wrapper and lands here.
+pub fn peer_identity_from(
+    bindings: &KeyBindingSet,
+    extended_card: &AgentCard,
+) -> Result<PeerIdentity, PeerError> {
     let card_value = serde_json::to_value(extended_card)?;
     let key_binding_value = serde_json::to_value(bindings)?;
 
