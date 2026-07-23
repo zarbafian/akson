@@ -346,3 +346,61 @@ fn removal_between_flights_refuses_the_stale_handshake() {
     );
     assert_eq!((code, close), (403, true), "one instance per connection");
 }
+
+/// The public discovery surface (design §8.2): an ANONYMOUS client — no
+/// certificate at all — can fetch `/.well-known/agent-card.json` and nothing
+/// else; the served card is the signed, profile-valid one.
+#[tokio::test]
+async fn well_known_card_is_served_to_anonymous_clients_and_nothing_else_is() {
+    use akson_transport::tls::discovery_client_config;
+    use http_body_util::{BodyExt, Empty};
+    use hyper_util::rt::TokioIo;
+    use tokio_rustls::rustls::pki_types::ServerName;
+    use tokio_rustls::TlsConnector;
+
+    let store_b = store();
+    let port = serve_responder(identity("bob", 5), store_b.clone()).await;
+
+    let connect = || async {
+        let config = discovery_client_config().unwrap();
+        let connector = TlsConnector::from(Arc::new(config));
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let tls = connector
+            .connect(ServerName::try_from("127.0.0.1").unwrap(), tcp)
+            .await
+            .unwrap();
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        sender
+    };
+
+    // The card is served, parses, and passes the same profile bar peers apply.
+    let mut sender = connect().await;
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri("/.well-known/agent-card.json")
+        .body(Empty::<bytes::Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let card: akson_proto::v1::AgentCard = serde_json::from_slice(&body).unwrap();
+    assert_eq!(card.name, "bob");
+    akson_proto::profile::validate_agent_card(&card, &intro_profile()).unwrap();
+
+    // The SAME anonymous client reaching for the work surface is refused.
+    let mut sender = connect().await;
+    let req = hyper::Request::builder()
+        .method("POST")
+        .uri("/a2a")
+        .body(Empty::<bytes::Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "anonymous A2A must refuse");
+}

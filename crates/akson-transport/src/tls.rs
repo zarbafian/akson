@@ -216,6 +216,15 @@ impl ClientCertVerifier for AcceptAnyClientVerifier {
         &[]
     }
 
+    /// Anonymous connections are permitted at TLS: the receive server's
+    /// application-layer gates refuse everything except the public
+    /// `/.well-known/agent-card.json` for a client with no certificate
+    /// (design §8.2 — the public card is served to anyone, and is the one
+    /// thing that is).
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
     fn verify_client_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -352,6 +361,26 @@ pub fn introduction_client_config(
 pub fn channel_binding<Data>(conn: &rustls::ConnectionCommon<Data>) -> Option<[u8; 32]> {
     conn.export_keying_material([0u8; 32], b"EXPORTER-Channel-Binding", None)
         .ok()
+}
+
+/// A client config for fetching a stranger's PUBLIC discovery surface
+/// (`/.well-known/agent-card.json`, design §8.2) before any import exists:
+/// no client certificate, any time-valid server certificate accepted. The
+/// fetched card is display-only until an introduction verifies it against an
+/// imported root — never a trust input on its own.
+pub fn discovery_client_config() -> Result<ClientConfig, TlsError> {
+    let provider = provider();
+    let verifier = Arc::new(AcceptAnyServerVerifier {
+        provider: provider.clone(),
+    });
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    config.resumption = rustls::client::Resumption::disabled();
+    config.enable_early_data = false;
+    Ok(config)
 }
 
 /// The bootstrap server config (design §8.2): presents the inviter's `cert`

@@ -48,6 +48,10 @@ use crate::receive_http::{handle_receive, HttpRequest, ReceiveConfig};
 /// The A2A request-body cap (design §9.1 — bounded before allocation).
 const MAX_RECEIVE_BODY: usize = 1024 * 1024;
 
+/// The public discovery document (design §8.2): the minimal signed card,
+/// served to ANYONE — the one thing an anonymous connection can reach.
+const WELL_KNOWN_CARD_PATH: &str = "/.well-known/agent-card.json";
+
 /// The pinned peer resolved from a TLS leaf-cert fingerprint.
 pub struct PeerContext {
     /// The peer's identity — the contract's `requester` must equal it.
@@ -199,6 +203,20 @@ impl<R: PeerResolver> ReceiveState<R> {
             body,
             wall_now_unix,
         )
+    }
+
+    /// The public `/.well-known/agent-card.json` (design §8.2): the same
+    /// minimal signed card the introduction exchanges — no peer or processor
+    /// data — served without authentication. Display-only for the fetcher
+    /// until an introduction verifies it against an imported root.
+    fn public_card(&self) -> (u16, String, Vec<u8>) {
+        match &self.intro {
+            Some(intro) => match serde_json::to_vec(&intro.signed_card) {
+                Ok(body) => (200, "application/json".to_owned(), body),
+                Err(_) => problem_500(),
+            },
+            None => problem(404, "no-card", "this endpoint serves no public card"),
+        }
     }
 
     /// Whether a client certificate resolves to an admitted peer — the cheap
@@ -416,6 +434,18 @@ async fn handle<R: PeerResolver>(
     let path = req.uri().path().to_owned();
     let is_intro = path == HELLO_PATH || path == COMPLETE_PATH;
     let now = OffsetDateTime::now_utc().unix_timestamp();
+
+    // The public discovery document — the ONE anonymous surface (§8.2). It
+    // shares the introduction rate limiter and always closes: an anonymous
+    // fetcher gets the card, never a resident connection.
+    if method == "GET" && path == WELL_KNOWN_CARD_PATH {
+        if !state.intro_rate_admit(source, now) {
+            let (code, ct, body) = intro_refused();
+            return Ok(close_response(code, &ct, body));
+        }
+        let (code, ct, body) = state.public_card();
+        return Ok(close_response(code, &ct, body));
+    }
 
     // Pre-body gates (slice-2 security review): a refused caller must not be
     // able to force the body read/allocation first.
