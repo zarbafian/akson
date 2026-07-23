@@ -911,7 +911,10 @@ mod tests {
         let token_str = token_b["token"].as_str().unwrap();
         assert!(token_str.starts_with("akson1"));
         assert_eq!(token_str.len(), 65);
-        akson_crypto::token::decode_token(token_str).expect("own token decodes");
+        assert!(
+            akson_crypto::token::decode_token(token_str).is_ok(),
+            "own token decodes"
+        );
 
         // A imports B's token under a label A chose.
         let added = a
