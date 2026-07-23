@@ -49,8 +49,9 @@ authority is never touched by Akson; a **separate, additive** layer governs only
 | T9 | SSRF / DNS rebinding via a processor origin | Origin must be `https` + on the allowlist; the **resolved address is re-checked** before dialing (global-unicast only unless a local processor opts in), so a rebind after resolution is refused. (§13.1; `akson-broker/address.rs`) |
 | T10 | Replay of a prior request → duplicate work | Idempotency keyed on a keyed HMAC over the covered-value tuple; an exact replay returns the original saved response, a changed covered value is a `Conflict`. (§9.2; `delivery.rs`) |
 | T11 | Receiving a task → side effects before the operator decides | The receive path is handed only a `&Store` (no transport/processor/fs), so it *cannot* call a model, dial out, run a worker, or read a file. Receiving produces an **inert** task; execution needs a separate explicit decision. (§10.2; no-effect proofs) |
-| T12 | Hijack a peer identity at pairing / silent key swap | Pairing is a consume-once ledger with proof-of-possession (verify_strict) over a transcript binding both TLS fps + the key-binding digest; a re-pair that would overwrite an existing peer is refused unless the operator removes it first. (§8.1–8.4; `akson-pairing`) |
+| T12 | Hijack a peer identity at pairing / silent key swap | Identity is committed **out of band before contact**: the imported token pins the root key (ADR-0013), and the introduction proves possession of every advertised key over a transcript bound to both roots, both TLS fps, the key-binding digest, and the live session's RFC 9266 exporter (ADR-0015). Commit is a CAS on (root, epoch); removal tombstones the epoch so a racing introduction cannot resurrect a peer; changed material for an active peer suspends for review (§8.4), never re-pins. (§8.1–8.4; ADR-0013/0015) |
 | T13 | Rollback the encrypted state to replay consumed nonces | State-generation counter vs. an external checkpoint (§15.5). **Residual:** interim custody (ADR-0009) has no external counter, so rollback is *undetectable* and the daemon degrades to operate-but-flagged rather than block. |
+| T14 | Steal the identity root key → impersonate the endpoint at first contact | The root (Agent Card JWS) key is the token's sole commitment, so its private half **alone** lets an attacker introduce as that identity to any token holder — minting fresh subkeys and a fresh TLS certificate. A deliberate concentration (ADR-0013), accepted for v1 under the same interim sealed custody as every other key (see residuals); recovery is a new root plus out-of-band token re-exchange (§8.4 re-pair). Post-activation, an unexpected root-signed change still suspends (§8.4, T12). |
 
 ## Assumptions and residual risks
 
@@ -73,8 +74,18 @@ authority is never touched by Akson; a **separate, additive** layer governs only
   even a shell reached via `execve` is inert (it cannot fork to run a command).
   (`SeccompPolicy::adapter_worker_baseline`, validated live against a confined
   adapter.)
-- **Denial of service by a peer** (flooding pairing/receive) is rate-limited and
-  body-capped, but sustained resource pressure is not fully modeled here.
+- **Denial of service by a peer** (flooding introduction/receive) is rate-limited
+  and body-capped — the introduction's admission gate holds unknown callers to a
+  table lookup before any signature work (ADR-0015) — but sustained resource
+  pressure is not fully modeled here.
+- **Extended-card disclosure is bounded by relationship-graph secrecy, not by
+  proof.** In the introduction the responder discloses its card after the dialer
+  merely *claims* an imported root — responder-proves-first is what protects the
+  dialer from hijacked endpoints, and someone must go first (ADR-0015). So anyone
+  who knows your address and the thumbprint of a root you imported (neither is
+  secret) can retrieve your extended card. The exposure is metadata-class —
+  identity and public keys you would show any peer — and every such attempt lands
+  in the knock log.
 - **The broker enforces a per-work-order *operation count*, an *egress allowlist*,
   the *exact* approved processor, a *response-size* cap, and a *wall-clock* limit —
   but not a monetary ceiling.** `max_cost_microusd` is recorded, not enforced:

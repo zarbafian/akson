@@ -353,17 +353,18 @@ Polling, retry, evidence validation, and progress display happen automatically
 under <code>--wait</code>. Advanced commands remain available for scripting,
 debugging, and export; users do not need them to complete a review.
 
-An invitation secret is accepted through a mode-0600 file, standard input, or a
-QR flow. The CLI MUST NOT encourage placing it in argv, a URL query string, a
-shell history entry, or logs.
+An identity token is public (§8.2): it may be printed, pasted in argv, sent
+in chat, or scanned from a QR code without a confidentiality concern. The
+CLI's duty is entry-time integrity — checksum, case, length, and version
+validation before anything is stored (ADR-0013).
 
 <code>akson serve</code> never opens a router port or publishes an address
 implicitly. It explains whether the listener is local-only, private-network, or
 public; <code>akson endpoint check</code> verifies the advertised address,
-certificate, Agent Card, and reachability from the intended network. The
-pairing invitation states the connection direction and which endpoint must be
-reachable. <code>akson pair diagnose</code> explains firewall, DNS, certificate,
-and private-network failures without printing the bearer invitation.
+certificate, Agent Card, and reachability from the intended network. Either
+paired side may dial the introduction; the dialing side needs the peer's
+routing hint to point at a reachable address. <code>akson peer diagnose</code>
+explains firewall, DNS, certificate, and private-network failures.
 
 The simple text-message path may exist for diagnostics and conversation, but it
 is not the release milestone. The evidence-backed task loop is the product
@@ -642,7 +643,10 @@ full Agent Card digest for display and change history
 ~~~
 
 Not every profile has a federated issuer, but the tuple remains issuer-qualified
-and typed. Local aliases are presentation only.
+and typed. Local aliases are presentation only; the operator-assigned peer
+label of personal pairing (§8.2) is such an alias. On the wire, party
+identity is the issuer-qualified pair plus the identity root key's RFC 7638
+thumbprint as the relationship key (ADR-0014).
 
 Transport identity, Agent Card identity, task-statement signer, local authority
 issuer, executor identity, processor identity, and evidence signer are separate
@@ -662,65 +666,72 @@ Public JWK fingerprints use RFC 7638. A non-JWK public key uses SHA-256 over
 DER SubjectPublicKeyInfo. Displays include the algorithm and full digest;
 truncation is presentation only and never used for matching.
 
-### 8.2 Personal pairing
+### 8.2 Personal pairing — identity tokens
 
-Personal pairing uses standard TLS and X.509 with explicit pinning:
+Personal pairing uses standard TLS and X.509 with explicit pinning, rooted
+in a public identity token exchanged out of band (ADR-0013, ADR-0015;
+elaborated in design/2026-07-23-identity-token-pairing.md):
 
-1. The inviting endpoint creates a cryptographically random 256-bit,
-   single-use bearer secret, an expiry, a maximum attempt count, its endpoint,
-   its full TLS certificate fingerprint, and its Agent Card JWS key
-   fingerprint.
-2. The invitation is transferred out of band as a protected file or QR code.
-   The daemon stores only a verifier for the secret.
-3. The accepting endpoint opens a server-authenticated TLS 1.3 bootstrap
-   connection pinned to the invitation fingerprint.
-4. It sends the 256-bit secret as an HTTP Bearer credential inside that pinned
-   TLS connection and presents its generated endpoint certificate and signed
-   extended Agent Card.
-5. The extended card’s required Akson identity/key-binding AgentExtension
-   carries the Agent Card JWS, task-statement, and evidence verification keys,
-   their RFC 7638 thumbprints, allowed purposes, generation, and validity. The
-   inviter verifies the card, key bindings, and proof of possession.
-6. The inviter atomically consumes the secret into a pending-pair record and
-   returns its own equivalently signed extended Agent Card and key bindings.
-7. Both endpoints verify and pin the symmetric identity records and display the
-   full identity summary. Local confirmation changes the pending record into an
-   active connection. All subsequent A2A traffic requires mutual TLS.
+1. Each endpoint holds one identity root key — its Agent Card JWS key. Its
+   identity token (bech32m, HRP `akson`, a version byte plus the 32-byte
+   root public key; ADR-0013) is public: an identity commitment, not a
+   bearer credential. It is presented with an optional `@host:port` routing
+   suffix that sits outside the checksum and carries no authority.
+2. Two operators exchange tokens through any channel whose integrity they
+   trust, once per relationship. Possession grants nothing; the exchange
+   needs integrity, not confidentiality.
+3. Import is the local trust decision. `akson peer add <token> <label>`
+   validates checksum and version, stores a provisional import keyed by the
+   root key's RFC 7638 thumbprint with a relationship epoch, and binds the
+   operator-chosen local label — a presentation-only alias (§8.1) that
+   never crosses the wire. An endpoint never creates peer state for, nor
+   advances past the admission gate with, a root its operator has not
+   imported.
+4. First contact runs the introduction (ADR-0015) on the receive listener.
+   A hello names the target and claimed root thumbprints and is refused
+   generically, before any signature work, unless the claimed root is
+   imported with a live epoch. The responder then proves first: key
+   bindings, its signed extended Agent Card (profile-validated), and proof
+   of possession for every advertised key, over a transcript bound to both
+   roots, both certificates, and this TLS session's RFC 9266 exporter.
+   Only after verifying that proof against the imported commitment does the
+   dialer disclose its own equivalent material. Commitment is a
+   compare-and-swap on (root thumbprint, epoch); the connection then
+   closes, and all subsequent A2A traffic runs mutual TLS against the newly
+   pinned certificates.
+5. Activation is automatic on introduction commit. The operator's yes was
+   the import; the verified issuer-qualified tuple and root thumbprint are
+   reviewed on the risk card at approval time, and §8.4 suspension covers
+   any later identity change. Peer states are imported, active, and
+   suspended.
+6. Refused introductions are recorded in a local, rate-limited knock log
+   (claimed root, source, time) — queryable, never pushed.
+7. Removal tombstones the relationship and bumps its epoch in one
+   transaction, so a racing introduction cannot commit across the bump.
+   Re-adding the same root starts a new epoch and requires a fresh
+   introduction; traffic signed under an old epoch is refused.
 
-The bootstrap endpoint is separate from the A2A endpoint, aggressively rate
-limited, small, and disabled when no invitation is active. Invitation secrets
-never become long-lived peer keys. The daemon compares the high-entropy
-secret’s stored verifier in constant time, consumes it in the same transaction
-that creates the pending peer, redacts the Authorization header from every log,
-and permits no redirect or proxy termination on the bootstrap path.
-
-Pairing is retry-safe, not exactly once. Until invitation expiry, the inviter
-retains the consumed-secret verifier, a digest of the canonical presented
-certificate/key/card transcript, and the encrypted serialized pending-pair
-response. An exact retry with the same secret and transcript returns the same
-pending peer and response. The same secret with a changed transcript is
-rejected as an attack. The acceptor persists and reuses its exact bootstrap
-request until a response or expiry. No second peer can be created.
-
-The invitation is a bearer credential: anyone who obtains it before use can
-become the pending peer. It therefore travels through an authenticated,
-confidential channel or an in-person QR flow. For a remote channel whose
-authenticity is uncertain, users compare the displayed transcript fingerprint
-through a second trusted channel before activation.
+The token travels in the open, so the residual attack is substitution in
+the out-of-band channel. For a channel whose integrity is uncertain, users
+compare the displayed full root-key fingerprint through a second trusted
+channel; a substituted token fails closed at introduction either way — it
+can only ever pin the substituted identity, never impersonate the intended
+one.
 
 Akson does not invent a challenge-response protocol for a shorter human code. If
 such a flow is later required, an ADR must select a standardized, reviewed PAKE
 and define its transcript and identity bindings.
 
 Self-issued X.509 endpoint certificates are acceptable in the personal profile
-because the full certificate is pinned out of band. They are not treated as
+because each certificate is bound to the out-of-band-committed root key by the
+introduction's verified card and pinned from then on. They are not treated as
 public-PKI identities.
 
 The public <code>/.well-known/agent-card.json</code> is a minimal signed A2A
 card containing no private peer or processor data. It advertises mTLS and the
 required Akson extensions, and sets
 <code>capabilities.extendedAgentCard: true</code>. The signed extended card
-exchanged during bootstrap and later retrieved through the standard
+exchanged during the introduction and later retrieved through the standard
 authenticated GetExtendedAgentCard operation carries the purpose-bound
 identity/key projection. Akson never substitutes the public card for that
 authenticated projection.
@@ -770,14 +781,14 @@ report and audit.
 
 ### 8.5 Time and expiry
 
-Expiry is an authority boundary. Within one boot, invitations, contracts, work
-orders, and processor calls use monotonic deadlines. Across boots, Akson stores
-the last trusted wall-clock checkpoint and database generation in the OS
-keystore or HSM, outside database backups.
+Expiry is an authority boundary. Within one boot, introductions, contracts,
+work orders, and processor calls use monotonic deadlines. Across boots, Akson
+stores the last trusted wall-clock checkpoint and database generation in the
+OS keystore or HSM, outside database backups.
 
 The default hard maximum lifetimes are:
 
-- invitation: 15 minutes;
+- an in-flight introduction handshake: 2 minutes;
 - unaccepted contract revision: 24 hours;
 - one-shot work order: 1 hour;
 - one processor call: 30 minutes.
@@ -1982,7 +1993,8 @@ Deliver:
 - <code>aksond</code>, CLI, local inbox/risk card, encrypted SQLite-backed state,
   OS keystore integration, outbox, inbox, dedupe, and audit;
 - personal and isolated profiles;
-- invitation, pair, re-pair, key-change suspension, and removal;
+- token import, introduction, epoch-bounded re-pair, key-change suspension,
+  and removal;
 - direct A2A over TLS 1.3 with mutual authentication;
 - <code>code_review.v1</code> using bounded text inputs;
 - proposal, decision, work order, clean attempt, result, evidence-validation,
@@ -2100,8 +2112,10 @@ Groups require formal modeling and independent protocol review before release.
 
 ### 20.2 Pairing and transport
 
-- Entropy, expiry, attempt-limit, transactional consumption, exact-transcript
-  retry, changed-transcript rejection, redaction, and QR/file invitation tests.
+- Token decode (checksum, mixed case, over-length, unknown version),
+  admission-gate-before-signature ordering, responder-first disclosure,
+  exporter/transcript binding, epoch CAS and tombstone races, knock-log
+  rate limiting, and QR/token entry tests.
 - Active MITM, wrong certificate, changed certificate, wrong trust domain,
   expired certificate, revoked peer, and unexpected Agent Card tests.
 - Reject TLS below 1.3, 0-RTT, redirects, plaintext, anonymous clients, invalid
