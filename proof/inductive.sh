@@ -19,9 +19,6 @@ run() { # run <label> <apalache-args...>
   fi
 }
 
-run "PairingLedgerInd     base       " --init=Init    --inv=IndInv    --length=0 specs/PairingLedgerInd.tla
-run "PairingLedgerInd     consecution" --init=IndInit --inv=IndInv    --length=1 specs/PairingLedgerInd.tla
-run "PairingLedgerInd     implication" --init=IndInit --inv=TargetInv --length=0 specs/PairingLedgerInd.tla
 
 run "RollbackAdversaryInd base       " --cinit=ConstInit --init=Init    --inv=IndInv    --length=0 specs/RollbackAdversaryInd.tla
 run "RollbackAdversaryInd consecution" --cinit=ConstInit --init=IndInit --inv=IndInv    --length=1 specs/RollbackAdversaryInd.tla

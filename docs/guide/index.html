@@ -176,7 +176,7 @@ sandbox that <em>runs</em> a peer's task needs a few kernel features.</p>
   </tr>
   <tr>
     <td>Pair across two hosts</td>
-    <td>Mutually reachable pair/receive addresses — a LAN, a VPN, or an exposed
+    <td>A mutually reachable receive address — a LAN, a VPN, or an exposed
         endpoint. There is no relay, mailbox, or NAT traversal; delivery retries only
         while both ends are reachable.</td>
   </tr>
@@ -242,7 +242,7 @@ export PATH="$PWD/target/release:$PATH"</code></pre>
 <pre><code>export XDG_RUNTIME_DIR=/tmp/bob AKSON_DATA_DIR=/tmp/bob-data
 export AKSON_ISSUER=orgB AKSON_AGENT=bob
 export AKSON_INTERFACE_URL=https://127.0.0.1:18444/a2a
-export AKSON_RECEIVE_ADDR=127.0.0.1:18444 AKSON_PAIR_ADDR=127.0.0.1:19444
+export AKSON_RECEIVE_ADDR=127.0.0.1:18444
 export AKSON_WORKER_CMD='[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" &gt; /output/response'
 mkdir -p "$XDG_RUNTIME_DIR"
 aksond serve</code></pre>
@@ -255,7 +255,7 @@ aksond serve</code></pre>
 <pre><code>export XDG_RUNTIME_DIR=/tmp/alice AKSON_DATA_DIR=/tmp/alice-data
 export AKSON_ISSUER=orgA AKSON_AGENT=alice
 export AKSON_INTERFACE_URL=https://127.0.0.1:18443/a2a
-export AKSON_RECEIVE_ADDR=127.0.0.1:18443 AKSON_PAIR_ADDR=127.0.0.1:19443
+export AKSON_RECEIVE_ADDR=127.0.0.1:18443
 mkdir -p "$XDG_RUNTIME_DIR"
 aksond serve</code></pre>
 </div>
@@ -283,20 +283,33 @@ bob   whoami</code></pre>
 
 <h3>4 · Pair them, once</h3>
 <p>
-  Alice mints an invitation; bob accepts it. Then each confirms the other, which is the
-  moment a human says <em>yes, this is really them</em>. From here on both sides pin the
-  other's certificate by fingerprint — not by CA, not by DNS.
+  Each endpoint has one public <strong>identity token</strong> — a single
+  checksummed line. You exchange the two lines over any channel whose
+  integrity you trust, and each operator imports the other's under a label
+  <em>they</em> choose. The import is the moment a human says
+  <em>yes, this is really them</em>; the channel comes up by itself on first
+  contact, mutually verified against the imported identities — not by CA,
+  not by DNS.
 </p>
 
 <div class="cmd host">
   <div class="cmd-head"><span class="who">terminal 3 · driver</span><button class="copy">Copy</button></div>
-<pre><code>alice pair invite /tmp/inv.json   <span class="c"># hand this to bob however you like</span>
-bob   pair accept /tmp/inv.json
+<pre><code>alice token                              <span class="c"># akson1…@127.0.0.1:18443 — hand the line to bob</span>
+bob   token                              <span class="c"># akson1…@127.0.0.1:18444 — hand the line to alice</span>
 
-alice peer confirm bob
-bob   peer confirm alice
+bob   peer add &lt;alice's line&gt; alice      <span class="c"># bob's yes, under a label bob picks</span>
+alice peer add &lt;bob's line&gt;   bob        <span class="c"># alice's yes</span>
 
-alice peer list                   <span class="c"># bob should read ACTIVE</span></code></pre>
+alice peer ping bob                      <span class="c"># first contact — or just send the first task</span>
+alice peer list                          <span class="c"># bob should read active</span></code></pre>
+</div>
+
+<div class="note">
+  <strong>The token is public.</strong> It commits to the peer's identity key;
+  possession grants nothing — your daemon only ever talks to identities
+  <em>you</em> imported. A typo anywhere in the line is caught at
+  <code>peer add</code>, and two peers who both call themselves
+  <code>claude</code> simply get two different labels from you.
 </div>
 
 <h3>5 · Alice sends a task</h3>
@@ -669,7 +682,7 @@ export AKSON_ON_TASK='notify-send "akson: task $AKSON_TASK (auto=$AKSON_TASK_AUT
     "deny": [
       "Bash(akson task approve:*)",
       "Bash(akson processor credential:*)",
-      "Bash(akson pair:*)"
+      "Bash(akson peer add:*)"
     ]
   }
 }</code></pre>
@@ -847,10 +860,13 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>akson doctor</code></td><td>Check the host can run the sandbox. Needs no daemon.</td></tr>
   <tr><td><code>akson status</code></td><td>Ask the running daemon how it is.</td></tr>
   <tr><td><code>akson whoami</code></td><td>This endpoint's identity, URL, and certificate fingerprint.</td></tr>
-  <tr><td><code>akson pair invite &lt;file&gt;</code></td><td>Mint an invitation to hand to a peer.</td></tr>
-  <tr><td><code>akson pair accept &lt;file&gt;</code></td><td>Accept a peer's invitation.</td></tr>
-  <tr><td><code>akson peer list</code></td><td>Peers and their status.</td></tr>
-  <tr><td><code>akson peer confirm &lt;agent&gt;</code></td><td>Promote a pending peer to active. A human's yes.</td></tr>
+  <tr><td><code>akson token</code></td><td>This endpoint's public identity token — the line you hand a peer.</td></tr>
+  <tr><td><code>akson peer add &lt;token&gt; &lt;label&gt;</code></td><td>Import a peer's token under a label you choose. The human's yes.</td></tr>
+  <tr><td><code>akson peer list</code></td><td>Imported peers, their labels and status.</td></tr>
+  <tr><td><code>akson peer label &lt;old&gt; &lt;new&gt;</code></td><td>Rename a peer's local label. Purely local.</td></tr>
+  <tr><td><code>akson peer remove &lt;label&gt;</code></td><td>Remove a peer; re-adding later starts a fresh relationship.</td></tr>
+  <tr><td><code>akson peer ping &lt;label&gt;</code></td><td>Dial the first-contact introduction now (a first task send also does).</td></tr>
+  <tr><td><code>akson peer knocks</code></td><td>Refused introductions — who claimed to be whom, unauthenticated.</td></tr>
   <tr><td><code>akson peer auto-approve &lt;agent&gt; …</code></td><td>Standing policy: approve a peer's task type up to a byte cap without a prompt — approval only, never a processor or export grant, and running is still your move. <a href="#mcp">More</a>.</td></tr>
   <tr><td><code>akson task send &lt;spec.json&gt;</code></td><td>Sign and post a task to a peer.</td></tr>
   <tr><td><code>akson task inbox</code></td><td>Tasks awaiting your decision.</td></tr>
@@ -881,7 +897,6 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>AKSON_ISSUER</code> / <code>AKSON_AGENT</code></td><td>This endpoint's identity, e.g. <code>orgA</code> / <code>alice</code>.</td></tr>
   <tr><td><code>AKSON_INTERFACE_URL</code></td><td>The URL peers reach you at.</td></tr>
   <tr><td><code>AKSON_RECEIVE_ADDR</code></td><td>Address to listen on for tasks and results.</td></tr>
-  <tr><td><code>AKSON_PAIR_ADDR</code></td><td>Address to listen on for pairing.</td></tr>
   <tr><td><code>AKSON_WORKER_CMD</code></td><td>Worker as a shell command. Convenient; for demos.</td></tr>
   <tr><td><code>AKSON_WORKER_EXEC</code></td><td>Worker as a direct program. Stricter sandbox — use this in production.</td></tr>
   <tr><td><code>AKSON_ON_TASK</code></td><td>A command the daemon runs when a task arrives (with <code>AKSON_TASK</code> in its environment), so a harness is poked rather than polling.</td></tr>
@@ -966,9 +981,11 @@ system working: the bytes and the signature disagree, so nothing was stored. Hav
 performer re-run and re-deliver.</p>
 
 <h3><code>peer list</code> shows a peer but tasks are refused</h3>
-<p>The peer is probably still pending. A stored key alone does not admit work — the peer
-must be <code>ACTIVE</code>, which means someone ran <code>akson peer confirm</code> on
-this side. Confirmation is per-side; both ends need to do it.</p>
+<p>The peer is probably still <code>imported</code> — added on your side, but the
+first-contact introduction hasn't run (or the <em>other</em> operator hasn't run
+<code>akson peer add</code> with <em>your</em> token yet; <code>akson peer knocks</code>
+on their side would show your refused attempts). <code>akson peer ping &lt;label&gt;</code>
+runs the introduction on demand.</p>
 
 <h3>The CLI can't find the daemon</h3>
 <p><code>XDG_RUNTIME_DIR</code> doesn't match the daemon's. That variable is the only thing

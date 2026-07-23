@@ -177,9 +177,10 @@
         free to put any body under any message id, forever.</td>
   </tr>
   <tr>
-    <td><code>PairingLedger</code></td>
-    <td>The consume-once bootstrap ledger behind pairing invitations, under adversarial
-        transcripts and nondeterministic expiry and purging.</td>
+    <td><code>Introduction</code></td>
+    <td>First contact over identity tokens: the import / introduction / epoch
+        machine, with the adversary holding handshakes open across removal and
+        re-import and presenting divergent identity material at will.</td>
   </tr>
   <tr>
     <td><code>BrokerBudget</code></td>
@@ -236,9 +237,11 @@
   <tr><td><code>LockIsFinal</code> · <code>AtMostOneLock</code></td>
       <td>Accepting a contract locks exactly one revision digest, and nothing — replay,
           sibling, forged predecessor — changes it afterwards.</td></tr>
-  <tr><td><code>AtMostOnePeer</code> · <code>NoRevival</code></td>
-      <td>A pairing invitation creates at most one peer, ever; a consumed or expired
-          invitation cannot be brought back.</td></tr>
+  <tr><td><code>ActiveImpliesLiveImport</code> · <code>OneMaterialPerEpoch</code></td>
+      <td>An active peer always sits under a live import at its exact committed
+          epoch — a handshake held across remove-and-re-add can never resurrect —
+          and divergent identity material suspends the relationship, never forks
+          it.</td></tr>
   <tr><td><code>BudgetBound</code> · <code>AtMostOneTransmit</code></td>
       <td>No interleaving of calls and crashes exceeds the approved operation budget, and
           an uncertain call is never silently retransmitted.</td></tr>

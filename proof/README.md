@@ -71,8 +71,10 @@ via probes — the machine-checked facts that a post-crash replay converges
 and that one message id *can* leave two inert tasks in the crash window
 (benign, and now documented by a counterexample rather than prose).
 
-**`specs/PairingLedger.tla`** — the consume-once invitation ledger: at most
-one peer ever, no revival, retry-safe responses, no pairing after expiry.
+**`specs/Introduction.tla`** — first contact over identity tokens: an active
+peer implies a live import under the exact committed epoch (so a handshake
+held across remove + re-add can never resurrect), divergent material suspends
+rather than forks, one identity per epoch.
 
 **`specs/BrokerBudget.tla`** — brokered processor calls: the `max_operations`
 budget bounds the wire (disclosure and cost) across crashes; each call

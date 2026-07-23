@@ -122,19 +122,40 @@ else
   fi
 fi
 
-# ========== PairingLedger ==================================================
-# commit_consumed leaves the invitation active ("must not silently succeed").
-expect_violation pair-twice PairingLedger \
-  "s|/\\\\ active'         = FALSE|/\\\\ active'         = TRUE|" \
-  'AtMostOnePeer|NoRevival|ConsumedRecordFinal'
-# The consumed record is purged while the invitation is still live.
-expect_violation purge-early PairingLedger \
-  's|/\\ expired /\\ consumed # NoT|/\\ consumed # NoT|' \
-  RetentionUntilExpiry
-# check_secret forgets the expiry check: pairing after not_after (§8.5).
-expect_violation pair-after-expiry PairingLedger \
-  's|/\\ active /\\ ~expired|/\\ active|' \
-  NoLatePairing
+# ========== Introduction ===================================================
+# The commit CAS runs against the CURRENT epoch instead of the hello-time
+# snapshot: the slice-2 ABA attack (remove + re-add between the flights)
+# resurrects the stale handshake.
+expect_violation stale-handshake-commits Introduction \
+  's|IF import = "live" /\\ epoch = e|IF import = "live"|' \
+  ActiveImpliesLiveImport
+# Removal stops dropping the pinned peer (the cascade forgotten): a removed
+# relationship keeps an active peer behind.
+expect_violation remove-keeps-pin Introduction \
+  's|/\\ pinned'"'"'      = "none"|/\\ pinned'"'"'      = pinned|' \
+  ActiveImpliesLiveImport
+# Divergent material re-pins (with ITS material) instead of suspending:
+# the relationship forks (§8.4 forgotten).
+expect_violation divergent-repins Introduction \
+  's|/\\ pinned'"'"' = "suspended"|/\\ pinned'"'"' = "active" /\\ pinnedMat'"'"' = m|; s|UNCHANGED <<import, epoch, pinnedMat, pinnedEpoch, firstMat>>|UNCHANGED <<import, epoch, pinnedEpoch, firstMat>>|' \
+  OneMaterialPerEpoch
+# Differential: the hello ADMISSION gate alone is defense in depth, not the
+# safety boundary — with it removed, the commit CAS still refuses to pin
+# (safety holds; the gate's real job is refusing unknown callers before any
+# signature work, an availability property outside this model).
+mkdir -p "$tmp/admit-without-import"
+sed 's|/\\ import = "live"  .. the admission gate|/\\ TRUE|' \
+  specs/Introduction.tla > "$tmp/admit-without-import/Introduction.tla"
+if cmp -s specs/Introduction.tla "$tmp/admit-without-import/Introduction.tla"; then
+  echo "FAIL  admit-without-import: mutation did not change the spec"; fail=1
+else
+  cp specs/Introduction.cfg "$tmp/admit-without-import/"
+  if tlc "$tmp/admit-without-import" Introduction | grep -q "No error"; then
+    echo "ok    admit-without-import: commit CAS alone still holds safety (defense in depth)"
+  else
+    echo "FAIL  admit-without-import: expected safety to hold on the commit CAS alone"; fail=1
+  fi
+fi
 
 # ========== BrokerBudget ===================================================
 # prepare_call stops counting rows in-transaction: unbounded calls.
@@ -168,12 +189,6 @@ if [ -x "$ROOT/tools/apalache/bin/apalache-mc" ]; then
   # Vacuity guards: IndInit must be satisfiable, or the consecution and
   # implication obligations were checked over an empty state predicate.
   # A false invariant over a satisfiable init MUST be refuted.
-  if apa --init=IndInit --inv=ProbeFalse --length=0 specs/PairingLedgerInd.tla \
-       | grep -q 'The outcome is: Error'; then
-    echo "ok    ind-sat-pairing: IndInit is satisfiable"
-  else
-    echo "FAIL  ind-sat-pairing: IndInit unsatisfiable - induction was vacuous"; fail=1
-  fi
   if apa --cinit=ConstInit --init=IndInit --inv=ProbeFalse --length=0 \
        specs/RollbackAdversaryInd.tla | grep -q 'The outcome is: Error'; then
     echo "ok    ind-sat-rollback: IndInit is satisfiable"

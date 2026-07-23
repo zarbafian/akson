@@ -1,6 +1,6 @@
 JAR      := tools/tla2tools.jar
 APALACHE := tools/apalache/bin/apalache-mc
-SPECS    := TaskLifecycle ContractChain ReceivePipeline PairingLedger \
+SPECS    := TaskLifecycle ContractChain ReceivePipeline Introduction \
             BrokerBudget RollbackAdversary TaskLiveness
 
 all: $(SPECS)

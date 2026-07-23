@@ -65,20 +65,22 @@ expiring tasks (benign; the honest invariant is per-body).
 `CrashReplayNeverCompletes` — the post-crash replay does converge; the
 `stale-aborts` differential shows this depends on the discarded Stale verdict.
 
-### specs/PairingLedger.tla — the consume-once bootstrap ledger
+### specs/Introduction.tla — first contact over identity tokens
 
-`akson-pairing/src/state_machine.rs::accept` transcribed: consumed-record
-check first, atomic take + `commit_consumed`, dead invitations never
-re-inserted; adversarial transcripts and nondeterministic expiry/purging.
+The import / introduction / epoch machine for one relationship (design §8.2,
+ADR-0015) transcribed: `add_peer_import`/`remove_peer_import` (removal
+tombstones and advances the epoch in one statement), the hello admission
+gate's epoch snapshot (`introduce.rs`), and the `commit_introduced_peer`
+CAS (idempotent re-introduction; divergent material suspends per §8.4). The
+adversary holds hellos open across remove + re-add (the ABA case) and
+presents divergent material at will.
 
 | Model invariant | Design | Enforcing code |
 |---|---|---|
-| `AtMostOnePeer` | §8.2 "No second peer can be created" | `take_active` + `commit_consumed` (one transaction) |
-| `NoRevival` | §8.2 consume-once | consumed record checked before `take_active` |
-| `ConsumedRecordFinal` | §8.2 retry-safe (identical response) | `Consumed` record immutability |
-| `ExpiredNeverPairs` | §8.5 expiry is an authority boundary | `check_secret` Expired → not re-inserted |
-| `RetentionUntilExpiry` | §8.2 record retained until expiry | `Consumed.expires_at` |
-| `NoLatePairing` | §8.5 | `check_secret` expiry check |
+| `ActiveImpliesLiveImport` | §8.2 no admission without import; removal kills stale handshakes | hello gate + epoch snapshot + commit CAS + removal cascade |
+| `OneMaterialPerEpoch` | §8.4 divergent material suspends, never re-pins or forks | `commit_introduced_peer` detect-change / suspend path |
+| `ActiveEpochIsReal` | an active pin belongs to an admitted epoch | epoch snapshot in the per-connection state |
+| `SuspensionHoldsMaterial` | suspension holds the disputed material for review | suspend branch leaves the pinned record in place |
 
 ### specs/BrokerBudget.tla — processor calls under one work order
 
@@ -158,8 +160,9 @@ inductive proof (base `Init ⇒ IndInv`, consecution `IndInv ∧ Next ⇒ IndInv
 implication `IndInv ⇒ TargetInv`) with Apalache 0.58.3 — removing TLC's
 run-length bound entirely:
 
-- **PairingLedgerInd**: all six pairing invariants hold after *any* number of
-  steps. The strengthening pins `peers`/`consumedWrites` to `everConsumed`
+- (The invitation-era PairingLedgerInd inductive proof was retired with
+  invitation pairing; an inductive proof over Introduction is follow-up.)
+-   steps. The strengthening pins `peers`/`consumedWrites` to `everConsumed`
   and threads `dead ⇒ ¬active ⇒ ¬everConsumed`.
 - **RollbackAdversaryInd**: `OneShotNonceForever` holds for **arbitrary
   `MaxGen`** (`ConstInit == MaxGen ∈ Nat`) and any number of
