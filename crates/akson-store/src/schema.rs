@@ -324,6 +324,43 @@ CREATE TABLE task_reactions (
 ) STRICT;
 "#;
 
+/// Version 17 (identity-token pairing, store slice — design §8.2, ADR-0013/0015):
+/// the provisional-import ledger and the knock log, plus the root-thumbprint
+/// relationship column on the tables still keyed by the self-declared agent id
+/// (the key cutover lands with the introduction, when invitation pairing goes).
+/// An import is the operator's trust act: a root key pinned under a locally
+/// chosen label before any network contact. It is not a peer — the full §8.1
+/// tuple arrives only at introduction. `epoch` bounds the relationship: removal
+/// tombstones the row and advances it in the same statement, so an introduction
+/// racing a removal cannot commit, and a re-add is a *new* relationship.
+/// Thumbprints and labels are lookup keys, deliberately queryable plaintext
+/// (the same class as `peers.agent_id`); a freed label goes NULL so it can be
+/// reused without inheriting anything.
+const V17: &str = r#"
+CREATE TABLE peer_imports (
+    root_thumbprint TEXT PRIMARY KEY,
+    label           TEXT UNIQUE,
+    endpoint_hint   TEXT NOT NULL DEFAULT '',
+    epoch           INTEGER NOT NULL DEFAULT 1,
+    added_at        INTEGER NOT NULL,
+    tombstoned_at   INTEGER
+) STRICT;
+
+CREATE TABLE knock_log (
+    claimed_root  TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    refusal_class TEXT NOT NULL,
+    first_at      INTEGER NOT NULL,
+    last_at       INTEGER NOT NULL,
+    count         INTEGER NOT NULL,
+    PRIMARY KEY (claimed_root, source, refusal_class)
+) STRICT;
+
+ALTER TABLE peers ADD COLUMN root_thumbprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE peer_keys ADD COLUMN root_thumbprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE auto_approve ADD COLUMN root_thumbprint TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -343,6 +380,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (14, V14),
     (15, V15),
     (16, V16),
+    (17, V17),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

@@ -61,6 +61,22 @@ const TRUSTED_TIME: &str = "trusted_time";
 /// authority decisions refuse rather than risk reviving expired authority.
 const CLOCK_TOLERANCE_SECS: i64 = 300;
 const PEER_RECORD_CONTEXT: &str = "peers.record";
+
+/// Knock-log row ceiling: bounds what a source-rotating scanner can grow
+/// (`record_knock` drops new triples at the cap, still counting known ones).
+const KNOCK_LOG_CAP: i64 = 1024;
+
+/// Maps one live `peer_imports` row. Live rows always hold a label (removal
+/// frees it to NULL in the same statement that tombstones).
+fn import_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PeerImport> {
+    Ok(PeerImport {
+        root_thumbprint: r.get(0)?,
+        label: r.get(1)?,
+        endpoint_hint: r.get(2)?,
+        epoch: r.get::<_, i64>(3)?.max(0) as u64,
+        added_at: r.get(4)?,
+    })
+}
 const COMMITMENT_KEY_CONTEXT: &str = "meta.commitment_key";
 const INBOX_BODY_CONTEXT: &str = "inbox.body";
 const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
@@ -275,6 +291,55 @@ pub enum OutcomeWrite {
 pub struct AutoApprovePolicy {
     pub task_types: Vec<String>,
     pub max_response_bytes: u64,
+}
+
+/// One provisional import (design §8.2 step 3): a peer's identity root key,
+/// pinned by the operator out of band under a locally chosen label, before any
+/// network contact. Not yet a peer — the full §8.1 tuple arrives only at the
+/// introduction, which must commit against this row's live `epoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerImport {
+    /// RFC 7638 thumbprint of the identity root key (ADR-0013).
+    pub root_thumbprint: String,
+    /// The operator-chosen local handle; never crosses the wire.
+    pub label: String,
+    /// Unauthenticated routing hint (`host:port`), possibly empty.
+    pub endpoint_hint: String,
+    /// Relationship epoch; advanced by removal, so pre-removal authorization
+    /// can never commit or verify again.
+    pub epoch: u64,
+    pub added_at: i64,
+}
+
+/// One knock-log row (ADR-0015): refused introductions, deduped by
+/// (claimed root, source, refusal class) with a counter instead of a row per
+/// attempt. Observability for `peer knocks` — claims are unauthenticated and
+/// the log carries no authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Knock {
+    pub claimed_root: String,
+    pub source: String,
+    pub refusal_class: String,
+    pub first_at: i64,
+    pub last_at: i64,
+    pub count: u64,
+}
+
+/// The verdict of an import mutation. Domain refusals are values, not errors:
+/// the CLI renders each as guidance, and nothing is ever overwritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportOutcome {
+    /// The import was recorded (fresh, or a tombstoned root revived under a
+    /// fresh label — its epoch already advanced at removal).
+    Added,
+    /// The requested update was applied.
+    Updated,
+    /// A live import for this root already exists; nothing changed.
+    DuplicateRoot,
+    /// The label names a different live import; nothing changed.
+    LabelTaken,
+    /// No live import for this root; nothing changed.
+    UnknownRoot,
 }
 
 /// A recorded requester outcome's listing summary (design §14.5).
@@ -1265,6 +1330,227 @@ impl Store {
             .conn
             .execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent_id])?;
         Ok(n == 1)
+    }
+
+    /// Records the operator's import of an identity token (design §8.2 step 3):
+    /// pins `root_thumbprint` under a locally chosen label. The one trust act of
+    /// pairing. A tombstoned root is revived as a new relationship (its epoch
+    /// already advanced at removal); a live duplicate is reported, never
+    /// overwritten; a label held by a different live import is refused.
+    pub fn add_peer_import(
+        &self,
+        root_thumbprint: &str,
+        label: &str,
+        endpoint_hint: &str,
+        now: i64,
+    ) -> Result<ImportOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let existing: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT tombstoned_at FROM peer_imports WHERE root_thumbprint = ?1",
+                [root_thumbprint],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if matches!(existing, Some(None)) {
+            return Ok(ImportOutcome::DuplicateRoot);
+        }
+        // Only live rows hold labels (removal frees them to NULL).
+        let label_holder: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT root_thumbprint FROM peer_imports WHERE label = ?1",
+                [label],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if label_holder.is_some_and(|holder| holder != root_thumbprint) {
+            return Ok(ImportOutcome::LabelTaken);
+        }
+        if existing.is_some() {
+            self.conn.execute(
+                "UPDATE peer_imports
+                 SET label = ?2, endpoint_hint = ?3, added_at = ?4, tombstoned_at = NULL
+                 WHERE root_thumbprint = ?1",
+                params![root_thumbprint, label, endpoint_hint, now],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO peer_imports
+                     (root_thumbprint, label, endpoint_hint, epoch, added_at, tombstoned_at)
+                 VALUES (?1, ?2, ?3, 1, ?4, NULL)",
+                params![root_thumbprint, label, endpoint_hint, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ImportOutcome::Added)
+    }
+
+    /// `peer add --update` / `peer label`: refreshes the label and/or routing
+    /// hint of a live import. Never touches the epoch — hints and names carry
+    /// no trust state.
+    pub fn update_peer_import(
+        &self,
+        root_thumbprint: &str,
+        new_label: Option<&str>,
+        new_endpoint: Option<&str>,
+    ) -> Result<ImportOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let live: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT epoch FROM peer_imports
+                 WHERE root_thumbprint = ?1 AND tombstoned_at IS NULL",
+                [root_thumbprint],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if live.is_none() {
+            return Ok(ImportOutcome::UnknownRoot);
+        }
+        if let Some(label) = new_label {
+            let holder: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT root_thumbprint FROM peer_imports WHERE label = ?1",
+                    [label],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if holder.is_some_and(|h| h != root_thumbprint) {
+                return Ok(ImportOutcome::LabelTaken);
+            }
+            self.conn.execute(
+                "UPDATE peer_imports SET label = ?2 WHERE root_thumbprint = ?1",
+                params![root_thumbprint, label],
+            )?;
+        }
+        if let Some(endpoint) = new_endpoint {
+            self.conn.execute(
+                "UPDATE peer_imports SET endpoint_hint = ?2 WHERE root_thumbprint = ?1",
+                params![root_thumbprint, endpoint],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ImportOutcome::Updated)
+    }
+
+    /// Tombstones a live import and advances its epoch in the same statement
+    /// (design §8.2 step 7): an introduction that started under the old epoch
+    /// can no longer commit, and the freed label may be reused without
+    /// inheriting anything. Returns false if no live import held this root.
+    pub fn remove_peer_import(
+        &self,
+        root_thumbprint: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let n = self.conn.execute(
+            "UPDATE peer_imports
+             SET tombstoned_at = ?2, epoch = epoch + 1, label = NULL
+             WHERE root_thumbprint = ?1 AND tombstoned_at IS NULL",
+            params![root_thumbprint, now],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// The live import for a root, if any.
+    pub fn peer_import(&self, root_thumbprint: &str) -> Result<Option<PeerImport>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT root_thumbprint, label, endpoint_hint, epoch, added_at
+                 FROM peer_imports
+                 WHERE root_thumbprint = ?1 AND tombstoned_at IS NULL",
+                [root_thumbprint],
+                import_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Resolves the operator's local label to its live import — the CLI's
+    /// label → thumbprint step at task creation.
+    pub fn peer_import_by_label(&self, label: &str) -> Result<Option<PeerImport>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT root_thumbprint, label, endpoint_hint, epoch, added_at
+                 FROM peer_imports
+                 WHERE label = ?1 AND tombstoned_at IS NULL",
+                [label],
+                import_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Live imports, ordered by label.
+    pub fn list_peer_imports(&self) -> Result<Vec<PeerImport>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT root_thumbprint, label, endpoint_hint, epoch, added_at
+             FROM peer_imports
+             WHERE tombstoned_at IS NULL
+             ORDER BY label",
+        )?;
+        let rows = stmt
+            .query_map([], import_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records a refused introduction (ADR-0015), deduped by (claimed root,
+    /// source, refusal class): a repeat bumps a counter instead of adding a
+    /// row, and the table is capped so a source-rotating scanner cannot grow
+    /// the store — at the cap, known triples still count up while new ones are
+    /// dropped. Best-effort observability, not audit.
+    pub fn record_knock(
+        &self,
+        claimed_root: &str,
+        source: &str,
+        refusal_class: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let updated = self.conn.execute(
+            "UPDATE knock_log SET last_at = ?4, count = count + 1
+             WHERE claimed_root = ?1 AND source = ?2 AND refusal_class = ?3",
+            params![claimed_root, source, refusal_class, now],
+        )?;
+        if updated == 1 {
+            return Ok(());
+        }
+        let rows: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM knock_log", [], |r| r.get(0))?;
+        if rows >= KNOCK_LOG_CAP {
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO knock_log
+                 (claimed_root, source, refusal_class, first_at, last_at, count)
+             VALUES (?1, ?2, ?3, ?4, ?4, 1)",
+            params![claimed_root, source, refusal_class, now],
+        )?;
+        Ok(())
+    }
+
+    /// The knock log, most recent first — what `akson peer knocks` renders.
+    pub fn knocks(&self) -> Result<Vec<Knock>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT claimed_root, source, refusal_class, first_at, last_at, count
+             FROM knock_log ORDER BY last_at DESC, claimed_root",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Knock {
+                    claimed_root: r.get(0)?,
+                    source: r.get(1)?,
+                    refusal_class: r.get(2)?,
+                    first_at: r.get(3)?,
+                    last_at: r.get(4)?,
+                    count: r.get::<_, i64>(5)?.max(0) as u64,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Submits a validated revision as an atomic compare-and-swap on the Task's
