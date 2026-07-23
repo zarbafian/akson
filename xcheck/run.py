@@ -208,26 +208,102 @@ def check_delivery(name: str, case: dict) -> None:
     expect_eq(name, "commitment", commitment, exp["commitment_hex"])
 
 
-def check_pairing(name: str, case: dict) -> None:
-    """Independent pairing byte formats (design §8.2): the invitation verifier,
-    the RFC 8785 canonical transcript + digest, and the Ed25519 proof of
-    possession over that transcript."""
+def check_introduction(name: str, case: dict) -> None:
+    """Independent introduction-transcript bytes (ADR-0015): the signing bytes
+    are exactly the RFC 8785 canonical JSON of the transcript with the domain
+    field inside; digest + Ed25519 proof of possession over them."""
     inp, exp = case["input"], case["expected"]
-    if "secret_b64url" in inp:
-        verifier = hashlib.sha256(b64url_decode(inp["secret_b64url"])).hexdigest()
-        expect_eq(name, "verifier", verifier, exp["verifier_hex"])
-        return
-
-    canonical = rfc8785.dumps(inp["transcript"])
-    if "canonical" in exp:
-        expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
-        expect_eq(name, "digest", hashlib.sha256(canonical).hexdigest(), exp["digest_hex"])
+    transcript = dict(inp["transcript"])
+    transcript["domain"] = "akson-introduction-v1"
+    canonical = rfc8785.dumps(transcript)
+    expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
+    expect_eq(name, "digest", hashlib.sha256(canonical).hexdigest(), exp["digest_hex"])
     if "signature_b64url" in exp:
         sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(inp["private_key_hex"]))
         expect_eq(name, "pop signature", b64url(sk.sign(canonical)), exp["signature_b64url"])
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(inp["public_key_hex"])).verify(
             b64url_decode(exp["signature_b64url"]), canonical
         )
+
+
+BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _bech32_polymod(values):
+    gen = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
+    chk = 1
+    for v in values:
+        b = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ v
+        for i in range(5):
+            chk ^= gen[i] if ((b >> i) & 1) else 0
+    return chk
+
+
+def _bech32_hrp_expand(hrp):
+    return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
+
+
+def decode_token(s: str):
+    """Independent ADR-0013 decoder: bech32m, HRP akson, version+32-byte key.
+    Returns (version, key_bytes) or raises ValueError with the refusal class."""
+    if len(s) > 90:
+        raise ValueError("too-long")
+    if any(c.islower() for c in s) and any(c.isupper() for c in s):
+        raise ValueError("mixed-case")
+    s = s.lower()
+    sep = s.rfind("1")
+    if sep < 0:
+        raise ValueError("bad-hrp")
+    hrp, rest = s[:sep], s[sep + 1 :]
+    if len(rest) < 6:
+        raise ValueError("bad-checksum")
+    try:
+        data = [BECH32_CHARSET.index(c) for c in rest]
+    except ValueError as e:
+        raise ValueError("bad-char") from e
+    if _bech32_polymod(_bech32_hrp_expand(hrp) + data) != 0x2BC830A3:
+        raise ValueError("bad-checksum")
+    if hrp != "akson":
+        raise ValueError("bad-hrp")
+    acc, bits, out = 0, 0, bytearray()
+    for g in data[:-6]:
+        acc = (acc << 5) | g
+        bits += 5
+        if bits >= 8:
+            bits -= 8
+            out.append((acc >> bits) & 0xFF)
+    if bits >= 5 or (acc & ((1 << bits) - 1)) != 0:
+        raise ValueError("bad-length")
+    if len(out) != 33:
+        raise ValueError("bad-length")
+    if out[0] != 0x01:
+        raise ValueError("unknown-version")
+    return out[0], bytes(out[1:])
+
+
+def check_token(name: str, case: dict) -> None:
+    """Independent identity-token decoding (ADR-0013)."""
+    for c in case["cases"]:
+        cname = f"{name}/{c['name']}"
+        raw = c["input"]
+        if c["expect"] == "presentation":
+            token, _, hint = raw.rpartition("@")
+            if not token:
+                token, hint = raw, None
+            expect_eq(cname, "hint", hint or None, c.get("hint"))
+            if c.get("token_expect") == "valid":
+                decode_token(token)
+            continue
+        try:
+            version, key = decode_token(raw)
+        except ValueError as e:
+            expect_eq(cname, "refusal", c["expect"], "error")
+            expect_eq(cname, "error class", str(e), c["error"])
+            continue
+        expect_eq(cname, "validity", c["expect"], "valid")
+        expect_eq(cname, "version", version, c["version"])
+        expect_eq(cname, "root key", key.hex(), c["root_key_hex"])
 
 
 def check_schema(name: str, case: dict) -> None:
@@ -253,7 +329,8 @@ CHECKERS = {
     "dsse": check_dsse,
     "jws": check_jws,
     "delivery": check_delivery,
-    "pairing": check_pairing,
+    "introduction": check_introduction,
+    "token": check_token,
     "schema": check_schema,
     "ijson": check_ijson,
 }

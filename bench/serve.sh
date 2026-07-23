@@ -32,10 +32,10 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNT
 # cooperation roles (cooperate.sh): same identities and ports, but BOTH get a
 # worker, because each side takes its turn performing.
 case "$ROLE" in
-  requester) AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443; WORKER=0 ;;
-  performer) AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444; WORKER=1 ;;
-  alice)     AGENT=alice; ISSUER=orgA; RECV=18443; PAIRP=19443; WORKER=1 ;;
-  bob)       AGENT=bob;   ISSUER=orgB; RECV=18444; PAIRP=19444; WORKER=1 ;;
+  requester) AGENT=alice; ISSUER=orgA; RECV=18443; WORKER=0 ;;
+  performer) AGENT=bob;   ISSUER=orgB; RECV=18444; WORKER=1 ;;
+  alice)     AGENT=alice; ISSUER=orgA; RECV=18443; WORKER=1 ;;
+  bob)       AGENT=bob;   ISSUER=orgB; RECV=18444; WORKER=1 ;;
   *) echo "ROLE must be requester|performer|alice|bob" >&2; exit 2 ;;
 esac
 DATA="$HOME/.akson-bench-$ROLE"
@@ -58,7 +58,6 @@ ENV=(
   "--setenv=AKSON_AGENT=$AGENT"
   "--setenv=AKSON_INTERFACE_URL=https://$SELF_IP:$RECV/a2a"
   "--setenv=AKSON_RECEIVE_ADDR=$SELF_IP:$RECV"
-  "--setenv=AKSON_PAIR_ADDR=$SELF_IP:$PAIRP"
 )
 [ "$WORKER" = 1 ] && ENV+=("--setenv=AKSON_WORKER_EXEC=$(worker_exec "$PROVIDER")")
 

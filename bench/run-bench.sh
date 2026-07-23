@@ -27,14 +27,14 @@ ra whoami >/dev/null; pf whoami >/dev/null
 echo "==> Copying the task spec to alice…"
 scp "${SSHOPTS[@]}" "$(dirname "$0")/task.json" "$REQUESTER_SSH:/tmp/akson-task.json" >/dev/null
 
-echo "==> Pairing (once)…"
-ra pair invite /tmp/inv.json >/dev/null
-# Move alice's invitation to bob (out of band).
-ssh "${SSHOPTS[@]}" "$REQUESTER_SSH" 'cat /tmp/inv.json' | \
-  ssh "${SSHOPTS[@]}" "$PERFORMER_SSH" 'cat > /tmp/inv.json'
-pf pair accept /tmp/inv.json >/dev/null
-ra peer confirm bob   >/dev/null
-pf peer confirm alice >/dev/null
+echo "==> Pairing (once): exchanging identity tokens…"
+# Each side imports the other's public token under a label it chooses; the
+# channel comes up on the first contact (design 8.2, ADR-0013/0015).
+ALICE_TOKEN="$(ra token | grep -o 'akson1[a-z0-9]*@[^ ]*' | head -1)"
+BOB_TOKEN="$(pf token | grep -o 'akson1[a-z0-9]*@[^ ]*' | head -1)"
+pf peer add "$ALICE_TOKEN" alice >/dev/null || true
+ra peer add "$BOB_TOKEN"   bob   >/dev/null || true
+ra peer ping bob >/dev/null
 echo "    paired: $(ra peer list | tr -d '\n')"
 
 now() { date +%s.%N; }

@@ -1,5 +1,5 @@
 {
-  "name": "token/v1",
+  "name": "token/token-v1",
   "description": "ADR-0013 identity-token golden vectors: bech32m, HRP akson, payload 0x01 || 32-byte root key. root_key_hex is 000102...1f. A second implementation must agree on every case.",
   "cases": [
     { "name": "valid-lowercase",

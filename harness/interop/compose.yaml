@@ -1,24 +1,27 @@
-# Interop scenario 1 (pairing over mTLS) as two containerised endpoints.
-# FOSS + runtime-agnostic: runs under `podman compose` (preferred — daemonless,
-# rootless, Apache-2.0) or `docker compose`. Build the image first:
+# Interop scenario 1 (first contact over identity tokens) as two containerised
+# endpoints. FOSS + runtime-agnostic: runs under `podman compose` (preferred —
+# daemonless, rootless, Apache-2.0) or `docker compose`. Build the image first:
 #   podman build -f harness/interop/Containerfile -t akson-harness .
 #   podman compose -f harness/interop/compose.yaml up --abort-on-container-exit
 #
-# endpoint-a serves and writes the invitation to the shared volume; endpoint-b
-# waits for it and pairs. Success = endpoint-b prints "PAIRED with endpoint-a"
-# and exits 0.
+# endpoint-b writes its identity token to the shared volume (the out-of-band
+# exchange); endpoint-a imports it and serves, writing its own token with the
+# live address; endpoint-b waits for that token and dials the introduction
+# (design §8.2, ADR-0013/0015). Success = endpoint-b prints
+# "INTRODUCED with endpoint-a" and exits 0.
 services:
   endpoint-a:
     image: akson-harness
+    # Wait for endpoint-b's token (its operator's out-of-band hand-off), import
+    # it — the trust act — then serve with introductions enabled.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - serve
-      - --state=/state/a.db
-      - --seed=1
-      - --host=0.0.0.0
-      - --advertise=endpoint-a
-      - --port=9443
-      - --invitation-out=/shared/invitation.json
-      - --agent=endpoint-a
+      - >
+        for i in $(seq 1 100); do [ -s /shared/b.token ] && break; sleep 0.1; done;
+        exec akson-harness serve --state=/state/a.db --seed=1
+        --host=0.0.0.0 --advertise=endpoint-a --port=9443
+        --token-out=/shared/a.token --agent=endpoint-a
+        --import=/shared/b.token --label=endpoint-b
     volumes:
       - shared:/shared
       - state-a:/state
@@ -26,13 +29,15 @@ services:
 
   endpoint-b:
     image: akson-harness
-    # Wait for the invitation the inviter writes, then pair.
+    # Write our token first, wait for endpoint-a's (with its live address),
+    # then introduce.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
-        for i in $(seq 1 100); do [ -s /shared/invitation.json ] && break; sleep 0.1; done;
+        akson-harness token --seed=2 --token-out=/shared/b.token;
+        for i in $(seq 1 100); do [ -s /shared/a.token ] && break; sleep 0.1; done;
         sleep 0.5;
-        exec akson-harness pair --state=/state/b.db --seed=2 --invitation=/shared/invitation.json --agent=endpoint-b
+        exec akson-harness introduce --state=/state/b.db --seed=2 --token=/shared/a.token --agent=endpoint-b --label=endpoint-a
     volumes:
       - shared:/shared
       - state-b:/state

@@ -1,6 +1,6 @@
 # Akson interop test harness
 
-Runnable Akson endpoints for **multi-endpoint scenarios** — pairing, contract
+Runnable Akson endpoints for **multi-endpoint scenarios** — first contact, contract
 exchange, work-order flow, and (later) `codex ↔ claude`-style adapter runs — over
 real sockets, real mTLS, and real on-disk state. The harness exercises the shipped
 crates end to end; it is **not** the daemon (that is M12).
@@ -11,7 +11,7 @@ Two complementary paths:
 
 - **Local, on demand** — `./harness/run-checks.sh` runs the whole suite: format,
   clippy, unit + integration tests (including the seccomp and Landlock enforcement
-  tests), the golden-vector cross-check, and the pairing interop scenario. The
+  tests), the golden-vector cross-check, and the introduction interop scenario. The
   namespace-isolation checks are gated on **unprivileged user namespaces**; when a
   host restricts them (e.g. Ubuntu's `apparmor_restrict_unprivileged_userns`), the
   script skips that section and prints the exact one-run enable/restore commands.
@@ -35,14 +35,15 @@ scenarios use the built-in endpoints with no model.
 crates into a runnable endpoint (keys and the store KEK are derived from a
 `--seed`, so it is **test-only**):
 
-- `akson-harness serve --state <db> --seed <n> [--host H] [--advertise A] [--port P] --invitation-out <f> [--agent NAME]`
-- `akson-harness pair  --state <db> --seed <n> --invitation <f> [--agent NAME]`
+- `akson-harness token --seed <n> [--advertise host:port] --token-out <f>`
+- `akson-harness serve --state <db> --seed <n> [--host H] [--advertise A] [--port P] --token-out <f> [--import <token-file> --label <l>] [--agent NAME]`
+- `akson-harness introduce --state <db> --seed <n> --token <token-file> [--agent NAME]`
 
 ## Scenarios
 
 | # | Scenario | Status | Maps to |
 |---|----------|--------|---------|
-| 1 | Pairing over mTLS | **runnable** (`scenario-pairing.sh`) | Layer-1 interop checkpoint, §8.2 |
+| 1 | First contact over identity tokens | **runnable** (`scenario-pairing.sh`) | Layer-1 interop checkpoint, §8.2 / ADR-0015 |
 | 2 | Signed contract → accept → work order | pending receive-path assembly (M12-ish) | Layer-2, §10.2 |
 | 3 | Crash injection at each commit point | planned | §19 crash matrix (M15) |
 | 4 | `codex ↔ claude` adapter round trip | planned | G0 adapter gate (M13) |
@@ -53,9 +54,10 @@ crates into a runnable endpoint (keys and the store KEK are derived from a
 ./harness/interop/scenario-pairing.sh
 ```
 
-Two processes: endpoint-a mints an invitation and serves the bootstrap endpoint;
-endpoint-b reads the invitation and pairs, pinning endpoint-a. Prints
-`PAIRED with endpoint-a` on success.
+Two processes: each writes its public identity token (the out-of-band
+exchange as a file drop); endpoint-a imports endpoint-b's and serves;
+endpoint-b imports endpoint-a's and dials the introduction. Prints
+`INTRODUCED with endpoint-a` on success.
 
 ### Run scenario 1 in containers
 

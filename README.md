@@ -51,7 +51,7 @@ the section).
 
 | Guarantee | How akson holds it |
 |---|---|
-| **Direct and local-first** | Two endpoints pair with no hosted account and no relay, over mutually-authenticated TLS 1.3, pinning each other's certificate by fingerprint at pairing — not by CA or DNS. (§8.2, §9.1) |
+| **Direct and local-first** | Two endpoints pair with no hosted account and no relay, over mutually-authenticated TLS 1.3, each committing to the other's identity root out of band (a public token) and pinning the certificate the introduction binds to it — not by CA or DNS. (§8.2, §9.1) |
 | **Arrival is not execution** | Receiving any message, task, artifact, or control frame never starts a model, mints authority, touches a workspace, invokes a tool, or fetches a URL. Arrival is quiet and abuse-resistant. (§6.3) |
 | **Grant-derived sandbox** | Peer work starts from zero ambient authority: fresh user/mount/pid/net namespaces, default-deny seccomp, Landlock, cgroup limits, dropped capabilities. Only the named inputs and one output are constructed in — a prompt-injected task has no socket and no host filesystem. (§13.1) |
 | **Sealed model access** | `socket()` and `connect()` are denied. A model is reachable only through the broker: the worker inherits one already-connected fd, and the daemon makes the real call, injecting the credential and enforcing an egress allowlist and budget. The model credential never enters the worker. (§13.1) |
@@ -86,7 +86,7 @@ supplied input and writes a response.
 export XDG_RUNTIME_DIR=/tmp/bob AKSON_DATA_DIR=/tmp/bob-data
 export AKSON_ISSUER=orgB AKSON_AGENT=bob
 export AKSON_INTERFACE_URL=https://127.0.0.1:18444/a2a
-export AKSON_RECEIVE_ADDR=127.0.0.1:18444 AKSON_PAIR_ADDR=127.0.0.1:19444
+export AKSON_RECEIVE_ADDR=127.0.0.1:18444
 export AKSON_WORKER_CMD='[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" > /output/response'
 mkdir -p "$XDG_RUNTIME_DIR"; target/debug/aksond serve
 ~~~
@@ -97,22 +97,24 @@ mkdir -p "$XDG_RUNTIME_DIR"; target/debug/aksond serve
 export XDG_RUNTIME_DIR=/tmp/alice AKSON_DATA_DIR=/tmp/alice-data
 export AKSON_ISSUER=orgA AKSON_AGENT=alice
 export AKSON_INTERFACE_URL=https://127.0.0.1:18443/a2a
-export AKSON_RECEIVE_ADDR=127.0.0.1:18443 AKSON_PAIR_ADDR=127.0.0.1:19443
+export AKSON_RECEIVE_ADDR=127.0.0.1:18443
 mkdir -p "$XDG_RUNTIME_DIR"; target/debug/aksond serve
 ~~~
 
-**Terminal C — pair them, send a task, approve it, run it, deliver the result.**
+**Terminal C — exchange tokens, send a task, approve it, run it, deliver the result.**
 Point the CLI at whichever daemon it should command with `XDG_RUNTIME_DIR`.
 
 ~~~text
 alice() { XDG_RUNTIME_DIR=/tmp/alice target/debug/akson "$@"; }
 bob()   { XDG_RUNTIME_DIR=/tmp/bob   target/debug/akson "$@"; }
 
-# 1. Pair (alice invites, bob accepts), then each confirms the new peer.
-alice pair invite /tmp/inv.json
-bob   pair accept /tmp/inv.json
-alice peer confirm bob
-bob   peer confirm alice
+# 1. Pair: each prints its public identity token; each imports the other's
+#    under a label IT chooses. The import is the trust decision — the channel
+#    comes up by itself on first contact (design 8.2, ADR-0013/0015).
+alice token     # prints akson1...@127.0.0.1:18443 — hand it to bob
+bob   token     # prints akson1...@127.0.0.1:18444 — hand it to alice
+bob   peer add <alice-token-line> alice
+alice peer add <bob-token-line>   bob
 
 # 2. alice sends a code-review task to bob.
 cat > /tmp/task.json <<'JSON'

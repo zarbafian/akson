@@ -18,6 +18,9 @@ akson-proto = { workspace = true }
 akson-pairing = { workspace = true }
 akson-transport = { workspace = true }
 akson-store = { workspace = true }
+akson-ext = { workspace = true }
+akson-contract = { workspace = true }
+aksond = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 serde_json = { workspace = true }
@@ -27,7 +30,6 @@ time = { workspace = true }
 # authority + M9 sandbox/worker pipeline. Test-only, never shipped.
 [dev-dependencies]
 akson-authority = { workspace = true }
-akson-contract = { workspace = true }
 akson-sandbox = { workspace = true }
 akson-worker = { workspace = true }
 

@@ -873,7 +873,6 @@ fn config(dir: &str, agent: &str) -> DaemonConfig {
         local_performer: ident(agent),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: None,
         worker_exec: None,
         on_task: None,

@@ -1,0 +1,26 @@
+{
+  "name": "introduction/transcript",
+  "kind": "introduction",
+  "description": "ADR-0015 introduction transcript: signing bytes are EXACTLY the RFC 8785 canonical JSON with the domain field inside; digest + Ed25519 PoP over them.",
+  "input": {
+    "transcript": {
+      "protocol_version": 1,
+      "token_version": 1,
+      "role": "responder",
+      "dialer_root": "d-root-thumbprint-aaaaaaaaaaaaaaaaaaaaaaaaa",
+      "responder_root": "r-root-thumbprint-bbbbbbbbbbbbbbbbbbbbbbbbb",
+      "dialer_tls_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "responder_tls_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "tls_exporter": "ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ",
+      "nonce": "bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ",
+      "key_binding_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "private_key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+    "public_key_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+  },
+  "expected": {
+    "canonical": "{\"dialer_root\":\"d-root-thumbprint-aaaaaaaaaaaaaaaaaaaaaaaaa\",\"dialer_tls_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"domain\":\"akson-introduction-v1\",\"key_binding_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"nonce\":\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ\",\"protocol_version\":1,\"responder_root\":\"r-root-thumbprint-bbbbbbbbbbbbbbbbbbbbbbbbb\",\"responder_tls_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"role\":\"responder\",\"tls_exporter\":\"ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ\",\"token_version\":1}",
+    "digest_hex": "cb9276c505bfbbd7637d7d1495861412d88bebf37fc11315e09cb7c8960823ee",
+    "signature_b64url": "1iE7iREpV4aZJk4eAS7QrN5qlWKCG42buFTBXHd_jkrW_qDPzwa5GU3wdt4BiuwlJntb8JumNsqppxe1QMVfCg"
+  }
+}

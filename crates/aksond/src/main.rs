@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use aksond::{
-    admin_socket_path, bind_socket, current_uid, run_pair_listener, run_receive_listener, serve,
+    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve,
     socket_dir, worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
@@ -35,10 +35,6 @@ fn init() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  receive:      {}",
         config.receive_addr.as_deref().unwrap_or("(control-only)")
-    );
-    println!(
-        "  pairing:      {}",
-        config.pair_addr.as_deref().unwrap_or("(disabled)")
     );
     println!(
         "  endpoint fp:  sha256:{}",
@@ -81,18 +77,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::spawn(move || {
             if let Err(e) = run_receive_listener(state, &addr) {
                 eprintln!("aksond: receive listener stopped: {e}");
-            }
-        });
-    }
-
-    // The pairing bootstrap endpoint (if configured): its own thread + runtime,
-    // sharing the daemon's store. Inert until an invitation is minted.
-    if let Some(addr) = config.pair_addr.clone() {
-        let state = state.clone();
-        eprintln!("aksond: serving pairing (mTLS) at {addr}");
-        std::thread::spawn(move || {
-            if let Err(e) = run_pair_listener(state, &addr) {
-                eprintln!("aksond: pairing listener stopped: {e}");
             }
         });
     }

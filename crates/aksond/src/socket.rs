@@ -80,8 +80,6 @@ pub enum ControlRequest {
     /// Dial the introduction toward an imported peer now (`akson peer ping`,
     /// admin) — the same handshake the first `task send` would trigger.
     PeerPing { label: String },
-    /// Confirm a pending peer, promoting it to active (`akson peer confirm`, admin).
-    PeerConfirm { agent_id: String },
     /// Set a peer's standing auto-approval policy (`akson peer auto-approve`, admin):
     /// tasks of these types from this peer, within the byte ceiling, that ask for no
     /// outward disclosure, run without a per-task prompt. Empty `task_types` clears it.
@@ -134,10 +132,6 @@ pub enum ControlRequest {
     TaskDeliver { task_id: String },
     /// Send a task to a performer (sign + POST a proposal, admin only).
     TaskSend(crate::send::TaskSpec),
-    /// Accept a pairing invitation (admin only).
-    PairAccept { invitation: String },
-    /// Mint a pairing invitation (admin only).
-    PairInvite,
     /// Submit a worker result for completion (the narrow worker surface).
     SubmitResult(crate::result::ResultSubmission),
     /// Request a processor call on the worker's behalf (the narrow worker surface).
@@ -206,7 +200,6 @@ impl ControlRequest {
             | ControlRequest::PeerLabel { .. }
             | ControlRequest::PeerImportRemove { .. }
             | ControlRequest::PeerPing { .. } => ControlOp::Pair,
-            ControlRequest::PeerConfirm { .. } => ControlOp::Pair,
             ControlRequest::PeerAutoApprove { .. } => ControlOp::Policy,
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
@@ -215,7 +208,6 @@ impl ControlRequest {
             ControlRequest::TaskFulfill { .. } => ControlOp::FulfillTask,
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
             ControlRequest::TaskSend(_) => ControlOp::SendTask,
-            ControlRequest::PairAccept { .. } | ControlRequest::PairInvite => ControlOp::Pair,
             ControlRequest::SubmitResult(_) => ControlOp::SubmitResult,
             ControlRequest::RequestProcessorCall { .. } => ControlOp::RequestProcessorCall,
             ControlRequest::ProcessorAdd { .. }

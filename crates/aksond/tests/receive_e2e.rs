@@ -426,7 +426,6 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
         local_performer: ident("performer"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: None,
         worker_exec: None,
         on_task: None,
@@ -593,7 +592,6 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
         local_performer: ident("performer"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: Some(
             "[ -r /inputs/diff ] || exit 40; [ -r /inputs/manifest.json ] || exit 41; \
              printf '%s' 'reviewed: LGTM' > /output/response"
@@ -787,7 +785,6 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
         local_performer: ident("performer"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         // Run the adapter DIRECTLY (no shell) under the strict adapter seccomp
         // profile — the production path: a single confined process that cannot spawn
         // a child or open a socket, reaching the model only through the broker fd.
@@ -1158,7 +1155,6 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
         local_performer: ident("requester"),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: None,
         worker_exec: None,
         on_task: None,
@@ -1357,7 +1353,6 @@ async fn two_daemons_run_the_whole_task_round_trip() {
         local_performer: ident(agent),
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: None,
         worker_exec: None,
         on_task: None,

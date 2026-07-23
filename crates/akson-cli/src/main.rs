@@ -15,10 +15,9 @@
 //! - `akson task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 //! - `akson task send <spec.json>` — send a task to a performer (§10.2).
 //! - `akson processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
-//! - `akson peer list` — the paired peers (§16.4).
-//! - `akson peer confirm <agent>` — promote a pending peer to active (§8.2).
-//! - `akson pair invite <out-file>` — mint a pairing invitation (§8.2).
-//! - `akson pair accept <invitation-file>` — accept a pairing invitation (§8.2).
+//! - `akson token` — this endpoint's identity token (§8.2).
+//! - `akson peer add <token> <label>` — import a peer's token, the trust act (§8.2).
+//! - `akson peer list` — imported peers under their labels (§16.4).
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
@@ -38,9 +37,8 @@ fn main() -> ExitCode {
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
-        Some("pair") => pair(&mut args),
         _ => {
-            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|confirm|auto-approve}}, pair {{invite|accept}}");
+            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}");
             ExitCode::from(2)
         }
     }
@@ -62,77 +60,6 @@ fn token() -> ExitCode {
         result["root_thumbprint"].as_str().unwrap_or("?"),
     );
     println!("  they import it with:  akson peer add <that-line> <a-label-they-choose>");
-    ExitCode::SUCCESS
-}
-
-/// Routes the `akson pair …` subcommands over the admin control socket (§8.2).
-fn pair(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
-    match args.next().as_deref().and_then(OsStr::to_str) {
-        Some("invite") => match next_arg(args) {
-            Some(out) => pair_invite(&out),
-            None => usage("akson pair invite <out-file>"),
-        },
-        Some("accept") => match next_arg(args) {
-            Some(file) => pair_accept(&file),
-            None => usage("akson pair accept <invitation-file>"),
-        },
-        _ => usage("akson pair {invite <out-file>|accept <invitation-file>}"),
-    }
-}
-
-/// Mint a pairing invitation and write it to a file (`akson pair invite <out>`).
-fn pair_invite(out_file: &str) -> ExitCode {
-    let result = match call(&ControlRequest::PairInvite) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    let invitation = match serde_json::to_string_pretty(&result["invitation"]) {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("akson: the daemon returned a malformed invitation");
-            return ExitCode::from(1);
-        }
-    };
-    // The invitation carries a bearer secret — write it owner-only.
-    if let Err(e) = write_owner_only(out_file, invitation.as_bytes()) {
-        eprintln!("akson: cannot write {out_file}: {e}");
-        return ExitCode::from(2);
-    }
-    println!("invitation written to {out_file}");
-    ExitCode::SUCCESS
-}
-
-/// Writes `bytes` to `path` with `0600` permissions (an invitation is a secret).
-fn write_owner_only(path: &str, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(bytes)
-}
-
-/// Accept a pairing invitation from a file (`akson pair accept <file>`).
-fn pair_accept(invitation_file: &str) -> ExitCode {
-    let invitation = match std::fs::read_to_string(invitation_file) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("akson: cannot read {invitation_file}: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let result = match call(&ControlRequest::PairAccept { invitation }) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    println!(
-        "paired with {} ({})",
-        result["peer"].as_str().unwrap_or("?"),
-        result["endpoint"].as_str().unwrap_or("?"),
-    );
     ExitCode::SUCCESS
 }
 
@@ -169,10 +96,6 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             Some(label) => peer_ping(&label),
             None => usage("akson peer ping <label>"),
         },
-        Some("confirm") => match next_arg(args) {
-            Some(agent) => peer_confirm(&agent),
-            None => usage("akson peer confirm <agent-id>"),
-        },
         Some("auto-approve") => {
             // akson peer auto-approve <agent> --task-type <t> [--task-type <t>]… [--max-bytes N]
             // akson peer auto-approve <agent> --off
@@ -208,7 +131,7 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             peer_auto_approve(&agent, if off { Vec::new() } else { task_types }, max_bytes)
         }
         _ => usage(
-            "akson peer {add <token> <label>|list|label <old> <new>|remove <label>|knocks|ping <label>|confirm <agent-id>|auto-approve <agent> …}",
+            "akson peer {add <token> <label>|list|label <old> <new>|remove <label>|knocks|ping <label>|auto-approve <agent> …}",
         ),
     }
 }
@@ -328,22 +251,6 @@ fn peer_auto_approve(agent_id: &str, task_types: Vec<String>, max_response_bytes
             "auto-approve on for {agent_id}: task types [{}], up to {max_response_bytes} B, no processor/artifacts",
             task_types.join(", ")
         );
-    }
-    ExitCode::SUCCESS
-}
-
-/// Confirm a pending peer (`akson peer confirm <agent>`).
-fn peer_confirm(agent_id: &str) -> ExitCode {
-    let result = match call(&ControlRequest::PeerConfirm {
-        agent_id: agent_id.to_owned(),
-    }) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    if result["confirmed"].as_bool() == Some(true) {
-        println!("confirmed peer {agent_id}");
-    } else {
-        println!("peer {agent_id} was not pending (nothing to confirm)");
     }
     ExitCode::SUCCESS
 }

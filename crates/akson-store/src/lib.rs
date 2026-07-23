@@ -39,8 +39,6 @@ use akson_contract::{
     accept_head, apply_revision, Head, HeadState, LockError, ParsedContract, RevisionVerdict,
 };
 use akson_crypto::identity::PeerIdentity;
-use akson_pairing::invitation::PendingInvitation;
-use akson_pairing::state_machine::{Consumed, LedgerError, PairingLedger, PairingStore};
 
 /// The single peer-status type (design §8.2 step 7, §8.4). Persisted in the
 /// queryable `peers.status` column (not sealed), so an idle-time gate need not
@@ -80,8 +78,6 @@ fn import_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PeerImport> {
 const COMMITMENT_KEY_CONTEXT: &str = "meta.commitment_key";
 const INBOX_BODY_CONTEXT: &str = "inbox.body";
 const INBOX_RESPONSE_CONTEXT: &str = "inbox.response";
-const INVITATION_CONTEXT: &str = "pairing.invitation";
-const PAIR_RESPONSE_CONTEXT: &str = "pairing.response";
 const CONTRACT_PAYLOAD_CONTEXT: &str = "contract.payload";
 const PROCESSOR_CONFIG_CONTEXT: &str = "processor.config";
 const WORK_ORDER_CONTEXT: &str = "work_order.issued";
@@ -640,36 +636,6 @@ impl Store {
         }
     }
 
-    /// The agent ids of peers awaiting the operator's confirmation (design §8.2
-    /// step 7) — what `akson pair confirm` lists.
-    pub fn pending_peer_ids(&self) -> Result<Vec<String>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT agent_id FROM peers WHERE status = 'pending' ORDER BY agent_id")?;
-        let ids = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ids)
-    }
-
-    /// Confirms a pending peer, moving it to active so it may exchange work
-    /// (design §8.2 step 7). Idempotent-safe: returns `true` only when a pending
-    /// peer was actually promoted (a distinct, auditable operator act), `false`
-    /// if the peer was already active or does not exist. The transition and the
-    /// audit record commit together.
-    pub fn confirm_peer(&self, agent_id: &str, now: i64) -> Result<bool, StoreError> {
-        let tx = self.conn.unchecked_transaction()?;
-        let changed = tx.execute(
-            "UPDATE peers SET status = 'active' WHERE agent_id = ?1 AND status = 'pending'",
-            [agent_id],
-        )?;
-        if changed == 1 {
-            audit::append(&tx, now, "peer.confirmed", agent_id)?;
-        }
-        tx.commit()?;
-        Ok(changed == 1)
-    }
-
     /// Forgets a pinned peer (design §8.4 removal): deletes the record so it may
     /// no longer exchange work — `get_peer` returns `None` and the work path
     /// finds no peer. Returns whether a peer existed; the removal is audited.
@@ -976,220 +942,6 @@ struct PriorSighting {
     commitment: Vec<u8>,
     task_id: Option<String>,
     response: Vec<u8>,
-}
-
-impl Store {
-    /// Purges expired invitations and consumed pending-pair records — the
-    /// pairing-ledger GC (design §8.2: retained only until invitation expiry).
-    pub fn purge_expired_pairing(&self, now: i64) -> Result<(), StoreError> {
-        self.conn
-            .execute("DELETE FROM invitations WHERE not_after <= ?1", [now])?;
-        self.conn
-            .execute("DELETE FROM pending_pairs WHERE expires_at <= ?1", [now])?;
-        Ok(())
-    }
-}
-
-fn ledger_err<E: std::fmt::Display>(e: E) -> LedgerError {
-    LedgerError(e.to_string())
-}
-
-/// The persistent, encrypted pairing ledger (design §8.2). Invitations and
-/// consumed-secret records survive restart; sealed values are encrypted with
-/// the database DEK.
-impl PairingLedger for Store {
-    fn consumed(&self, verifier: &[u8; 32]) -> Result<Option<Consumed>, LedgerError> {
-        let row: Option<(Vec<u8>, Vec<u8>, i64)> = self
-            .conn
-            .query_row(
-                "SELECT transcript_digest, response, expires_at FROM pending_pairs WHERE verifier = ?1",
-                [verifier.as_slice()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(ledger_err)?;
-        match row {
-            Some((digest, sealed, expires_at)) => {
-                let response = self
-                    .dek
-                    .open(PAIR_RESPONSE_CONTEXT, &sealed)
-                    .map_err(ledger_err)?;
-                let transcript_digest: [u8; 32] = digest.try_into().map_err(|_| {
-                    LedgerError("stored transcript digest is not 32 bytes".to_owned())
-                })?;
-                Ok(Some(Consumed {
-                    transcript_digest,
-                    response,
-                    expires_at,
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn active_exists(&self, verifier: &[u8; 32]) -> Result<bool, LedgerError> {
-        let count: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM invitations WHERE verifier = ?1",
-                [verifier.as_slice()],
-                |r| r.get(0),
-            )
-            .map_err(ledger_err)?;
-        Ok(count > 0)
-    }
-
-    fn any_pairing_open(&self, now: i64) -> Result<bool, LedgerError> {
-        // A live invitation (not yet expired) or a still-retriable consumed
-        // record keeps the endpoint enabled; expired rows do not (they are GC'd
-        // by `purge_expired_pairing`).
-        let count: i64 = self
-            .conn
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM invitations   WHERE not_after  > ?1)
-                      + (SELECT COUNT(*) FROM pending_pairs WHERE expires_at > ?1)",
-                [now],
-                |r| r.get(0),
-            )
-            .map_err(ledger_err)?;
-        Ok(count > 0)
-    }
-
-    fn take_active(
-        &mut self,
-        verifier: &[u8; 32],
-    ) -> Result<Option<PendingInvitation>, LedgerError> {
-        let tx = self.conn.unchecked_transaction().map_err(ledger_err)?;
-        let sealed: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT pending FROM invitations WHERE verifier = ?1",
-                [verifier.as_slice()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(ledger_err)?;
-        let result = match sealed {
-            Some(bytes) => {
-                let json = self
-                    .dek
-                    .open(INVITATION_CONTEXT, &bytes)
-                    .map_err(ledger_err)?;
-                let pending: PendingInvitation =
-                    serde_json::from_slice(&json).map_err(ledger_err)?;
-                tx.execute(
-                    "DELETE FROM invitations WHERE verifier = ?1",
-                    [verifier.as_slice()],
-                )
-                .map_err(ledger_err)?;
-                Some(pending)
-            }
-            None => None,
-        };
-        tx.commit().map_err(ledger_err)?;
-        Ok(result)
-    }
-
-    fn put_active(
-        &mut self,
-        verifier: [u8; 32],
-        invitation: PendingInvitation,
-    ) -> Result<(), LedgerError> {
-        let json = serde_json::to_vec(&invitation).map_err(ledger_err)?;
-        let sealed = self.dek.seal(INVITATION_CONTEXT, &json);
-        self.conn
-            .execute(
-                "INSERT INTO invitations (verifier, pending, not_after) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(verifier) DO UPDATE SET pending = excluded.pending, not_after = excluded.not_after",
-                params![verifier.as_slice(), sealed, invitation.not_after],
-            )
-            .map_err(ledger_err)?;
-        Ok(())
-    }
-
-    fn commit_consumed(
-        &mut self,
-        verifier: [u8; 32],
-        consumed: Consumed,
-    ) -> Result<(), LedgerError> {
-        let tx = self.conn.unchecked_transaction().map_err(ledger_err)?;
-        // The secret is consumed (invitation removed) in the same transaction
-        // that records the pending-pair response (§8.2). DO NOTHING on conflict
-        // preserves the first record, so a race cannot create a second peer.
-        tx.execute(
-            "DELETE FROM invitations WHERE verifier = ?1",
-            [verifier.as_slice()],
-        )
-        .map_err(ledger_err)?;
-        let sealed = self.dek.seal(PAIR_RESPONSE_CONTEXT, &consumed.response);
-        tx.execute(
-            "INSERT INTO pending_pairs (verifier, transcript_digest, response, expires_at)
-             VALUES (?1, ?2, ?3, ?4) ON CONFLICT(verifier) DO NOTHING",
-            params![
-                verifier.as_slice(),
-                consumed.transcript_digest.as_slice(),
-                sealed,
-                consumed.expires_at
-            ],
-        )
-        .map_err(ledger_err)?;
-        tx.commit().map_err(ledger_err)?;
-        Ok(())
-    }
-}
-
-impl PairingStore for Store {
-    fn store_pending_peer(&mut self, peer: &PeerIdentity) -> Result<(), LedgerError> {
-        // A pairing must never silently overwrite an existing peer that shares
-        // this (attacker-chosen) agent id with *different* cryptographic
-        // identity — that would let an invited party hijack another peer's
-        // record. A safety-critical change is refused; re-pairing must be
-        // explicit (design §8.4). An unchanged identity is idempotent.
-        if let Some(existing) = self.get_peer(&peer.agent_id).map_err(ledger_err)? {
-            if let Some(reason) = akson_pairing::lifecycle::detect_change(&existing.identity, peer)
-            {
-                return Err(LedgerError(format!(
-                    "refusing to overwrite peer {:?}: {reason:?} (re-pair explicitly)",
-                    peer.agent_id
-                )));
-            }
-        }
-        // A freshly paired peer lands *pending*: it may not exchange work until
-        // the operator confirms it (§8.2 step 7). On an idempotent re-store the
-        // status is left untouched, never downgraded.
-        self.put_peer_status(
-            &StoredPeer {
-                identity: peer.clone(),
-                local_note: String::new(),
-            },
-            PeerStatus::Pending,
-        )
-        .map_err(ledger_err)
-    }
-
-    fn persist_peer_keys(
-        &mut self,
-        keys: &akson_pairing::key_binding::KeyBindingSet,
-        now: i64,
-    ) -> Result<(), LedgerError> {
-        // Retain each verified per-purpose public key, keyed by the peer's TLS
-        // fingerprint, so a received message can be verified against it (§8.1).
-        for (purpose, entry) in &keys.keys {
-            let vk = entry
-                .jwk
-                .to_key()
-                .map_err(|e| LedgerError(format!("peer key jwk is invalid: {e}")))?;
-            self.put_peer_key(
-                &keys.tls_certificate_sha256,
-                purpose,
-                &keys.subject.agent,
-                &keys.subject.issuer,
-                &vk.to_bytes(),
-                now,
-            )
-            .map_err(ledger_err)?;
-        }
-        Ok(())
-    }
 }
 
 /// The task-contract head and stored revisions (design §9.3, §10.2). The pure
@@ -2833,51 +2585,9 @@ mod tests {
     }
 
     #[test]
-    fn paired_peer_is_pending_until_confirmed() {
-        use akson_pairing::state_machine::PairingStore;
-        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
-        store.store_pending_peer(&sample_peer("").identity).unwrap();
-
-        // Freshly paired → pending, and listed as awaiting confirmation.
-        assert_eq!(
-            store.peer_status("agent-a").unwrap(),
-            Some(PeerStatus::Pending)
-        );
-        assert_eq!(
-            store.pending_peer_ids().unwrap(),
-            vec!["agent-a".to_owned()]
-        );
-
-        // The operator confirms once; the promotion is reported and audited.
-        let before = store.verify_audit().unwrap();
-        assert!(store.confirm_peer("agent-a", 1_000).unwrap());
-        assert_eq!(store.verify_audit().unwrap(), before + 1);
-        assert_eq!(
-            store.peer_status("agent-a").unwrap(),
-            Some(PeerStatus::Active)
-        );
-        assert!(store.pending_peer_ids().unwrap().is_empty());
-
-        // Confirming again is a no-op: already active, nothing audited.
-        let after = store.verify_audit().unwrap();
-        assert!(!store.confirm_peer("agent-a", 1_001).unwrap());
-        assert!(!store.confirm_peer("nobody", 1_002).unwrap());
-        assert_eq!(store.verify_audit().unwrap(), after);
-    }
-
-    #[test]
     fn remove_enables_explicit_repair_of_a_rotated_peer() {
-        use akson_pairing::state_machine::PairingStore;
-        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
-        store.store_pending_peer(&sample_peer("").identity).unwrap();
-        store.confirm_peer("agent-a", 1_000).unwrap();
-
-        // A same-id peer presenting a rotated key is refused: the hijack guard
-        // (§8.4) never silently overwrites a pinned identity.
-        let mut rotated = sample_peer("").identity;
-        rotated.agent_card_key =
-            Fingerprint::jwk(&ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]).verifying_key());
-        assert!(store.store_pending_peer(&rotated).is_err());
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        store.put_peer(&sample_peer("")).unwrap();
 
         // The operator removes the peer on purpose (audited); it can no longer
         // exchange work.
@@ -2887,14 +2597,12 @@ mod tests {
         assert!(store.get_peer("agent-a").unwrap().is_none());
         assert!(store.peer_status("agent-a").unwrap().is_none());
 
-        // Now the rotated identity re-pairs cleanly — landing pending, requiring
-        // a fresh confirmation, never silently active.
-        store.store_pending_peer(&rotated).unwrap();
-        assert_eq!(
-            store.peer_status("agent-a").unwrap(),
-            Some(PeerStatus::Pending)
-        );
-        store.confirm_peer("agent-a", 1_002).unwrap();
+        // The rotated identity re-pins cleanly after the deliberate removal
+        // (the fresh-introduction path re-verifies before this ever runs).
+        let mut rotated = sample_peer("");
+        rotated.identity.agent_card_key =
+            Fingerprint::jwk(&ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]).verifying_key());
+        store.put_peer(&rotated).unwrap();
         assert_eq!(
             store
                 .get_peer("agent-a")
@@ -2902,7 +2610,7 @@ mod tests {
                 .unwrap()
                 .identity
                 .agent_card_key,
-            rotated.agent_card_key
+            rotated.identity.agent_card_key
         );
 
         // Removing an unknown peer is a no-op, unaudited.
@@ -2912,18 +2620,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_put_peer_is_active_and_restore_never_downgrades() {
-        use akson_pairing::state_machine::PairingStore;
-        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
-        // An operator-added peer is active immediately.
+    fn direct_put_peer_is_active_and_restore_keeps_status() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         store.put_peer(&sample_peer("note")).unwrap();
         assert_eq!(
             store.peer_status("agent-a").unwrap(),
             Some(PeerStatus::Active)
         );
-        // An idempotent re-store of the same identity must not silently reopen
-        // it as pending.
-        store.store_pending_peer(&sample_peer("").identity).unwrap();
+        // An idempotent re-store of the same identity keeps it active.
+        store.put_peer(&sample_peer("note")).unwrap();
         assert_eq!(
             store.peer_status("agent-a").unwrap(),
             Some(PeerStatus::Active)
@@ -3719,37 +3424,22 @@ mod tests {
     // --- peer verification keys (M12) ---
 
     #[test]
-    fn persist_peer_keys_retains_the_proposal_key_by_fingerprint() {
+    fn put_peer_key_retains_the_proposal_key_by_fingerprint() {
         use akson_crypto::keypair::PurposeKey;
         use akson_crypto::purpose::KeyPurpose;
-        use akson_pairing::key_binding::{Identity as BindingIdentity, KeyBindingSet, KeyEntry};
-        use std::collections::BTreeMap;
 
-        let mut store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let proposal = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[5u8; 32]);
-        let jwk = proposal.verifying().to_jwk();
-        let mut keys = BTreeMap::new();
-        keys.insert(
-            "contract-proposal".to_owned(),
-            KeyEntry {
-                jwk: jwk.clone(),
-                thumbprint: jwk.thumbprint(),
-                generation: 0,
-                not_before: "2020-01-01T00:00:00Z".to_owned(),
-                not_after: "2030-01-01T00:00:00Z".to_owned(),
-            },
-        );
-        let bindings = KeyBindingSet {
-            schema_version: 1,
-            subject: BindingIdentity {
-                issuer: "local".to_owned(),
-                agent: "peer-1".to_owned(),
-            },
-            tls_certificate_sha256: "fp-abc".to_owned(),
-            keys,
-        };
-
-        store.persist_peer_keys(&bindings, 100).unwrap();
+        store
+            .put_peer_key(
+                "fp-abc",
+                "contract-proposal",
+                "peer-1",
+                "local",
+                &proposal.verifying().to_public_bytes(),
+                100,
+            )
+            .unwrap();
         // The proposal key is resolvable by TLS fingerprint + purpose.
         let pk = store
             .peer_key("fp-abc", "contract-proposal")

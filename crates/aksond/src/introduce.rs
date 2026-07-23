@@ -21,6 +21,7 @@ use akson_pairing::introduction::{
     Role, COMPLETE_PATH, HELLO_PATH, INTRODUCTION_MEDIA_TYPE, PROTOCOL_VERSION, TOKEN_VERSION,
 };
 use akson_pairing::session::peer_identity_from;
+use akson_proto::card_sig;
 use akson_proto::profile::ProfileConfig;
 use akson_proto::v1::AgentCard;
 use akson_store::{IntroCommitOutcome, PeerImport, Store, StoredPeer};
@@ -65,8 +66,8 @@ pub struct IntroIdentity {
 
 impl IntroIdentity {
     pub fn from_state(state: &DaemonState) -> Result<Self, Problem> {
-        let keys = crate::pairing::statement_keys(state);
-        let signed_card = crate::pairing::signed_endpoint_card(state)?;
+        let keys = statement_keys(state);
+        let signed_card = signed_endpoint_card(state)?;
         let own_root = state
             .identity()
             .purpose_key(KeyPurpose::AgentCard)
@@ -86,6 +87,60 @@ impl IntroIdentity {
             profile,
         })
     }
+}
+
+/// This endpoint's signed extended Agent Card, **profile-valid**: HTTP+JSON v1
+/// interface, streaming/push off, extended card, the full required-extension
+/// set, and mandatory mTLS. The introduction (ADR-0015) verifies the
+/// counterparty's card with `validate_agent_card`, so the card this endpoint
+/// presents must pass the same bar.
+pub(crate) fn signed_endpoint_card(state: &DaemonState) -> Result<AgentCard, Problem> {
+    let identity = state.identity();
+    let local = &state.config().local_performer;
+    let extensions: Vec<serde_json::Value> = akson_ext::namespace::required_extension_uris()
+        .into_iter()
+        .map(|uri| serde_json::json!({ "uri": uri, "required": true }))
+        .collect();
+    let card_value = serde_json::json!({
+        "name": local.agent,
+        "description": "akson endpoint",
+        "version": "1.0.0",
+        "supportedInterfaces": [{
+            "url": state.config().interface_url,
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": "1.0",
+        }],
+        "capabilities": {
+            "streaming": false,
+            "pushNotifications": false,
+            "extendedAgentCard": true,
+            "extensions": extensions,
+        },
+        "securitySchemes": {
+            "mtls": { "mtlsSecurityScheme": { "description": "pinned mutual TLS" } }
+        },
+        "securityRequirements": [{ "schemes": { "mtls": { "list": [] } } }],
+    });
+    let mut card: AgentCard = serde_json::from_value(card_value)
+        .map_err(|_| Problem::new(500, "internal", "the agent card could not be built"))?;
+    let sig = card_sig::sign_card(&card, &identity.purpose_key(KeyPurpose::AgentCard))
+        .map_err(|_| Problem::new(500, "card-sign", "the agent card could not be signed"))?;
+    card.signatures.push(sig);
+    Ok(card)
+}
+
+/// The STATEMENT verification keys this endpoint advertises (a closed set);
+/// TLS identity is pinned by the certificate digest, not advertised here.
+pub(crate) fn statement_keys(state: &DaemonState) -> BTreeMap<KeyPurpose, PurposeKey> {
+    let identity = state.identity();
+    let mut keys = BTreeMap::new();
+    for purpose in KeyPurpose::PAIRED {
+        if purpose == KeyPurpose::TlsEndpoint {
+            continue;
+        }
+        keys.insert(purpose, identity.purpose_key(purpose));
+    }
+    keys
 }
 
 /// The profile every introduced card must pass: the full required Akson

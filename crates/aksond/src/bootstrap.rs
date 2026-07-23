@@ -44,8 +44,6 @@ use crate::control::Problem;
 use crate::control_dispatch::dispatch_control;
 use crate::delivery::run_delivery;
 use crate::keys::IdentityKeys;
-use crate::pair_serve::run_pair_invite;
-use crate::pairing::run_pair_accept;
 use crate::result::submit_result;
 use crate::send::run_send;
 use crate::socket::ControlRequest;
@@ -76,9 +74,6 @@ pub struct DaemonConfig {
     /// Where to serve the mTLS A2A receive listener (e.g. `127.0.0.1:8443`).
     /// `None` runs control-only, with no network listener.
     pub receive_addr: Option<String>,
-    /// Where to serve the mTLS pairing bootstrap endpoint (e.g. `127.0.0.1:9443`).
-    /// `None` disables pairing over the network; also the invitation's endpoint URL.
-    pub pair_addr: Option<String>,
     /// The worker command to run inside the sandbox for an approved task
     /// (`AKSON_WORKER_CMD`). Run as `/bin/sh -c <cmd>` with the approved inputs
     /// read-only at `/inputs` and a writable `/output`; the worker writes its
@@ -113,7 +108,6 @@ impl DaemonConfig {
         let interface_url = env_nonempty("AKSON_INTERFACE_URL")
             .unwrap_or_else(|| "https://localhost/a2a".to_owned());
         let receive_addr = env_nonempty("AKSON_RECEIVE_ADDR");
-        let pair_addr = env_nonempty("AKSON_PAIR_ADDR");
         let worker_command = env_nonempty("AKSON_WORKER_CMD");
         // A production adapter runs directly (no shell) under the strict profile;
         // split the command line on whitespace into argv. Empty → None.
@@ -125,7 +119,6 @@ impl DaemonConfig {
             local_performer: Identity { issuer, agent },
             interface_url,
             receive_addr,
-            pair_addr,
             worker_command,
             worker_exec,
             on_task,
@@ -294,7 +287,6 @@ impl DaemonState {
                 "agent": self.config.local_performer.agent,
                 "interface_url": self.config.interface_url,
                 "receive_addr": self.config.receive_addr,
-                "pair_addr": self.config.pair_addr,
                 "endpoint_fingerprint": self.endpoint_cert.fingerprint.value,
                 "data_dir": self.config.data_dir.display().to_string(),
             })),
@@ -336,13 +328,6 @@ impl DaemonState {
                     })
                     .collect();
                 Ok(serde_json::json!({ "peers": items, "imports": imports }))
-            }
-            ControlRequest::PeerConfirm { agent_id } => {
-                let store = self.store.lock().map_err(|_| internal())?;
-                let confirmed = store
-                    .confirm_peer(agent_id, now_unix())
-                    .map_err(|_| internal())?;
-                Ok(serde_json::json!({ "confirmed": confirmed, "agent_id": agent_id }))
             }
             ControlRequest::Token => {
                 let root = self
@@ -670,8 +655,6 @@ impl DaemonState {
                     run_send(self, &spec)
                 }
             }
-            ControlRequest::PairAccept { invitation } => run_pair_accept(self, invitation),
-            ControlRequest::PairInvite => run_pair_invite(self),
             ControlRequest::RequestProcessorCall {
                 processor_id,
                 work_order_id,
@@ -954,7 +937,6 @@ mod tests {
             },
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
-            pair_addr: None,
             worker_command: None,
             worker_exec: None,
             on_task: None,

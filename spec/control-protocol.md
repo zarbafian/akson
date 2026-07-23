@@ -12,7 +12,7 @@ the daemon who it is:
 
 ~~~text
 $ printf '{"op":"who_am_i"}\n' | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/akson/admin.sock"
-{"outcome":"ok","result":{"issuer":"orgB","agent":"bob","interface_url":"https://127.0.0.1:18444/a2a","receive_addr":"127.0.0.1:18444","pair_addr":"127.0.0.1:19444","endpoint_fingerprint":"9f86d0…","data_dir":"/tmp/bob-data"}}
+{"outcome":"ok","result":{"issuer":"orgB","agent":"bob","interface_url":"https://127.0.0.1:18444/a2a","receive_addr":"127.0.0.1:18444","endpoint_fingerprint":"9f86d0…","data_dir":"/tmp/bob-data"}}
 ~~~
 
 That is the whole shape of every exchange. `akson whoami` is exactly this request; the
@@ -50,7 +50,7 @@ Every connection is checked twice before the request runs:
 
 | Socket | Path | For |
 |---|---|---|
-| **admin** | `$XDG_RUNTIME_DIR/akson/admin.sock` | Authority-bearing operator ops (pair, approve, run, deliver, send, configure). |
+| **admin** | `$XDG_RUNTIME_DIR/akson/admin.sock` | Authority-bearing operator ops (peer import, approve, run, deliver, send, configure). |
 | **worker** | `$XDG_RUNTIME_DIR/akson/worker.sock` | The narrow surface the sandboxed worker/adapter uses: submit a result, request a brokered processor call. |
 
 Admin dominates worker: an admin-socket connection may invoke any op; a worker-socket
@@ -67,11 +67,15 @@ problem that names only the surface, never the op's internals.
 | `op` | Args | Surface | `akson …` | Result (on `ok`) |
 |---|---|---|---|---|
 | `diagnose` | — | admin | `doctor` / `status` | `{daemon:"aksond", capabilities:[…]}` — sandbox/host health |
-| `who_am_i` | — | admin | `whoami` | `{issuer, agent, interface_url, receive_addr, pair_addr, endpoint_fingerprint, data_dir}` |
+| `who_am_i` | — | admin | `whoami` | `{issuer, agent, interface_url, receive_addr, endpoint_fingerprint, data_dir}` |
 | `peer_list` | — | admin | `peer list` | `{peers:[{agent_id, endpoint, status}]}` |
 | `peer_confirm` | `agent_id` | admin | `peer confirm <agent>` | `{confirmed:bool, agent_id}` |
-| `pair_invite` | — | admin | `pair invite <file>` | a pairing invitation blob |
-| `pair_accept` | `invitation` | admin | `pair accept <file>` | the accepted-peer record |
+| `token` | — | admin | `token` | `{token, presentation, root_thumbprint, hint}` — this endpoint's identity token (ADR-0013) |
+| `peer_add` | `token, label, endpoint?, update?` | admin | `peer add <token> <label>` | the recorded import — the trust act of pairing (§8.2 step 3) |
+| `peer_label` | `label, new_label` | admin | `peer label <old> <new>` | the renamed label (purely local) |
+| `peer_import_remove` | `label` | admin | `peer remove <label>` | tombstones the import, advances its epoch, drops pinned state |
+| `peer_knocks` | — | admin | `peer knocks` | refused introductions (claims are unauthenticated) |
+| `peer_ping` | `label` | admin | `peer ping <label>` | dials the introduction now (ADR-0015) |
 | `task_inbox` | — | admin | `task inbox` | `{tasks:[{task_id, contract_id, revision, state:"submitted"}]}` |
 | `task_show` | `task_id` | admin | `task show <id>` | `{task_id, revision, sentence, sections:[{heading, lines}]}` — the §5.2 risk card |
 | `task_approve` | `task_id`, `processor?`, `artifacts?` | admin | `task approve <id> [--processor <id>] [--artifacts]` | `{approved:true, work_order_id, granted_capabilities:[…]}` |

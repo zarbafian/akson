@@ -44,7 +44,6 @@ fn config(dir: &Path) -> DaemonConfig {
         },
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
-        pair_addr: None,
         worker_command: None,
         worker_exec: None,
         on_task: None,
