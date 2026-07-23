@@ -4,12 +4,16 @@
 //! What you write:
 //! ```
 //! # use akson_crypto::token::{encode_token, decode_token, split_presentation};
-//! let token = encode_token(&[7u8; 32]);
+//! # use akson_crypto::keypair::PurposeKey;
+//! # use akson_crypto::purpose::KeyPurpose;
+//! # let root = PurposeKey::from_seed(KeyPurpose::AgentCard, &[7u8; 32])
+//! #     .verifying().to_public_bytes();
+//! let token = encode_token(&root);
 //! assert!(token.starts_with("akson1"));
 //! assert_eq!(token.len(), 65);
 //! let (tok, hint) = split_presentation("akson1abc@198.51.100.7:18444");
 //! assert_eq!((tok, hint), ("akson1abc", Some("198.51.100.7:18444")));
-//! # assert_eq!(decode_token(&token).unwrap().root_key, [7u8; 32]);
+//! # assert_eq!(decode_token(&token).unwrap().root_key, root);
 //! ```
 //!
 //! The container is bech32m (BIP-350): HRP `akson`, payload
@@ -66,6 +70,8 @@ pub enum TokenError {
     UnknownVersion(u8),
     #[error("the token payload is not a version byte plus a 32-byte key")]
     BadLength,
+    #[error("the token's key is not a usable Ed25519 point")]
+    WeakKey,
 }
 
 /// Splits the `<token>[@host:port]` presentation form (ADR-0013): the suffix
@@ -102,6 +108,14 @@ pub fn decode_token(s: &str) -> Result<IdentityToken, TokenError> {
     if s.len() > MAX_TOKEN_CHARS {
         return Err(TokenError::TooLong);
     }
+    // ASCII only, before any case handling: a Unicode look-alike (e.g. the
+    // Kelvin sign, which LOWERCASES to ascii 'k') must fail as a bad
+    // character in both this decoder and xcheck's, never fall through
+    // case-folding rules that differ between languages.
+    if !s.is_ascii() {
+        let pos = s.bytes().position(|b| !b.is_ascii()).unwrap_or(0);
+        return Err(TokenError::BadChar(pos));
+    }
     let has_lower = s.bytes().any(|b| b.is_ascii_lowercase());
     let has_upper = s.bytes().any(|b| b.is_ascii_uppercase());
     if has_lower && has_upper {
@@ -135,6 +149,15 @@ pub fn decode_token(s: &str) -> Result<IdentityToken, TokenError> {
         return Err(TokenError::UnknownVersion(version));
     }
     let root_key: [u8; 32] = key.try_into().map_err(|_| TokenError::BadLength)?;
+    // The key must decompress to a non-small-order point NOW: a weak "key"
+    // can never verify anything, so importing it would only burn a label and
+    // confuse first contact (slice-3 review).
+    let usable = ed25519_dalek::VerifyingKey::from_bytes(&root_key)
+        .map(|vk| !vk.is_weak())
+        .unwrap_or(false);
+    if !usable {
+        return Err(TokenError::WeakKey);
+    }
     Ok(IdentityToken { version, root_key })
 }
 

@@ -97,11 +97,11 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             None => usage("akson peer ping <label>"),
         },
         Some("auto-approve") => {
-            // akson peer auto-approve <agent> --task-type <t> [--task-type <t>]… [--max-bytes N]
-            // akson peer auto-approve <agent> --off
+            // akson peer auto-approve <label> --task-type <t> [--task-type <t>]… [--max-bytes N]
+            // akson peer auto-approve <label> --off
             let Some(agent) = next_arg(args) else {
                 return usage(
-                    "akson peer auto-approve <agent> --task-type <t> [--max-bytes N] | --off",
+                    "akson peer auto-approve <label> --task-type <t> [--max-bytes N] | --off",
                 );
             };
             let mut task_types = Vec::new();
@@ -125,7 +125,7 @@ fn peer(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             }
             if !off && task_types.is_empty() {
                 return usage(
-                    "akson peer auto-approve <agent> --task-type <t> [--max-bytes N] | --off",
+                    "akson peer auto-approve <label> --task-type <t> [--max-bytes N] | --off",
                 );
             }
             peer_auto_approve(&agent, if off { Vec::new() } else { task_types }, max_bytes)

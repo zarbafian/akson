@@ -18,6 +18,7 @@ fn error_name(e: &TokenError) -> &'static str {
         TokenError::BadChecksum => "bad-checksum",
         TokenError::UnknownVersion(_) => "unknown-version",
         TokenError::BadLength => "bad-length",
+        TokenError::WeakKey => "weak-key",
     }
 }
 

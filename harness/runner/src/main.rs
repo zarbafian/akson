@@ -126,8 +126,12 @@ fn import_token_file(store: &Store, file: &str, label: &str) -> Result<String, E
         .to_jwk()
         .thumbprint();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    store.add_peer_import(&thumb, label, hint.unwrap_or(""), now)?;
-    Ok(thumb)
+    match store.add_peer_import(&thumb, label, hint.unwrap_or(""), now)? {
+        akson_store::ImportOutcome::Added => Ok(thumb),
+        // Reused state must fail loudly, not introduce whichever prior import
+        // owns the label (slice-3 review).
+        other => Err(format!("import of {label:?} not applied: {other:?}").into()),
+    }
 }
 
 /// Reads `--flag value` pairs from the argument list.

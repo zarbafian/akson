@@ -204,6 +204,18 @@ impl DaemonState {
             else {
                 return Ok(performer.to_owned());
             };
+            // A label must not silently shadow a real agent id (slice-3
+            // review): if a DIFFERENT pinned peer also answers to this exact
+            // string as its agent id, refuse rather than guess.
+            if let Some(other) = store.get_peer(performer).map_err(|_| internal())? {
+                if other.identity.agent_card_key.value != import.root_thumbprint {
+                    return Err(Problem::new(
+                        409,
+                        "ambiguous-performer",
+                        "this name is both a local label and another peer's agent id — rename the label",
+                    ));
+                }
+            }
             if let Some((agent_id, status)) = store
                 .peer_by_root(&import.root_thumbprint)
                 .map_err(|_| internal())?
@@ -228,12 +240,21 @@ impl DaemonState {
             .build()
             .map_err(|_| internal())?;
         let (peer, _) = runtime
-            .block_on(crate::introduce::dial_introduction(
-                &me,
-                self.store.clone(),
-                &import,
-                OffsetDateTime::now_utc(),
-            ))
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(20),
+                    crate::introduce::dial_introduction(
+                        &me,
+                        self.store.clone(),
+                        &import,
+                        OffsetDateTime::now_utc(),
+                    ),
+                )
+                .await
+                .map_err(|_| {
+                    crate::introduce::IntroduceError::Http("introduction timed out".into())
+                })?
+            })
             .map_err(|e| match e {
                 crate::introduce::IntroduceError::Refused => {
                     Problem::new(403, "introduction-refused", &e.to_string())
@@ -379,8 +400,24 @@ impl DaemonState {
                         "this is your own identity token — hand it to a peer instead",
                     ));
                 }
+                if !valid_label(label) {
+                    return Err(Problem::new(
+                        400,
+                        "bad-label",
+                        "labels are 1-64 chars of [a-z0-9-], no edge or doubled hyphen",
+                    ));
+                }
                 // An explicit --endpoint wins over the @suffix (both unauthenticated).
                 let hint = endpoint.clone().or_else(|| suffix.map(str::to_owned));
+                if let Some(h) = &hint {
+                    if !valid_hint(h) {
+                        return Err(Problem::new(
+                            400,
+                            "bad-endpoint",
+                            "the endpoint hint must be host:port, dialable as written",
+                        ));
+                    }
+                }
                 let store = self.store.lock().map_err(|_| internal())?;
                 let outcome = if *update {
                     store
@@ -415,6 +452,13 @@ impl DaemonState {
                 }
             }
             ControlRequest::PeerLabel { label, new_label } => {
+                if !valid_label(new_label) {
+                    return Err(Problem::new(
+                        400,
+                        "bad-label",
+                        "labels are 1-64 chars of [a-z0-9-], no edge or doubled hyphen",
+                    ));
+                }
                 let store = self.store.lock().map_err(|_| internal())?;
                 let import = store
                     .peer_import_by_label(label)
@@ -440,17 +484,13 @@ impl DaemonState {
                     .peer_import_by_label(label)
                     .map_err(|_| internal())?
                     .ok_or_else(|| unknown_label(label))?;
-                // Tombstone + epoch bump first (kills racing introductions),
-                // then drop any pinned peer state behind the root.
+                // One transaction (slice-3 review): the import tombstone and
+                // every piece of pinned state behind the root drop together —
+                // a crash cannot leave a half-revoked relationship, and the
+                // response reports only what actually committed.
                 let removed = store
-                    .remove_peer_import(&import.root_thumbprint, now_unix())
+                    .remove_relationship(&import.root_thumbprint, now_unix())
                     .map_err(|_| internal())?;
-                if let Some((agent_id, _)) = store
-                    .peer_by_root(&import.root_thumbprint)
-                    .map_err(|_| internal())?
-                {
-                    let _ = store.remove_peer(&agent_id, now_unix());
-                }
                 Ok(serde_json::json!({ "removed": removed, "label": label }))
             }
             ControlRequest::PeerKnocks => {
@@ -483,12 +523,23 @@ impl DaemonState {
                     .build()
                     .map_err(|_| internal())?;
                 let (peer, outcome) = runtime
-                    .block_on(crate::introduce::dial_introduction(
-                        &me,
-                        self.store.clone(),
-                        &import,
-                        time::OffsetDateTime::now_utc(),
-                    ))
+                    .block_on(async {
+                        tokio::time::timeout(
+                            Duration::from_secs(20),
+                            crate::introduce::dial_introduction(
+                                &me,
+                                self.store.clone(),
+                                &import,
+                                time::OffsetDateTime::now_utc(),
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            crate::introduce::IntroduceError::Http(
+                                "introduction timed out".into(),
+                            )
+                        })?
+                    })
                     .map_err(|e| match e {
                         crate::introduce::IntroduceError::Refused => {
                             Problem::new(403, "introduction-refused", &e.to_string())
@@ -508,23 +559,41 @@ impl DaemonState {
                 }))
             }
             ControlRequest::PeerAutoApprove {
-                agent_id,
+                agent_id: identifier,
                 task_types,
                 max_response_bytes,
             } => {
                 let store = self.store.lock().map_err(|_| internal())?;
+                // The identifier is the operator's LABEL; standing authority
+                // binds to the introduced root, never to a self-declared name
+                // (slice-3 review). The peer must be introduced first.
+                let import = store
+                    .peer_import_by_label(identifier)
+                    .map_err(|_| internal())?
+                    .ok_or_else(|| unknown_label(identifier))?;
+                let Some((agent_id, _status)) = store
+                    .peer_by_root(&import.root_thumbprint)
+                    .map_err(|_| internal())?
+                else {
+                    return Err(Problem::new(
+                        409,
+                        "not-introduced",
+                        "no introduced peer behind this label yet — `peer ping` it first",
+                    ));
+                };
                 // Empty task types clears the policy — reverts to always-ask.
                 if task_types.is_empty() {
                     let cleared = store
-                        .delete_auto_approve(agent_id)
+                        .delete_auto_approve(&agent_id)
                         .map_err(|_| internal())?;
                     Ok(
-                        serde_json::json!({ "auto_approve": "off", "cleared": cleared, "agent_id": agent_id }),
+                        serde_json::json!({ "auto_approve": "off", "cleared": cleared, "label": identifier }),
                     )
                 } else {
                     store
                         .put_auto_approve(
-                            agent_id,
+                            &agent_id,
+                            &import.root_thumbprint,
                             &akson_store::AutoApprovePolicy {
                                 task_types: task_types.clone(),
                                 max_response_bytes: *max_response_bytes,
@@ -534,7 +603,8 @@ impl DaemonState {
                         .map_err(|_| internal())?;
                     Ok(serde_json::json!({
                         "auto_approve": "on",
-                        "agent_id": agent_id,
+                        "label": identifier,
+                        "root_thumbprint": import.root_thumbprint,
                         "task_types": task_types,
                         "max_response_bytes": max_response_bytes,
                     }))
@@ -866,6 +936,34 @@ fn internal() -> Problem {
         status: 500,
         detail: None,
     }
+}
+
+/// The ADR-0013 label grammar: 1–64 chars of `[a-z0-9-]`, no leading,
+/// trailing, or doubled hyphen. Labels are routing keys and terminal output;
+/// anything else is refused at entry.
+fn valid_label(label: &str) -> bool {
+    let ok_chars = !label.is_empty()
+        && label.len() <= 64
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    ok_chars && !label.starts_with('-') && !label.ends_with('-') && !label.contains("--")
+}
+
+/// An endpoint hint must be dialable as written: `host:port` with a clean
+/// hostname/address and a real port — no paths, whitespace, or controls
+/// (slice-3 review: a bad hint must fail at `peer add`, not at first contact,
+/// and must not carry terminal-escape bytes into `peer list`).
+fn valid_hint(hint: &str) -> bool {
+    let Some((host, port)) = hint.rsplit_once(':') else {
+        return false;
+    };
+    !host.is_empty()
+        && host.len() <= 253
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b':')
+        && port.parse::<u16>().map(|p| p > 0).unwrap_or(false)
 }
 
 fn unknown_label(label: &str) -> Problem {

@@ -361,6 +361,20 @@ ALTER TABLE peer_keys ADD COLUMN root_thumbprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE auto_approve ADD COLUMN root_thumbprint TEXT NOT NULL DEFAULT '';
 "#;
 
+/// Version 18 (identity-token cutover, slice-3 security review): the clean cut
+/// design §5 documents. Invitation-era peers (empty root thumbprint) lose
+/// admission — relationships are re-established by exchanging tokens — and the
+/// retired invitation-ledger contents are scrubbed (the tables stay; the
+/// migration list is append-only). Auto-approve rows keyed to a bare
+/// self-declared name are dropped too: standing authority must name a root.
+const V18: &str = r#"
+DELETE FROM peer_keys    WHERE root_thumbprint = '';
+DELETE FROM peers        WHERE root_thumbprint = '';
+DELETE FROM auto_approve WHERE root_thumbprint = '';
+DELETE FROM invitations;
+DELETE FROM pending_pairs;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -381,6 +395,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (15, V15),
     (16, V16),
     (17, V17),
+    (18, V18),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

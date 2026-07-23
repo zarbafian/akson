@@ -1057,24 +1057,43 @@ impl Store {
     pub fn put_auto_approve(
         &self,
         agent_id: &str,
+        root_thumbprint: &str,
         policy: &AutoApprovePolicy,
         now: i64,
     ) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO auto_approve (agent_id, task_types, max_response_bytes, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO auto_approve
+                 (agent_id, task_types, max_response_bytes, updated_at, root_thumbprint)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(agent_id) DO UPDATE SET
                  task_types = excluded.task_types,
                  max_response_bytes = excluded.max_response_bytes,
-                 updated_at = excluded.updated_at",
+                 updated_at = excluded.updated_at,
+                 root_thumbprint = excluded.root_thumbprint",
             params![
                 agent_id,
                 policy.task_types.join("\n"),
                 policy.max_response_bytes as i64,
-                now
+                now,
+                root_thumbprint
             ],
         )?;
         Ok(())
+    }
+
+    /// The root a standing policy is bound to (slice-3 review): the reactor
+    /// requires it to equal the requesting peer's pinned root, so a later
+    /// identity that merely CLAIMS the same agent name cannot inherit
+    /// pre-authorisation.
+    pub fn auto_approve_root(&self, agent_id: &str) -> Result<Option<String>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT root_thumbprint FROM auto_approve WHERE agent_id = ?1",
+                [agent_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// A peer's auto-approval policy, or `None` (the safe default: always ask).
@@ -1228,6 +1247,56 @@ impl Store {
             params![root_thumbprint, now],
         )?;
         Ok(n == 1)
+    }
+
+    /// Removes a whole relationship in ONE transaction (slice-3 review): the
+    /// import tombstones (epoch bump, label freed) AND the pinned peer, its
+    /// verification keys, and any standing auto-approval behind the same root
+    /// drop together — a crash leaves the relationship either fully removed or
+    /// fully intact, never half-revoked. Returns false if no live import held
+    /// this root (nothing is touched then).
+    pub fn remove_relationship(
+        &self,
+        root_thumbprint: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let removed = self.conn.execute(
+            "UPDATE peer_imports
+             SET tombstoned_at = ?2, epoch = epoch + 1, label = NULL
+             WHERE root_thumbprint = ?1 AND tombstoned_at IS NULL",
+            params![root_thumbprint, now],
+        )?;
+        if removed == 1 {
+            let agent: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT agent_id FROM peers
+                     WHERE root_thumbprint = ?1 AND root_thumbprint != ''",
+                    [root_thumbprint],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            self.conn.execute(
+                "DELETE FROM peers WHERE root_thumbprint = ?1 AND root_thumbprint != ''",
+                [root_thumbprint],
+            )?;
+            self.conn.execute(
+                "DELETE FROM peer_keys WHERE root_thumbprint = ?1 AND root_thumbprint != ''",
+                [root_thumbprint],
+            )?;
+            self.conn.execute(
+                "DELETE FROM auto_approve WHERE root_thumbprint = ?1 AND root_thumbprint != ''",
+                [root_thumbprint],
+            )?;
+            if let Some(agent) = agent {
+                self.conn
+                    .execute("DELETE FROM auto_approve WHERE agent_id = ?1", [agent])?;
+            }
+            audit::append(&tx, now, "peer.removed", root_thumbprint)?;
+        }
+        tx.commit()?;
+        Ok(removed == 1)
     }
 
     /// The live import for a root, if any.
@@ -3455,6 +3524,8 @@ mod tests {
             .is_none());
     }
 
+    const ROOT_FOR_TEST: &str = "test-root-thumbprint-aaaaaaaaaaaaaaaaaaaaaa";
+
     #[test]
     fn auto_approve_policy_round_trips_and_clears() {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
@@ -3463,7 +3534,7 @@ mod tests {
             task_types: vec!["t/design/v1".to_owned(), "t/review/v1".to_owned()],
             max_response_bytes: 8192,
         };
-        store.put_auto_approve("peer-1", &policy, 100).unwrap();
+        store.put_auto_approve("peer-1", ROOT_FOR_TEST, &policy, 100).unwrap();
         assert_eq!(store.get_auto_approve("peer-1").unwrap().unwrap(), policy);
         assert!(store.delete_auto_approve("peer-1").unwrap());
         assert!(store.get_auto_approve("peer-1").unwrap().is_none());

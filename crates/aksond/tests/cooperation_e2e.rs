@@ -787,41 +787,50 @@ async fn paired_endpoints() -> (Endpoint, Endpoint) {
     (alice, bob)
 }
 
-/// Records `peer` in `local`'s store as an active peer with both pinned keys.
+/// Records `peer` in `local`'s store the way a real relationship lands
+/// (design §8.2): an import under the peer's agent name as its label, then an
+/// introduction commit that pins the identity and keys under the root — so
+/// label resolution, root-bound standing policy, and the reactor's root gate
+/// all see the shape the live daemon produces.
 fn pin_peer(local: &Endpoint, peer: &Endpoint) {
     let store = local.state.store();
     let store = store.lock().unwrap();
-    store
-        .put_peer(&akson_store::StoredPeer {
-            identity: akson_crypto::identity::PeerIdentity {
-                issuer: Some("iss".to_owned()),
-                agent_id: peer.agent.clone(),
-                workload_id: None,
-                endpoint_id: peer.url.clone(),
-                tls_cert: peer.cert.fingerprint.clone(),
-                agent_card_key: peer.cert.fingerprint.clone(),
-                key_bindings: vec![],
-                security_projection_digest: peer.cert.fingerprint.clone(),
-                full_card_digest: peer.cert.fingerprint.clone(),
+    let root = peer.cert.fingerprint.value.clone();
+    store.add_peer_import(&root, &peer.agent, "", NOW).unwrap();
+    let identity = akson_crypto::identity::PeerIdentity {
+        issuer: Some("iss".to_owned()),
+        agent_id: peer.agent.clone(),
+        workload_id: None,
+        endpoint_id: peer.url.clone(),
+        tls_cert: peer.cert.fingerprint.clone(),
+        agent_card_key: akson_crypto::identity::Fingerprint {
+            kind: akson_crypto::identity::FingerprintKind::Jwk7638,
+            value: root.clone(),
+        },
+        key_bindings: vec![],
+        security_projection_digest: peer.cert.fingerprint.clone(),
+        full_card_digest: peer.cert.fingerprint.clone(),
+    };
+    let keys = vec![
+        ("contract-proposal".to_owned(), peer.proposal_pub),
+        ("task-result".to_owned(), peer.task_result_pub),
+    ];
+    let outcome = store
+        .commit_introduced_peer(
+            &root,
+            1,
+            &akson_store::StoredPeer {
+                identity,
+                local_note: String::new(),
             },
-            local_note: String::new(),
-        })
+            &keys,
+            NOW,
+        )
         .unwrap();
-    for (purpose, key) in [
-        ("contract-proposal", peer.proposal_pub),
-        ("task-result", peer.task_result_pub),
-    ] {
-        store
-            .put_peer_key(
-                &peer.cert.fingerprint.value,
-                purpose,
-                &peer.agent,
-                "iss",
-                &key,
-                NOW,
-            )
-            .unwrap();
-    }
+    assert!(matches!(
+        outcome,
+        akson_store::IntroCommitOutcome::Committed
+    ));
 }
 
 fn serve(endpoint: &mut Endpoint, listener: TcpListener) {

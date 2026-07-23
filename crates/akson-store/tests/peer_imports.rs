@@ -312,3 +312,69 @@ fn a_renamed_subject_under_the_same_root_suspends_not_forks() {
     ));
     assert!(s.peer_status("claude-two").unwrap().is_none());
 }
+
+#[test]
+fn remove_relationship_is_one_transaction_and_total() {
+    // Slice-3 review: removal must drop the import, the pinned peer, its
+    // keys, AND standing authority together — never a half-revoked state.
+    let s = store();
+    s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
+    s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
+        .unwrap();
+    s.put_auto_approve(
+        "claude",
+        ROOT_A,
+        &akson_store::AutoApprovePolicy {
+            task_types: vec!["t/x".to_owned()],
+            max_response_bytes: 1024,
+        },
+        250,
+    )
+    .unwrap();
+
+    assert!(s.remove_relationship(ROOT_A, 300).unwrap());
+    assert!(s.peer_import(ROOT_A).unwrap().is_none());
+    assert!(s.peer_status("claude").unwrap().is_none());
+    assert!(s
+        .peer_key(&introduced_peer("claude", 3).identity.tls_cert.value, "contract-proposal")
+        .unwrap()
+        .is_none());
+    assert!(s.get_auto_approve("claude").unwrap().is_none());
+    // Nothing live: a second removal reports so.
+    assert!(!s.remove_relationship(ROOT_A, 400).unwrap());
+    // And the epoch advanced: the pre-removal handshake cannot commit.
+    s.add_peer_import(ROOT_A, "dana", "a:1", 500).unwrap();
+    assert_eq!(
+        s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 600)
+            .unwrap(),
+        IntroCommitOutcome::EpochChanged
+    );
+}
+
+#[test]
+fn auto_approve_root_binds_standing_authority() {
+    let s = store();
+    s.put_auto_approve(
+        "claude",
+        ROOT_A,
+        &akson_store::AutoApprovePolicy {
+            task_types: vec!["t/x".to_owned()],
+            max_response_bytes: 1024,
+        },
+        100,
+    )
+    .unwrap();
+    assert_eq!(s.auto_approve_root("claude").unwrap().as_deref(), Some(ROOT_A));
+    // A different root replacing the policy replaces the binding with it.
+    s.put_auto_approve(
+        "claude",
+        ROOT_B,
+        &akson_store::AutoApprovePolicy {
+            task_types: vec!["t/x".to_owned()],
+            max_response_bytes: 1024,
+        },
+        200,
+    )
+    .unwrap();
+    assert_eq!(s.auto_approve_root("claude").unwrap().as_deref(), Some(ROOT_B));
+}

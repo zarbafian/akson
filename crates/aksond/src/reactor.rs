@@ -122,6 +122,23 @@ fn auto_approve_if_allowed(
     let Ok(Some(policy)) = store.get_auto_approve(&contract.requester.agent) else {
         return false; // no standing policy → always ask
     };
+    // The policy is bound to the introduced ROOT, not the self-declared name:
+    // a later identity that merely claims the same agent name must not
+    // inherit pre-authorisation (slice-3 review).
+    let policy_root = store
+        .auto_approve_root(&contract.requester.agent)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let peer_root = store
+        .get_peer(&contract.requester.agent)
+        .ok()
+        .flatten()
+        .map(|p| p.identity.agent_card_key.value)
+        .unwrap_or_default();
+    if policy_root.is_empty() || policy_root != peer_root {
+        return false;
+    }
     if !policy.task_types.iter().any(|t| t == &contract.task_type) {
         return false;
     }

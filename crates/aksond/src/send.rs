@@ -98,6 +98,19 @@ pub fn prepare_send(
                 "the performer is not a paired peer",
             )
         })?;
+    // Only an ACTIVE peer may be sent work, however it was addressed: a
+    // suspended relationship stays the operator's call (§8.4; slice-3 review).
+    if store
+        .peer_status(&peer.identity.agent_id)
+        .map_err(store_problem)?
+        != Some(akson_store::PeerStatus::Active)
+    {
+        return Err(problem(
+            409,
+            "peer-not-active",
+            "the performer is not an active peer (suspended or removed)",
+        ));
+    }
     let performer = Identity {
         issuer: peer.identity.issuer.clone().unwrap_or_default(),
         agent: peer.identity.agent_id.clone(),

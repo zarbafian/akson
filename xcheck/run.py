@@ -249,6 +249,10 @@ def decode_token(s: str):
     Returns (version, key_bytes) or raises ValueError with the refusal class."""
     if len(s) > 90:
         raise ValueError("too-long")
+    # ASCII only, and ASCII case rules only: Unicode case folding (e.g. the
+    # Kelvin sign lowercasing to 'k') must not admit a token Rust refuses.
+    if not s.isascii():
+        raise ValueError("bad-char")
     if any(c.islower() for c in s) and any(c.isupper() for c in s):
         raise ValueError("mixed-case")
     s = s.lower()
@@ -286,6 +290,8 @@ def check_token(name: str, case: dict) -> None:
     """Independent identity-token decoding (ADR-0013)."""
     for c in case["cases"]:
         cname = f"{name}/{c['name']}"
+        if c.get("rust_only"):
+            continue  # e.g. curve-point checks outside this decoder's scope
         raw = c["input"]
         if c["expect"] == "presentation":
             token, _, hint = raw.rpartition("@")
