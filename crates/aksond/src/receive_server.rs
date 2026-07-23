@@ -58,7 +58,9 @@ pub struct PeerContext {
     pub requester_origin: Identity,
     /// The peer's contract-proposal verifying key.
     pub proposal_key: PurposeVerifyingKey,
-    /// The stable peer id used as an idempotency covered value.
+    /// The relationship's ROOT thumbprint — the stable peer id used as the
+    /// idempotency covered value and the head's origin binding (PK-cutover
+    /// review: names are display; the root is identity).
     pub peer_id: String,
 }
 
@@ -89,17 +91,14 @@ impl PeerResolver for StorePeerResolver {
             .peer_key(tls_fingerprint, PROPOSAL_KEY_PURPOSE)
             .ok()
             .flatten()?;
-        // The peer must be ACTIVE — a surviving key row for a suspended or
-        // removed peer must not admit work (codex review). Status resolves by
-        // the key row's ROOT (names are display since the cutover); a legacy
-        // fixture row with no root falls back to the name-scoped lookup.
-        let active = if pk.root_thumbprint.is_empty() {
-            store.peer_status(&pk.agent_id).ok().flatten() == Some(PeerStatus::Active)
-        } else {
-            store.peer_status_by_root(&pk.root_thumbprint).ok().flatten()
-                == Some(PeerStatus::Active)
-        };
-        if !active {
+        // The peer must be ACTIVE, resolved by the key row's ROOT — a rootless
+        // key row is refused outright (V20 scrubbed them; one appearing again
+        // is a bug, not a peer), so a stale credential can never borrow a
+        // same-named root's status (PK-cutover review).
+        if pk.root_thumbprint.is_empty()
+            || store.peer_status_by_root(&pk.root_thumbprint).ok().flatten()
+                != Some(PeerStatus::Active)
+        {
             return None;
         }
         let proposal_key =
@@ -108,10 +107,10 @@ impl PeerResolver for StorePeerResolver {
         Some(PeerContext {
             requester_origin: Identity {
                 issuer: pk.issuer,
-                agent: pk.agent_id.clone(),
+                agent: pk.agent_id,
             },
             proposal_key,
-            peer_id: pk.agent_id,
+            peer_id: pk.root_thumbprint,
         })
     }
 }
@@ -299,6 +298,11 @@ impl<R: PeerResolver> ReceiveState<R> {
                 .peer_key(fp, TASK_RESULT_KEY_PURPOSE)
                 .ok()
                 .flatten()
+                // The result key must belong to the SAME root that was
+                // admitted on this connection — two roots sharing a
+                // certificate must not lend each other purposes
+                // (PK-cutover review).
+                .filter(|pk| pk.root_thumbprint == peer.peer_id)
                 .and_then(|pk| {
                     PurposeVerifyingKey::from_public_bytes(KeyPurpose::TaskResult, &pk.public_key)
                         .ok()
@@ -687,14 +691,10 @@ mod tests {
             })
             .unwrap();
         store
-            .put_peer_key(
-                fp,
+            .put_peer_key(fp,
                 "contract-proposal",
                 agent,
-                "iss",
-                &key.to_public_bytes(),
-                NOW,
-            )
+                "iss", &key.to_public_bytes(), fp, NOW)
             .unwrap();
     }
 
@@ -869,7 +869,9 @@ mod tests {
         let ctx = resolver
             .resolve(&store, "fp-1")
             .expect("known fingerprint resolves");
-        assert_eq!(ctx.peer_id, "requester");
+        // peer_id is the relationship ROOT since the cutover (here the fixture
+        // root, which pin_active_peer sets to the cert fingerprint).
+        assert_eq!(ctx.peer_id, "fp-1");
         assert_eq!(ctx.requester_origin.agent, "requester");
         assert_eq!(ctx.requester_origin.issuer, "iss");
         // The rehydrated key equals the peer's original proposal key.
@@ -892,14 +894,10 @@ mod tests {
         let vk = proposal_key().verifying();
         // Pin the key ONLY — no peer row, so peer_status is absent.
         store
-            .put_peer_key(
-                "fp-1",
+            .put_peer_key("fp-1",
                 "contract-proposal",
                 "requester",
-                "iss",
-                &vk.to_public_bytes(),
-                100,
-            )
+                "iss", &vk.to_public_bytes(), "root-fixture", 100)
             .unwrap();
 
         assert!(

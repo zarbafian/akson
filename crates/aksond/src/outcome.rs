@@ -51,6 +51,7 @@ pub fn finalize_result(
     store: &Store,
     requester: &Identity,
     sender: &Identity,
+    sender_root: &str,
     outcome_key: &PurposeKey,
     performer_task_result_key: &PurposeVerifyingKey,
     manifest_envelope: &Envelope,
@@ -91,6 +92,17 @@ pub fn finalize_result(
     // deliver a result signed with its own task-result key and obtain a
     // requester-signed acceptance for another performer's task (codex review).
     if sent.performer_agent != sender.agent || sent.performer_issuer != sender.issuer {
+        return Err(problem(
+            403,
+            "wrong-performer",
+            "the result was not delivered by the assigned performer",
+        ));
+    }
+    // The delivering ROOT must be the root this task was sent to: a
+    // same-named peer that learns the digest/task id must not be able to
+    // substitute its own signed result (PK-cutover review). Empty roots
+    // (pre-V20 requests) refuse — fail closed.
+    if sent.performer_root.is_empty() || sent.performer_root != sender_root {
         return Err(problem(
             403,
             "wrong-performer",
@@ -324,6 +336,7 @@ mod tests {
                     performer_agent: "performer".to_owned(),
                     performer_issuer: "iss".to_owned(),
                     message_id: "msg-1".to_owned(),
+                    performer_root: "root-fixture".to_owned(),
                 },
                 NOW,
             )
@@ -339,6 +352,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -385,6 +399,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -409,6 +424,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -437,6 +453,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -459,6 +476,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -483,6 +501,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &wrong.verifying(),
             &envelope,
@@ -550,6 +569,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -578,6 +598,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &signed_manifest("task-1"),
@@ -618,6 +639,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -650,6 +672,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -671,6 +694,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("impostor"),
+            "root-fixture",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,

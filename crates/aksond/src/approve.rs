@@ -89,11 +89,20 @@ pub fn approve_and_issue(
         })?
         .contract;
 
-    // The requester must be a paired peer — its pinned TLS fingerprint binds the
-    // work order's request origin (design §8.1, §12.3). Refuse before locking.
+    // The requester is the ROOT this proposal arrived from; its pinned TLS
+    // fingerprint binds the work order's request origin (design §8.1, §12.3;
+    // PK-cutover review: a name lookup could bind a same-named survivor).
+    // Refuse before locking.
     let requester_tls = store
-        .peer_tls_fingerprint(&contract.requester.issuer, &contract.requester.agent)
+        .origin_root(task_id)
         .map_err(store_problem)?
+        .filter(|r| !r.is_empty())
+        .and_then(|root| store.get_peer_by_root(&root).ok().flatten())
+        .filter(|p| {
+            p.identity.agent_id == contract.requester.agent
+                && p.identity.issuer.as_deref().unwrap_or_default() == contract.requester.issuer
+        })
+        .map(|p| p.identity.tls_cert.value)
         .ok_or_else(|| {
             problem(
                 409,
@@ -306,18 +315,37 @@ mod tests {
         }
     }
 
-    /// Pins the requester's proposal key by their TLS fingerprint, so the approve
-    /// reverse-lookup finds an origin to bind.
+    /// Pins the requester — the peers row under its root plus the proposal key
+    /// by TLS fingerprint — so the approve origin-binding finds it.
     fn pair_requester(store: &Store) {
+        use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
         store
-            .put_peer_key(
-                REQ_TLS,
+            .put_peer(&akson_store::StoredPeer {
+                identity: PeerIdentity {
+                    issuer: Some("iss".to_owned()),
+                    agent_id: "requester".to_owned(),
+                    workload_id: None,
+                    endpoint_id: "https://requester/a2a".to_owned(),
+                    tls_cert: Fingerprint {
+                        kind: FingerprintKind::CertSha256,
+                        value: REQ_TLS.to_owned(),
+                    },
+                    agent_card_key: Fingerprint {
+                        kind: FingerprintKind::Jwk7638,
+                        value: "root-fixture".to_owned(),
+                    },
+                    key_bindings: vec![],
+                    security_projection_digest: Fingerprint::json_sha256(b"{}"),
+                    full_card_digest: Fingerprint::json_sha256(b"{}"),
+                },
+                local_note: String::new(),
+            })
+            .unwrap();
+        store
+            .put_peer_key(REQ_TLS,
                 "contract-proposal",
                 "requester",
-                "iss",
-                &proposal_key().verifying().to_public_bytes(),
-                NOW,
-            )
+                "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture", NOW)
             .unwrap();
     }
 
@@ -368,7 +396,7 @@ mod tests {
             },
         ];
         let covered = CoveredValues {
-            peer: "requester".to_owned(),
+            peer: "root-fixture".to_owned(),
             message_id: "msg-1".to_owned(),
             body_digest: "AA".repeat(32),
             interface_url: "https://local/a2a".to_owned(),

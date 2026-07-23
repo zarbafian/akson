@@ -101,7 +101,7 @@ pub fn dispatch_proposal(
         Ok(t) => t,
         Err(e) => return reject(store, covered, body, trusted_now_unix, e.to_string()),
     };
-    store.submit_revision(&task_id, &received.proposal, expires, trusted_now_unix)?;
+    store.submit_revision(&task_id, &received.proposal, &covered.peer, expires, trusted_now_unix)?;
     // Record the A2A Context id on the head so the accepting decision can reference
     // it (it is Message-level, not a contract field).
     store.set_task_context(&task_id, context_id)?;

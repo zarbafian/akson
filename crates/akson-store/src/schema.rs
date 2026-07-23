@@ -417,6 +417,25 @@ DROP TABLE auto_approve;
 ALTER TABLE auto_approve_v19 RENAME TO auto_approve;
 "#;
 
+/// Version 20 (PK-cutover security review): the authenticated-root threading.
+/// (1) Rootless verification keys die — every live credential names its root.
+/// (2) Peer state whose root has no LIVE import is orphaned authority (a
+/// tombstoned-import/active-peer half-state the old non-atomic removal could
+/// leave) and drops. (3) `sent_requests` records WHICH root a task was sent
+/// to, and `contract_heads` records which root a proposal arrived from — the
+/// transport-authenticated identities that delivery, outcome matching, the
+/// reactor, and approval bind to, until ADR-0014 also carries the root inside
+/// the signed contract.
+const V20: &str = r#"
+DELETE FROM peer_keys WHERE root_thumbprint = '';
+DELETE FROM peers WHERE root_thumbprint NOT IN
+    (SELECT root_thumbprint FROM peer_imports WHERE tombstoned_at IS NULL);
+DELETE FROM auto_approve WHERE root_thumbprint NOT IN
+    (SELECT root_thumbprint FROM peer_imports WHERE tombstoned_at IS NULL);
+ALTER TABLE sent_requests  ADD COLUMN performer_root TEXT NOT NULL DEFAULT '';
+ALTER TABLE contract_heads ADD COLUMN origin_root    TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -439,6 +458,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, V17),
     (18, V18),
     (19, V19),
+    (20, V20),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

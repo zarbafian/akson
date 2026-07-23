@@ -395,14 +395,35 @@ mod tests {
     /// approves it — leaving an accepted task with an issued work order.
     fn accepted_task(store: &Store) -> String {
         store
-            .put_peer_key(
-                REQ_TLS,
+            .put_peer(&{
+                use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+                akson_store::StoredPeer {
+                    identity: PeerIdentity {
+                        issuer: Some("iss".to_owned()),
+                        agent_id: "requester".to_owned(),
+                        workload_id: None,
+                        endpoint_id: "https://requester/a2a".to_owned(),
+                        tls_cert: Fingerprint {
+                            kind: FingerprintKind::CertSha256,
+                            value: REQ_TLS.to_owned(),
+                        },
+                        agent_card_key: Fingerprint {
+                            kind: FingerprintKind::Jwk7638,
+                            value: "root-fixture".to_owned(),
+                        },
+                        key_bindings: vec![],
+                        security_projection_digest: Fingerprint::json_sha256(b"{}"),
+                        full_card_digest: Fingerprint::json_sha256(b"{}"),
+                    },
+                    local_note: String::new(),
+                }
+            })
+            .unwrap();
+        store
+            .put_peer_key(REQ_TLS,
                 "contract-proposal",
                 "requester",
-                "iss",
-                &proposal_key().verifying().to_public_bytes(),
-                NOW,
-            )
+                "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture", NOW)
             .unwrap();
         let sha = {
             use sha2::Digest;
@@ -445,7 +466,7 @@ mod tests {
             },
         ];
         let covered = CoveredValues {
-            peer: "requester".to_owned(),
+            peer: "root-fixture".to_owned(),
             message_id: "msg-1".to_owned(),
             body_digest: "AA".repeat(32),
             interface_url: "https://local/a2a".to_owned(),

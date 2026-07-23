@@ -274,10 +274,7 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
             &peer_cert.fingerprint.value,
             "contract-proposal",
             "requester",
-            "iss",
-            &peer_proposal_key.verifying().to_public_bytes(),
-            NOW,
-        )
+            "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
 
@@ -330,10 +327,7 @@ async fn several_exchanges_share_one_keep_alive_connection() {
             &peer_cert.fingerprint.value,
             "contract-proposal",
             "requester",
-            "iss",
-            &peer_proposal_key.verifying().to_public_bytes(),
-            NOW,
-        )
+            "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
     let addr = spawn_receive(store.clone(), &server_tls_key, &server_cert).await;
@@ -456,13 +450,10 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
             .unwrap();
         store
             .put_peer_key(
-                &peer_cert.fingerprint.value,
+            &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss",
-                &peer_proposal_key.verifying().to_public_bytes(),
-                NOW,
-            )
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
             .unwrap();
     }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
@@ -625,13 +616,10 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
             .unwrap();
         store
             .put_peer_key(
-                &peer_cert.fingerprint.value,
+            &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss",
-                &peer_proposal_key.verifying().to_public_bytes(),
-                NOW,
-            )
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
             .unwrap();
     }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
@@ -823,13 +811,10 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
             .unwrap();
         store
             .put_peer_key(
-                &peer_cert.fingerprint.value,
+            &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss",
-                &peer_proposal_key.verifying().to_public_bytes(),
-                NOW,
-            )
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
             .unwrap();
     }
 
@@ -992,6 +977,9 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
                 performer_agent: "performer".to_owned(),
                 performer_issuer: "iss".to_owned(),
                 message_id: "msg-1".to_owned(),
+                // Must equal the resolver-produced sender root (the key row's
+                // root) or the outcome path refuses the delivery.
+                performer_root: performer_cert.fingerprint.value.clone(),
             },
             NOW,
         )
@@ -1012,6 +1000,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
             &PurposeKey::from_seed(KeyPurpose::ContractProposal, &[3u8; 32])
                 .verifying()
                 .to_public_bytes(),
+            &performer_cert.fingerprint.value,
             NOW,
         )
         .unwrap();
@@ -1020,10 +1009,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
             &performer_cert.fingerprint.value,
             "task-result",
             "performer",
-            "iss",
-            &performer_task_result.verifying().to_public_bytes(),
-            NOW,
-        )
+            "iss", &performer_task_result.verifying().to_public_bytes(), &performer_cert.fingerprint.value, NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
 
@@ -1135,6 +1121,7 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
                 .purpose_key(KeyPurpose::ContractProposal)
                 .verifying()
                 .to_public_bytes(),
+            &a_cert.fingerprint.value,
             NOW,
         )
         .unwrap();
@@ -1225,21 +1212,15 @@ fn seed_peer(
             &cert.fingerprint.value,
             "contract-proposal",
             agent,
-            "iss",
-            &proposal_pub,
-            NOW,
-        )
+            "iss", &proposal_pub, &cert.fingerprint.value, NOW)
         .unwrap();
     if let Some(tr) = task_result_pub {
         store
             .put_peer_key(
-                &cert.fingerprint.value,
+            &cert.fingerprint.value,
                 "task-result",
                 agent,
-                "iss",
-                &tr,
-                NOW,
-            )
+                "iss", &tr, &cert.fingerprint.value, NOW)
             .unwrap();
     }
 }

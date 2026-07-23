@@ -111,16 +111,24 @@ fn auto_approve_if_allowed(
     };
     let contract = parsed.contract;
 
-    // The contract names the requester only by its self-declared tuple (until
-    // ADR-0014 carries the root), so a name-scoped authority decision must be
-    // fail-closed on ambiguity: EXACTLY one pinned peer may answer to the
-    // name, it must be ACTIVE, and the standing policy must be bound to that
-    // peer's root — a later identity claiming the same name inherits nothing
-    // (slice-3 review; root-key cutover).
-    let Ok(Some(requester)) = store.sole_peer_named(&contract.requester.agent) else {
-        return false; // zero or several same-named peers → always ask
+    // The task binds to the ROOT its proposal arrived from — the
+    // transport-authenticated identity, not the self-declared name (PK-cutover
+    // review: a same-named survivor must not inherit a removed peer's pending
+    // tasks, nor its own policy apply to them). That root must still be an
+    // ACTIVE peer answering to the contract's name, and the standing policy
+    // must be bound to exactly that root.
+    let Ok(Some(root)) = store.origin_root(task_id) else {
+        return false;
     };
-    let root = requester.identity.agent_card_key.value.clone();
+    if root.is_empty() {
+        return false; // pre-V20 head → always ask
+    }
+    let Ok(Some(requester)) = store.get_peer_by_root(&root) else {
+        return false;
+    };
+    if requester.identity.agent_id != contract.requester.agent {
+        return false;
+    }
     if store.peer_status_by_root(&root).ok().flatten()
         != Some(akson_store::PeerStatus::Active)
     {

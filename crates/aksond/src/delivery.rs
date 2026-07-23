@@ -74,10 +74,25 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
         .map_err(store_problem)?
         .ok_or_else(|| problem(409, "not-completed", "this task has no completed result"))?;
 
-    // The requester must be a paired peer with a known endpoint and pinned cert.
-    let peer = store
-        .get_peer(&contract.requester.agent)
+    // The requester is the ROOT this task's proposal arrived from — exact,
+    // transport-authenticated, never a name lookup a same-named peer could
+    // intercept (PK-cutover review). It must still be ACTIVE: suspension or
+    // removal after submission withholds the confidential outputs.
+    let origin_root = store
+        .origin_root(task_id)
         .map_err(store_problem)?
+        .filter(|r| !r.is_empty())
+        .ok_or_else(|| {
+            problem(
+                409,
+                "requester-unknown",
+                "this task records no authenticated origin",
+            )
+        })?;
+    let peer = store
+        .get_peer_by_root(&origin_root)
+        .map_err(store_problem)?
+        .filter(|p| p.identity.agent_id == contract.requester.agent)
         .ok_or_else(|| {
             problem(
                 409,
@@ -85,6 +100,17 @@ pub fn prepare_delivery(store: &Store, task_id: &str) -> Result<DeliveryJob, Pro
                 "the requester is not a known peer",
             )
         })?;
+    if store
+        .peer_status_by_root(&origin_root)
+        .map_err(store_problem)?
+        != Some(akson_store::PeerStatus::Active)
+    {
+        return Err(problem(
+            409,
+            "requester-not-active",
+            "the requester is suspended or removed; delivery withheld",
+        ));
+    }
 
     let context_id = store
         .task_context(task_id)

@@ -71,6 +71,7 @@ pub struct SendPrepared {
     performer_fingerprint: String,
     performer_agent: String,
     performer_issuer: String,
+    performer_root: String,
     message_body: Vec<u8>,
     contract_digest: String,
     contract_id: String,
@@ -118,6 +119,7 @@ pub fn prepare_send(
             "the performer is not an active peer (suspended or removed)",
         ));
     }
+    let performer_root_resolved = root.clone();
     let performer = Identity {
         issuer: peer.identity.issuer.clone().unwrap_or_default(),
         agent: peer.identity.agent_id.clone(),
@@ -225,6 +227,7 @@ pub fn prepare_send(
         performer_fingerprint: peer.identity.tls_cert.value,
         performer_agent: performer.agent,
         performer_issuer: performer.issuer,
+        performer_root: performer_root_resolved,
         message_body,
         contract_digest: parsed.digest,
         contract_id,
@@ -319,6 +322,7 @@ pub fn run_send(
                     performer_agent: prepared.performer_agent.clone(),
                     performer_issuer: prepared.performer_issuer.clone(),
                     message_id: prepared.message_id.clone(),
+                    performer_root: prepared.performer_root.clone(),
                 },
                 now_unix,
             )

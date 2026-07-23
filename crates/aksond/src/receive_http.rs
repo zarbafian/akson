@@ -109,6 +109,7 @@ pub fn handle_receive(
         return Ok(handle_result(
             store,
             config,
+            req.peer,
             &envelope,
             &delivered,
             trusted_now_unix,
@@ -169,6 +170,7 @@ pub fn handle_receive(
 fn handle_result(
     store: &Store,
     config: &ReceiveConfig,
+    sender_root: &str,
     envelope: &Envelope,
     delivered: &[DeliveredOutput],
     trusted_now_unix: i64,
@@ -193,6 +195,7 @@ fn handle_result(
         store,
         config.local_performer,
         config.requester_origin, // the authenticated sender (must be the performer)
+        sender_root,             // the authenticated sender's ROOT
         outcome_key,
         task_result_key,
         envelope,

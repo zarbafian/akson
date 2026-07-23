@@ -378,6 +378,10 @@ pub struct SentRequest {
     pub contract_digest: String,
     pub task_id: String,
     pub context_id: String,
+    /// The ROOT this task was sent to (the resolved relationship key) — the
+    /// value outcome matching binds the delivering identity against. Empty on
+    /// pre-V20 rows, which therefore refuse (fail closed).
+    pub performer_root: String,
     pub contract_id: String,
     pub performer_agent: String,
     pub performer_issuer: String,
@@ -793,6 +797,7 @@ impl Store {
     /// fingerprint (design §8.1) — retained at pairing so a received message can be
     /// verified. The public key is not secret; it is stored in the clear. A re-pair
     /// (same fingerprint, new key) replaces it.
+    #[allow(clippy::too_many_arguments)]
     pub fn put_peer_key(
         &self,
         tls_fingerprint: &str,
@@ -800,17 +805,19 @@ impl Store {
         agent_id: &str,
         issuer: &str,
         public_key: &[u8; 32],
+        root_thumbprint: &str,
         now: i64,
     ) -> Result<(), StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO peer_keys
-                 (tls_fingerprint, purpose, agent_id, issuer, public_key, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (tls_fingerprint, purpose, agent_id, issuer, public_key, root_thumbprint, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(tls_fingerprint, purpose) DO UPDATE SET
                  agent_id = excluded.agent_id,
                  issuer = excluded.issuer,
                  public_key = excluded.public_key,
+                 root_thumbprint = excluded.root_thumbprint,
                  updated_at = excluded.updated_at",
             params![
                 tls_fingerprint,
@@ -818,6 +825,7 @@ impl Store {
                 agent_id,
                 issuer,
                 public_key.as_slice(),
+                root_thumbprint,
                 now
             ],
         )?;
@@ -1576,6 +1584,20 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// The transport-authenticated root a task's proposal arrived from
+    /// (PK-cutover review): what delivery, approval, and the reactor bind the
+    /// requester to. Empty for pre-V20 heads — callers fail closed.
+    pub fn origin_root(&self, task_id: &str) -> Result<Option<String>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT origin_root FROM contract_heads WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// The knock log, most recent first — what `akson peer knocks` renders.
     pub fn knocks(&self) -> Result<Vec<Knock>, StoreError> {
         let mut stmt = self.conn.prepare(
@@ -1610,6 +1632,7 @@ impl Store {
         &self,
         task_id: &str,
         proposal: &ParsedContract,
+        origin_root: &str,
         expires_at_unix: i64,
         now: i64,
     ) -> Result<RevisionVerdict, StoreError> {
@@ -1619,8 +1642,9 @@ impl Store {
         if let RevisionVerdict::Advance(new_head) = &verdict {
             let c = &proposal.contract;
             tx.execute(
-                "INSERT INTO contract_heads (task_id, contract_id, revision, digest, status)
-                 VALUES (?1, ?2, ?3, ?4, 'open')
+                "INSERT INTO contract_heads
+                     (task_id, contract_id, revision, digest, status, origin_root)
+                 VALUES (?1, ?2, ?3, ?4, 'open', ?5)
                  ON CONFLICT(task_id) DO UPDATE SET
                      contract_id = excluded.contract_id,
                      revision = excluded.revision,
@@ -1630,7 +1654,8 @@ impl Store {
                     task_id,
                     c.contract_id,
                     new_head.revision as i64,
-                    new_head.digest
+                    new_head.digest,
+                    origin_root
                 ],
             )?;
             let sealed = self.dek.seal(CONTRACT_PAYLOAD_CONTEXT, &proposal.payload);
@@ -2016,8 +2041,8 @@ impl Store {
         let inserted = tx.execute(
             "INSERT INTO sent_requests
                  (contract_digest, task_id, context_id, contract_id,
-                  performer_agent, performer_issuer, message_id, requested_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                  performer_agent, performer_issuer, message_id, performer_root, requested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(contract_digest) DO NOTHING",
             params![
                 req.contract_digest,
@@ -2027,6 +2052,7 @@ impl Store {
                 req.performer_agent,
                 req.performer_issuer,
                 req.message_id,
+                req.performer_root,
                 now
             ],
         )?;
@@ -2046,7 +2072,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT contract_digest, task_id, context_id, contract_id,
-                        performer_agent, performer_issuer, message_id
+                        performer_agent, performer_issuer, message_id, performer_root
                  FROM sent_requests WHERE contract_digest = ?1",
                 [contract_digest],
                 |r| {
@@ -2058,6 +2084,7 @@ impl Store {
                         performer_agent: r.get(4)?,
                         performer_issuer: r.get(5)?,
                         message_id: r.get(6)?,
+                        performer_root: r.get(7)?,
                     })
                 },
             )
@@ -2132,7 +2159,7 @@ impl Store {
     pub fn list_sent_requests(&self) -> Result<Vec<SentRequest>, StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT contract_digest, task_id, context_id, contract_id,
-                    performer_agent, performer_issuer, message_id
+                    performer_agent, performer_issuer, message_id, performer_root
              FROM sent_requests ORDER BY requested_at",
         )?;
         let rows = stmt
@@ -2145,6 +2172,7 @@ impl Store {
                     performer_agent: r.get(4)?,
                     performer_issuer: r.get(5)?,
                     message_id: r.get(6)?,
+                    performer_root: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3028,7 +3056,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let rev0 = parsed(0, None, None);
         let verdict = store
-            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .submit_revision("task-1", &rev0, "origin-root-fixture", EXPIRES, 100)
             .unwrap();
         assert!(matches!(verdict, RevisionVerdict::Advance(_)));
 
@@ -3052,7 +3080,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let rev0 = parsed(0, None, None);
         store
-            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .submit_revision("task-1", &rev0, "origin-root-fixture", EXPIRES, 100)
             .unwrap();
         // A second, distinct rev-0 (a sibling) is stale; the head must not move.
         // It is still a valid revision zero (no task_id), differing only in its
@@ -3060,7 +3088,7 @@ mod tests {
         let sibling = parsed_with_objective("a different objective");
         assert_ne!(sibling.digest, rev0.digest);
         let verdict = store
-            .submit_revision("task-1", &sibling, EXPIRES, 101)
+            .submit_revision("task-1", &sibling, "origin-root-fixture", EXPIRES, 101)
             .unwrap();
         assert_eq!(
             verdict,
@@ -3080,12 +3108,12 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let rev0 = parsed(0, None, None);
         store
-            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .submit_revision("task-1", &rev0, "origin-root-fixture", EXPIRES, 100)
             .unwrap();
         let rev1 = parsed(1, Some(&rev0.digest), Some("task-1"));
         assert!(matches!(
             store
-                .submit_revision("task-1", &rev1, EXPIRES, 101)
+                .submit_revision("task-1", &rev1, "origin-root-fixture", EXPIRES, 101)
                 .unwrap(),
             RevisionVerdict::Advance(_)
         ));
@@ -3106,7 +3134,7 @@ mod tests {
         let rev2 = parsed(2, Some(&rev1.digest), Some("task-1"));
         assert_eq!(
             store
-                .submit_revision("task-1", &rev2, EXPIRES, 103)
+                .submit_revision("task-1", &rev2, "origin-root-fixture", EXPIRES, 103)
                 .unwrap(),
             RevisionVerdict::Stale(akson_contract::StaleReason::HeadLocked)
         );
@@ -3117,7 +3145,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let rev0 = parsed(0, None, None);
         store
-            .submit_revision("task-1", &rev0, EXPIRES, 100)
+            .submit_revision("task-1", &rev0, "origin-root-fixture", EXPIRES, 100)
             .unwrap();
         let r = store
             .accept_contract("task-1", &"a".repeat(64), 101)
@@ -3138,7 +3166,7 @@ mod tests {
         {
             let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
             store
-                .submit_revision("task-1", &rev0, EXPIRES, 100)
+                .submit_revision("task-1", &rev0, "origin-root-fixture", EXPIRES, 100)
                 .unwrap();
         }
         {
@@ -3560,14 +3588,10 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let proposal = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[5u8; 32]);
         store
-            .put_peer_key(
-                "fp-abc",
+            .put_peer_key("fp-abc",
                 "contract-proposal",
                 "peer-1",
-                "local",
-                &proposal.verifying().to_public_bytes(),
-                100,
-            )
+                "local", &proposal.verifying().to_public_bytes(), "root-fixture", 100)
             .unwrap();
         // The proposal key is resolvable by TLS fingerprint + purpose.
         let pk = store
@@ -3633,7 +3657,7 @@ mod tests {
         store.put_peer(&sample_peer("to be removed")).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, 100)
+            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, "root-fixture", 100)
             .unwrap();
         assert!(store
             .peer_key("old-fp", "contract-proposal")
@@ -3666,6 +3690,7 @@ mod tests {
                     performer_agent: "p".to_owned(),
                     performer_issuer: "iss".to_owned(),
                     message_id: "m".to_owned(),
+                    performer_root: "root-fixture".to_owned(),
                 },
                 100,
             )
@@ -3800,6 +3825,7 @@ mod tests {
             performer_agent: "performer".to_owned(),
             performer_issuer: "iss".to_owned(),
             message_id: "msg-1".to_owned(),
+            performer_root: "root-fixture".to_owned(),
         };
         store.put_sent_request(&req, 100).unwrap();
         assert_eq!(store.get_sent_request(&"a".repeat(64)).unwrap(), Some(req));
@@ -3828,7 +3854,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, 100)
+            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, "root-fixture", 100)
             .unwrap();
         // The same peer's endpoint cert is found from its identity...
         assert_eq!(
