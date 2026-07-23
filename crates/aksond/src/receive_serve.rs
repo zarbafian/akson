@@ -13,7 +13,6 @@
 //! A received, validated proposal lands as an inert `SUBMITTED` Task in the shared
 //! store, so it appears in the operator's inbox the moment it is accepted.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use akson_crypto::purpose::KeyPurpose;
@@ -62,7 +61,12 @@ pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), R
             state.store(),
             StorePeerResolver,
             state.config().local_performer.clone(),
-            BTreeSet::new(),
+            // The required Akson extension set the signed card advertises
+            // (design §10.1): an inbound request that does not activate them
+            // is refused — runtime now matches the card's contract.
+            akson_ext::namespace::required_extension_uris()
+                .into_iter()
+                .collect(),
             state.config().interface_url.clone(),
         )
         .accepting_results(state.identity().purpose_key(KeyPurpose::RequesterOutcome))

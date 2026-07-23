@@ -76,10 +76,14 @@ pub async fn post_a2a(
         .await
         .map_err(|_| problem(502, "tls-handshake", "the peer TLS handshake failed"))?;
 
+    // Activate the full required Akson extension set (design §10.1): the
+    // signed card advertises them as required, so every operation names them —
+    // a conforming receiver refuses an unactivated request.
+    let extensions = akson_ext::namespace::required_extension_uris().join(", ");
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: akson\r\nContent-Type: application/a2a+json\r\n\
-         a2a-version: 1.0\r\ncontent-digest: {digest}\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n",
+         a2a-version: 1.0\r\ncontent-digest: {digest}\r\na2a-extensions: {extensions}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let exchange = async {
