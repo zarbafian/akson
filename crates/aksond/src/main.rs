@@ -40,7 +40,29 @@ fn init() -> Result<(), Box<dyn std::error::Error>> {
         "  endpoint fp:  sha256:{}",
         state.endpoint_cert().fingerprint.value
     );
-    println!("\nStart it with `aksond serve`.");
+
+    // The token IS the pairing story (design §8.2): init ends by printing the
+    // line you hand a peer — nothing else to mint, move, or confirm.
+    let root = state
+        .identity()
+        .purpose_key(akson_crypto::purpose::KeyPurpose::AgentCard)
+        .verifying()
+        .to_public_bytes();
+    let token = akson_crypto::token::encode_token(&root);
+    let hint = state
+        .config()
+        .interface_url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|hp| hp.contains(':'))
+        .map(str::to_owned);
+    let line = match hint {
+        Some(h) => format!("{token}@{h}"),
+        None => token,
+    };
+    println!("\n  identity token (public — hand this to whoever you want to work with):");
+    println!("\n  {line}\n");
+    println!("Start it with `aksond serve`; they import your line with `akson peer add <line> <a-label-they-choose>`.");
     Ok(())
 }
 

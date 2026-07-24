@@ -78,6 +78,11 @@ Build the daemon and CLI:
 cargo build -p aksond -p akson-cli   # produces target/debug/{aksond,akson}
 ~~~
 
+> Running just one daemon? `aksond init` needs **no addressing env at all** —
+> the listener defaults to `127.0.0.1:18443`, the interface URL derives from
+> it, and init ends by printing your identity token. The two-daemon demo below
+> sets explicit ports only because both run on one machine.
+
 **Terminal A — start `bob`, the performer.** `AKSON_WORKER_CMD` is the worker the
 sandbox runs for an approved task; here it is a pure-shell stand-in that reads the
 supplied input and writes a response.

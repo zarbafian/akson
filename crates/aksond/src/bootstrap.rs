@@ -105,9 +105,19 @@ impl DaemonConfig {
             .unwrap_or_else(default_data_dir);
         let issuer = env_nonempty("AKSON_ISSUER").unwrap_or_else(|| "local".to_owned());
         let agent = env_nonempty("AKSON_AGENT").unwrap_or_else(|| "akson-local".to_owned());
-        let interface_url = env_nonempty("AKSON_INTERFACE_URL")
-            .unwrap_or_else(|| "https://localhost/a2a".to_owned());
-        let receive_addr = env_nonempty("AKSON_RECEIVE_ADDR");
+        // Issue #5: the happy path needs no addressing env at all. The
+        // receive listener defaults to loopback:18443, and the advertised
+        // interface URL derives from it when unset — set either explicitly
+        // to expose beyond this machine.
+        let receive_addr = Some(
+            env_nonempty("AKSON_RECEIVE_ADDR").unwrap_or_else(|| "127.0.0.1:18443".to_owned()),
+        );
+        let interface_url = env_nonempty("AKSON_INTERFACE_URL").unwrap_or_else(|| {
+            let addr = receive_addr.as_deref().unwrap_or("127.0.0.1:18443");
+            // A wildcard bind cannot be advertised; fall back to loopback.
+            let advertised = addr.replace("0.0.0.0", "127.0.0.1").replace("[::]", "[::1]");
+            format!("https://{advertised}/a2a")
+        });
         let worker_command = env_nonempty("AKSON_WORKER_CMD");
         // A production adapter runs directly (no shell) under the strict profile;
         // split the command line on whitespace into argv. Empty → None.
