@@ -61,7 +61,7 @@ pub use peercred::{
 pub use reactor::{react_once, run_reactor};
 pub use receive::{dispatch_proposal, DispatchOutcome, Dispatched};
 pub use receive_http::{handle_receive, HttpRequest, HttpResponse, ReceiveConfig};
-pub use receive_serve::{run_receive_listener, ReceiveServeError};
+pub use receive_serve::{bind_receive_addr, run_receive_listener, ReceiveServeError};
 pub use receive_server::{
     serve as serve_receive, PeerContext, PeerResolver, ReceiveState, StorePeerResolver,
 };

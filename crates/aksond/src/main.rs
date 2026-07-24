@@ -92,12 +92,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // The A2A receive listener (if configured) runs on its own thread with its own
     // tokio runtime, sharing the daemon's store — a received Task shows up in the
-    // operator's inbox at once. A listener failure is logged, not fatal to control.
+    // operator's inbox at once. The port is bound HERE, synchronously: a squatted
+    // or unavailable address is fatal at startup, never a silently dead listener
+    // behind a healthy-looking control plane (sec6 review). Use
+    // AKSON_RECEIVE_ADDR=off for a deliberately control-only daemon.
     if let Some(addr) = config.receive_addr.clone() {
+        let listener = aksond::bind_receive_addr(&addr)
+            .map_err(|e| format!("cannot bind the receive address {addr}: {e}"))?;
         let state = state.clone();
         eprintln!("aksond: serving A2A receive (mTLS) at {addr}");
         std::thread::spawn(move || {
-            if let Err(e) = run_receive_listener(state, &addr) {
+            if let Err(e) = run_receive_listener(state, listener) {
                 eprintln!("aksond: receive listener stopped: {e}");
             }
         });

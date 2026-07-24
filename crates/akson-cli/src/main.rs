@@ -50,20 +50,153 @@ fn main() -> ExitCode {
 /// The sibling binary `name` next to this executable — never a bare or
 /// guessed path (issue #5: an empty variable once registered `/akson-mcp`
 /// and broke two harnesses; a helper must be incapable of that).
+///
+/// The resolved path is persisted into harness config or executed directly,
+/// so it must be trustworthy: the real containing directory has to be owned
+/// by this user (or root) and writable by no one else — otherwise a trusted
+/// `/tmp/akson` could point at an attacker-planted `/tmp/aksond` (sec6
+/// review). Symlinks are resolved first, so the checked directory is the real
+/// one.
 fn sibling_binary(name: &str) -> Result<std::path::PathBuf, String> {
     let me = std::env::current_exe().map_err(|e| format!("cannot locate this binary: {e}"))?;
     let dir = me
         .parent()
         .ok_or_else(|| "this binary has no parent directory".to_owned())?;
     let candidate = dir.join(name);
-    if candidate.is_file() {
-        Ok(candidate)
-    } else {
-        Err(format!(
+    if !candidate.is_file() {
+        return Err(format!(
             "{name} not found next to this binary ({}); build it first: cargo build --release -p {name}",
             dir.display()
-        ))
+        ));
     }
+    // Resolve symlinks, then vet the real directory the target lives in.
+    let real = candidate
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", candidate.display()))?;
+    let real_dir = real
+        .parent()
+        .ok_or_else(|| "resolved binary has no parent directory".to_owned())?;
+    ensure_trusted_dir(real_dir)?;
+    Ok(real)
+}
+
+/// Refuses a directory that ANY other user can write to (the `/tmp` plant in
+/// the finding), or that is not owned by this user or root — the "safe path"
+/// check before trusting a binary found inside it (sec6 review). Group-write
+/// is deliberately allowed: whether the group is a trust boundary is the
+/// operator's own filesystem decision (a private per-user group makes 0775 as
+/// safe as 0755), and refusing it would break ordinary group-writable
+/// checkouts; world-write is never a defensible choice.
+fn ensure_trusted_dir(dir: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(dir).map_err(|e| format!("cannot stat {}: {e}", dir.display()))?;
+    let me = aksond::current_uid();
+    if md.uid() != me && md.uid() != 0 {
+        return Err(format!(
+            "{} is owned by uid {}, not you ({me}) or root — refusing to trust a binary there",
+            dir.display(),
+            md.uid()
+        ));
+    }
+    if md.mode() & 0o002 != 0 {
+        return Err(format!(
+            "{} is world-writable (mode {:o}) — any user could plant a binary there; \
+             build or install into a directory only you can write to",
+            dir.display(),
+            md.mode() & 0o7777
+        ));
+    }
+    Ok(())
+}
+
+/// Escapes a value for a systemd `Environment="KEY=<value>"` line: within the
+/// double quotes only `"` and `\` are special. A control character (newline
+/// especially) cannot be represented on one line and would let a value inject
+/// a fresh unit directive — so those are refused outright (sec6 review).
+fn systemd_env_value(value: &str) -> Result<String, String> {
+    if value.chars().any(|c| c.is_control()) {
+        return Err("environment value contains a control character".to_owned());
+    }
+    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Escapes a value for a systemd command-line token (quoted): reject controls,
+/// escape backslash and quote. The whole token is wrapped in `"..."` so a path
+/// with spaces stays one argument (sec6 review: an unquoted `/tmp/a b/aksond`
+/// would run `/tmp/a`).
+fn systemd_quote(value: &str) -> Result<String, String> {
+    if value.chars().any(|c| c.is_control()) {
+        return Err("command path contains a control character".to_owned());
+    }
+    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
+/// Escapes a value for a TOML basic string (`"..."`): reject controls (which
+/// would need `\uXXXX` and are never valid here), escape backslash and quote,
+/// so `XDG_RUNTIME_DIR` or a path cannot break out and add a table (sec6
+/// review).
+fn toml_basic_string(value: &str) -> Result<String, String> {
+    if value.chars().any(|c| c.is_control()) {
+        return Err("value contains a control character".to_owned());
+    }
+    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
+/// Writes `contents` to `path` with owner-only (`0600`) permissions, via a
+/// temp file in the same directory renamed into place — atomic, never a
+/// world-readable window, never a partial read by a concurrent reader (sec6
+/// review).
+fn write_private_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "target has no parent directory".to_owned())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let tmp = dir.join(format!(".{}.tmp{}", file_name(path), std::process::id()));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+        f.write_all(contents.as_bytes())
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot install {}: {e}", path.display())
+    })
+}
+
+/// Like [`write_private_atomic`] but keeps the caller's default mode — for a
+/// harness config that is the user's own, not a secret store.
+fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "target has no parent directory".to_owned())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let tmp = dir.join(format!(".{}.tmp{}", file_name(path), std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+        f.write_all(contents.as_bytes())
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot install {}: {e}", path.display())
+    })
+}
+
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("akson")
+        .to_owned()
 }
 
 /// `akson mcp install <claude|codex>` — register the MCP server with a
@@ -142,26 +275,46 @@ fn mcp_install(harness: &str) -> ExitCode {
                 }
             };
             let config = std::path::Path::new(&home).join(".codex/config.toml");
-            let existing = std::fs::read_to_string(&config).unwrap_or_default();
+            // A read failure must NOT silently become an empty file we then
+            // overwrite (sec6 review): only a genuinely absent file is empty.
+            let existing = match std::fs::read_to_string(&config) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    eprintln!("akson: cannot read {} ({e}); leaving it untouched", config.display());
+                    return ExitCode::from(2);
+                }
+            };
+            // Best-effort guard against an obvious double-install. Not a TOML
+            // parser — if the table is written unusually we may miss it; the
+            // user then edits by hand (the message says where).
             if existing.contains("[mcp_servers.akson]") {
                 println!(
-                    "akson is already registered in {} — edit it there if the path or runtime dir changed.",
+                    "akson already appears in {} — edit it there if the path or runtime dir changed.",
                     config.display()
                 );
                 return ExitCode::SUCCESS;
             }
-            let block = format!(
-                "\n[mcp_servers.akson]\ncommand = \"{}\"\nenv = {{ XDG_RUNTIME_DIR = \"{runtime_dir}\" }}\n",
-                bin.display()
-            );
-            if let Some(dir) = config.parent() {
-                if let Err(e) = std::fs::create_dir_all(dir) {
-                    eprintln!("akson: cannot create {}: {e}", dir.display());
+            // Escape both interpolated values so neither the runtime dir nor
+            // the binary path can break out of its TOML string and add a table
+            // (sec6 review).
+            let (cmd_toml, rt_toml) = match (
+                toml_basic_string(&bin.display().to_string()),
+                toml_basic_string(&runtime_dir),
+            ) {
+                (Ok(c), Ok(r)) => (c, r),
+                _ => {
+                    eprintln!("akson: the binary path or XDG_RUNTIME_DIR contains a control character");
                     return ExitCode::from(2);
                 }
-            }
-            if let Err(e) = std::fs::write(&config, existing + &block) {
-                eprintln!("akson: cannot write {}: {e}", config.display());
+            };
+            let block = format!(
+                "\n[mcp_servers.akson]\ncommand = {cmd_toml}\nenv = {{ XDG_RUNTIME_DIR = {rt_toml} }}\n",
+            );
+            // Atomic replace (temp + rename): no partial read, no lost content
+            // window. Config keeps the user's own mode via the normal umask.
+            if let Err(e) = write_atomic(&config, &(existing + &block)) {
+                eprintln!("akson: {e}");
                 return ExitCode::from(2);
             }
             println!("registered akson in {}", config.display());
@@ -205,7 +358,10 @@ fn service_install(start_now: bool) -> ExitCode {
         }
     };
     // Carry the caller's akson environment into the unit, so the service runs
-    // the SAME daemon the operator configured in this shell.
+    // the SAME daemon the operator configured in this shell. Each value is
+    // escaped for `Environment="KEY=<v>"`, and a control character is refused
+    // outright — an unescaped newline would inject a fresh unit directive
+    // (e.g. an ExecStartPre= that runs UNSANDBOXED as this user; sec6 review).
     let mut env_lines = String::new();
     for key in [
         "AKSON_DATA_DIR",
@@ -220,25 +376,40 @@ fn service_install(start_now: bool) -> ExitCode {
     ] {
         if let Ok(v) = std::env::var(key) {
             if !v.is_empty() {
-                env_lines.push_str(&format!("Environment=\"{key}={v}\"\n"));
+                match systemd_env_value(&v) {
+                    Ok(escaped) => {
+                        env_lines.push_str(&format!("Environment=\"{key}={escaped}\"\n"))
+                    }
+                    Err(e) => {
+                        eprintln!("akson: {key} cannot go in a unit file ({e}); unset it or set it inside the unit by hand");
+                        return ExitCode::from(2);
+                    }
+                }
             }
         }
     }
+    // The ExecStart path is quoted so a directory with spaces stays one
+    // argument (sec6 review: unquoted `/tmp/a b/aksond` runs `/tmp/a`).
+    let exec = match systemd_quote(&bin.display().to_string()) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("akson: the daemon path is not usable in a unit file ({e})");
+            return ExitCode::from(2);
+        }
+    };
     let unit = format!(
-        "[Unit]\nDescription=Akson daemon — signed task exchange between sovereign agents\nAfter=network-online.target\n\n[Service]\n# The sandbox needs a delegated cgroup subtree (memory + pids controllers).\nDelegate=yes\n{env_lines}ExecStart={} serve\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
-        bin.display()
+        "[Unit]\nDescription=Akson daemon — signed task exchange between sovereign agents\nAfter=network-online.target\n\n[Service]\n# The sandbox needs a delegated cgroup subtree (memory + pids controllers).\nDelegate=yes\n{env_lines}ExecStart={exec} serve\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
     );
     let unit_dir = std::path::Path::new(&home).join(".config/systemd/user");
     let unit_path = unit_dir.join("akson.service");
-    if let Err(e) = std::fs::create_dir_all(&unit_dir) {
-        eprintln!("akson: cannot create {}: {e}", unit_dir.display());
+    // Owner-only: the unit can carry secrets (an API key inside
+    // AKSON_WORKER_CMD, a webhook in AKSON_ON_TASK), so it must not be
+    // world-readable on a traversable home (sec6 review).
+    if let Err(e) = write_private_atomic(&unit_path, &unit) {
+        eprintln!("akson: {e}");
         return ExitCode::from(2);
     }
-    if let Err(e) = std::fs::write(&unit_path, unit) {
-        eprintln!("akson: cannot write {}: {e}", unit_path.display());
-        return ExitCode::from(2);
-    }
-    println!("wrote {}", unit_path.display());
+    println!("wrote {} (mode 0600)", unit_path.display());
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status();
@@ -1161,19 +1332,27 @@ fn status_line(d: &Diagnostic) -> String {
 // daemons pair over identity tokens, exchange a signed task, and the verified
 // bytes come back — then everything is cleaned up.
 
-/// A spawned daemon that dies (and whose dirs vanish) when the demo ends.
+/// Removes the whole demo workspace when the run ends. Declared before the
+/// daemons in `run_demo`, so it drops LAST — after each child is killed.
+struct WorkspaceGuard(std::path::PathBuf);
+
+impl Drop for WorkspaceGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A spawned daemon that is killed when the demo ends (its files live under
+/// the run's [`WorkspaceGuard`], removed there).
 struct DemoDaemon {
     child: std::process::Child,
     runtime_dir: std::path::PathBuf,
-    data_dir: std::path::PathBuf,
 }
 
 impl Drop for DemoDaemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.runtime_dir);
-        let _ = std::fs::remove_dir_all(&self.data_dir);
     }
 }
 
@@ -1193,15 +1372,30 @@ impl DemoDaemon {
     }
 }
 
+/// A loopback port the OS just told us is free. There is a race between this
+/// probe and the daemon binding it; the daemon's receive bind is fatal
+/// (`aksond` exits if the port is taken), so a lost race surfaces as the
+/// readiness check timing out, never a silent misconnect (sec6 review).
+fn free_loopback_port() -> Result<u16, String> {
+    let l = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("cannot find a free port: {e}"))?;
+    l.local_addr()
+        .map(|a| a.port())
+        .map_err(|e| format!("cannot read the bound port: {e}"))
+}
+
 fn spawn_demo_daemon(
     aksond: &std::path::Path,
+    base: &std::path::Path,
     name: &str,
     port: u16,
     worker: Option<&str>,
 ) -> Result<DemoDaemon, String> {
-    let base = std::env::temp_dir().join(format!("akson-demo-{}-{name}", std::process::id()));
-    let runtime_dir = base.join("run");
-    let data_dir = base.join("data");
+    // Per-daemon subdir under the run's random base (created exclusively in
+    // run_demo), so nothing an attacker could pre-create is trusted, and the
+    // demo never adopts a planted admin.sock (sec6 review).
+    let runtime_dir = base.join(format!("{name}/run"));
+    let data_dir = base.join(format!("{name}/data"));
     std::fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(aksond);
     cmd.arg("serve")
@@ -1220,15 +1414,18 @@ fn spawn_demo_daemon(
         cmd.env("AKSON_WORKER_CMD", w);
     }
     let child = cmd.spawn().map_err(|e| format!("cannot start aksond: {e}"))?;
-    let daemon = DemoDaemon {
-        child,
-        runtime_dir,
-        data_dir,
-    };
-    // Wait for the admin socket to answer.
+    let mut daemon = DemoDaemon { child, runtime_dir };
+    // Wait for the admin socket to answer — but stop early if the daemon
+    // exited (e.g. its receive port was squatted; the bind is fatal, sec6
+    // review), rather than waiting the full timeout on a dead process.
     for _ in 0..100 {
         if daemon.call(&ControlRequest::WhoAmI).is_ok() {
             return Ok(daemon);
+        }
+        if let Ok(Some(status)) = daemon.child.try_wait() {
+            return Err(format!(
+                "the {name} daemon exited before it was ready ({status}) — is its port free?"
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -1249,15 +1446,29 @@ fn run_demo() -> Result<(), String> {
     let aksond = sibling_binary("aksond")?;
     println!("== akson demo: the whole loop, two throwaway daemons on loopback ==\n");
 
+    // One random base per run, created exclusively: a pre-existing directory
+    // (an attacker's plant, or a stale run) makes create_dir fail, so the demo
+    // never adopts state it did not create (sec6 review). 128 bits of entropy
+    // makes a pre-create attack infeasible even in shared /tmp.
+    let mut seed = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
+    let run_id: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    let base = std::env::temp_dir().join(format!("akson-demo-{run_id}"));
+    std::fs::create_dir(&base)
+        .map_err(|e| format!("cannot create the demo workspace {}: {e}", base.display()))?;
+    // The whole run cleans up when this guard drops.
+    let _workspace = WorkspaceGuard(base.clone());
+
     println!("1. starting bob (the performer; its worker is a shell stand-in)…");
     let bob = spawn_demo_daemon(
         &aksond,
+        &base,
         "bob",
-        18471,
+        free_loopback_port()?,
         Some(r#"[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" > /output/response"#),
     )?;
     println!("   starting alice (the requester)…");
-    let alice = spawn_demo_daemon(&aksond, "alice", 18472, None)?;
+    let alice = spawn_demo_daemon(&aksond, &base, "alice", free_loopback_port()?, None)?;
 
     println!("\n2. exchanging identity tokens (the out-of-band step, done for you):");
     let bob_token = bob.call(&ControlRequest::Token)?;

@@ -36,9 +36,23 @@ pub enum ReceiveServeError {
     Identity(String),
 }
 
-/// Serves the mTLS A2A receive listener on `addr` until it errors (design §9.1),
-/// running its own tokio runtime. Blocks; call it from a dedicated thread.
-pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), ReceiveServeError> {
+/// Binds the receive address, returning the listener — so a squatted port is a
+/// LOUD failure at startup, not a silent listener death in a detached thread
+/// (sec6 review). The caller makes the failure fatal; [`run_receive_listener`]
+/// then serves on the returned listener.
+pub fn bind_receive_addr(addr: &str) -> Result<std::net::TcpListener, ReceiveServeError> {
+    let listener = std::net::TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+/// Serves the mTLS A2A receive listener on a pre-bound `listener` until it
+/// errors (design §9.1), running its own tokio runtime. Blocks; call it from a
+/// dedicated thread.
+pub fn run_receive_listener(
+    state: Arc<DaemonState>,
+    listener: std::net::TcpListener,
+) -> Result<(), ReceiveServeError> {
     // The endpoint presents its stable self-signed cert over its tls-endpoint key;
     // the peer pinned this fingerprint at pairing (design §8.1/§8.3).
     let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
@@ -77,7 +91,7 @@ pub fn run_receive_listener(state: Arc<DaemonState>, addr: &str) -> Result<(), R
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let listener = TcpListener::bind(addr).await?;
+        let listener = TcpListener::from_std(listener)?;
         serve_receive(listener, acceptor, receive_state).await
     })?;
     Ok(())

@@ -72,7 +72,8 @@ pub struct DaemonConfig {
     /// value; the receiver checks the contract targets it).
     pub interface_url: String,
     /// Where to serve the mTLS A2A receive listener (e.g. `127.0.0.1:8443`).
-    /// `None` runs control-only, with no network listener.
+    /// Defaults to `127.0.0.1:18443`; `None` (via `AKSON_RECEIVE_ADDR=off`)
+    /// runs control-only, with no network listener.
     pub receive_addr: Option<String>,
     /// The worker command to run inside the sandbox for an approved task
     /// (`AKSON_WORKER_CMD`). Run as `/bin/sh -c <cmd>` with the approved inputs
@@ -105,13 +106,18 @@ impl DaemonConfig {
             .unwrap_or_else(default_data_dir);
         let issuer = env_nonempty("AKSON_ISSUER").unwrap_or_else(|| "local".to_owned());
         let agent = env_nonempty("AKSON_AGENT").unwrap_or_else(|| "akson-local".to_owned());
-        // Issue #5: the happy path needs no addressing env at all. The
-        // receive listener defaults to loopback:18443, and the advertised
-        // interface URL derives from it when unset — set either explicitly
-        // to expose beyond this machine.
-        let receive_addr = Some(
-            env_nonempty("AKSON_RECEIVE_ADDR").unwrap_or_else(|| "127.0.0.1:18443".to_owned()),
-        );
+        // Issue #5: the happy path needs no addressing env at all — the
+        // receive listener defaults to loopback:18443. `AKSON_RECEIVE_ADDR=off`
+        // (or `none`) explicitly opts out for a control-only daemon (sec6
+        // review: the default must not silently take away that mode). The
+        // advertised interface URL derives from the bind address when unset —
+        // set AKSON_INTERFACE_URL explicitly to expose beyond this machine or
+        // through NAT (a derived URL is only ever right on the local network).
+        let receive_addr = match std::env::var("AKSON_RECEIVE_ADDR") {
+            Ok(v) if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("none") => None,
+            Ok(v) if !v.is_empty() => Some(v),
+            _ => Some("127.0.0.1:18443".to_owned()),
+        };
         let interface_url = env_nonempty("AKSON_INTERFACE_URL").unwrap_or_else(|| {
             let addr = receive_addr.as_deref().unwrap_or("127.0.0.1:18443");
             // A wildcard bind cannot be advertised; fall back to loopback.
