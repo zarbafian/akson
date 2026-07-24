@@ -37,11 +37,228 @@ fn main() -> ExitCode {
         Some("task") => task(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
+        Some("mcp") => mcp(&mut args),
+        Some("service") => service(&mut args),
+        Some("demo") => demo(),
         _ => {
-            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}");
+            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}, mcp install <claude|codex>, service install, demo");
             ExitCode::from(2)
         }
     }
+}
+
+/// The sibling binary `name` next to this executable — never a bare or
+/// guessed path (issue #5: an empty variable once registered `/akson-mcp`
+/// and broke two harnesses; a helper must be incapable of that).
+fn sibling_binary(name: &str) -> Result<std::path::PathBuf, String> {
+    let me = std::env::current_exe().map_err(|e| format!("cannot locate this binary: {e}"))?;
+    let dir = me
+        .parent()
+        .ok_or_else(|| "this binary has no parent directory".to_owned())?;
+    let candidate = dir.join(name);
+    if candidate.is_file() {
+        Ok(candidate)
+    } else {
+        Err(format!(
+            "{name} not found next to this binary ({}); build it first: cargo build --release -p {name}",
+            dir.display()
+        ))
+    }
+}
+
+/// `akson mcp install <claude|codex>` — register the MCP server with a
+/// harness, with the two sharp edges (issue #5) made impossible: the binary
+/// path is absolute and verified to exist, and the daemon-selecting
+/// XDG_RUNTIME_DIR travels in the server's environment.
+fn mcp(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("install") => match next_arg(args) {
+            Some(h) => mcp_install(&h),
+            None => usage("akson mcp install <claude|codex>"),
+        },
+        _ => usage("akson mcp install <claude|codex>"),
+    }
+}
+
+fn mcp_install(harness: &str) -> ExitCode {
+    let bin = match sibling_binary("akson-mcp") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("akson: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    if runtime_dir.is_empty() {
+        eprintln!(
+            "akson: XDG_RUNTIME_DIR is not set — the MCP server would not know which daemon to talk to.\nSet it to the SAME value your `aksond serve` uses, then re-run."
+        );
+        return ExitCode::from(2);
+    }
+    match harness {
+        "claude" => {
+            // The documented registration, executed with verified values:
+            //   claude mcp add --scope user akson --env XDG_RUNTIME_DIR=… -- <abs>/akson-mcp
+            let status = std::process::Command::new("claude")
+                .args([
+                    "mcp",
+                    "add",
+                    "--scope",
+                    "user",
+                    "akson",
+                    "--env",
+                    &format!("XDG_RUNTIME_DIR={runtime_dir}"),
+                    "--",
+                ])
+                .arg(&bin)
+                .status();
+            match status {
+                Ok(st) if st.success() => {
+                    println!("registered akson with Claude Code (user scope)");
+                    println!("  server:  {}", bin.display());
+                    println!("  runtime: {runtime_dir}");
+                    println!("keep akson_approve/akson_fulfill/akson_deliver/akson_send OFF any auto-allow list — that prompt is the trust decision.");
+                    ExitCode::SUCCESS
+                }
+                Ok(st) => {
+                    eprintln!("akson: `claude mcp add` exited with {st}");
+                    ExitCode::from(1)
+                }
+                Err(_) => {
+                    eprintln!(
+                        "akson: the `claude` CLI is not on PATH. Run this yourself:\n\n  claude mcp add --scope user akson --env XDG_RUNTIME_DIR={runtime_dir} -- {}\n",
+                        bin.display()
+                    );
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "codex" => {
+            let home = match std::env::var("HOME") {
+                Ok(h) if !h.is_empty() => h,
+                _ => {
+                    eprintln!("akson: HOME is not set");
+                    return ExitCode::from(2);
+                }
+            };
+            let config = std::path::Path::new(&home).join(".codex/config.toml");
+            let existing = std::fs::read_to_string(&config).unwrap_or_default();
+            if existing.contains("[mcp_servers.akson]") {
+                println!(
+                    "akson is already registered in {} — edit it there if the path or runtime dir changed.",
+                    config.display()
+                );
+                return ExitCode::SUCCESS;
+            }
+            let block = format!(
+                "\n[mcp_servers.akson]\ncommand = \"{}\"\nenv = {{ XDG_RUNTIME_DIR = \"{runtime_dir}\" }}\n",
+                bin.display()
+            );
+            if let Some(dir) = config.parent() {
+                if let Err(e) = std::fs::create_dir_all(dir) {
+                    eprintln!("akson: cannot create {}: {e}", dir.display());
+                    return ExitCode::from(2);
+                }
+            }
+            if let Err(e) = std::fs::write(&config, existing + &block) {
+                eprintln!("akson: cannot write {}: {e}", config.display());
+                return ExitCode::from(2);
+            }
+            println!("registered akson in {}", config.display());
+            println!("  server:  {}", bin.display());
+            println!("  runtime: {runtime_dir}");
+            ExitCode::SUCCESS
+        }
+        other => {
+            eprintln!("akson: unknown harness {other:?}; expected claude or codex");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `akson service install [--now]` — a supervised systemd *user* service for
+/// `aksond serve`, with the delegated cgroup the sandbox needs (issue #5:
+/// the daemon should not be babysat in a terminal).
+fn service(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("install") => {
+            let now = matches!(next_arg(args).as_deref(), Some("--now"));
+            service_install(now)
+        }
+        _ => usage("akson service install [--now]"),
+    }
+}
+
+fn service_install(start_now: bool) -> ExitCode {
+    let bin = match sibling_binary("aksond") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("akson: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => {
+            eprintln!("akson: HOME is not set");
+            return ExitCode::from(2);
+        }
+    };
+    // Carry the caller's akson environment into the unit, so the service runs
+    // the SAME daemon the operator configured in this shell.
+    let mut env_lines = String::new();
+    for key in [
+        "AKSON_DATA_DIR",
+        "AKSON_ISSUER",
+        "AKSON_AGENT",
+        "AKSON_INTERFACE_URL",
+        "AKSON_RECEIVE_ADDR",
+        "AKSON_WORKER_CMD",
+        "AKSON_WORKER_EXEC",
+        "AKSON_ON_TASK",
+        "XDG_RUNTIME_DIR",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                env_lines.push_str(&format!("Environment=\"{key}={v}\"\n"));
+            }
+        }
+    }
+    let unit = format!(
+        "[Unit]\nDescription=Akson daemon — signed task exchange between sovereign agents\nAfter=network-online.target\n\n[Service]\n# The sandbox needs a delegated cgroup subtree (memory + pids controllers).\nDelegate=yes\n{env_lines}ExecStart={} serve\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
+        bin.display()
+    );
+    let unit_dir = std::path::Path::new(&home).join(".config/systemd/user");
+    let unit_path = unit_dir.join("akson.service");
+    if let Err(e) = std::fs::create_dir_all(&unit_dir) {
+        eprintln!("akson: cannot create {}: {e}", unit_dir.display());
+        return ExitCode::from(2);
+    }
+    if let Err(e) = std::fs::write(&unit_path, unit) {
+        eprintln!("akson: cannot write {}: {e}", unit_path.display());
+        return ExitCode::from(2);
+    }
+    println!("wrote {}", unit_path.display());
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    if start_now {
+        match std::process::Command::new("systemctl")
+            .args(["--user", "enable", "--now", "akson.service"])
+            .status()
+        {
+            Ok(st) if st.success() => println!("akson.service enabled and started"),
+            _ => {
+                eprintln!("akson: could not enable the service; run: systemctl --user enable --now akson.service");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        println!("enable it with:  systemctl --user enable --now akson.service");
+    }
+    println!("survive logout with:  sudo loginctl enable-linger $USER");
+    println!("watch it with:        journalctl --user -u akson -f");
+    ExitCode::SUCCESS
 }
 
 /// This endpoint's identity token (`akson token`, design §8.2 step 1): the
@@ -936,4 +1153,226 @@ fn status_line(d: &Diagnostic) -> String {
     };
     let optional = if d.required { "" } else { " (optional)" };
     format!("{mark:<8}{optional} — {}", d.detail)
+}
+
+// ---------------------------------------------------------------------------
+// `akson demo` — the whole §5.1 loop on one machine, narrated (issue #5:
+// "two daemons and several terminals reads as complicated"). Two throwaway
+// daemons pair over identity tokens, exchange a signed task, and the verified
+// bytes come back — then everything is cleaned up.
+
+/// A spawned daemon that dies (and whose dirs vanish) when the demo ends.
+struct DemoDaemon {
+    child: std::process::Child,
+    runtime_dir: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+}
+
+impl Drop for DemoDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.runtime_dir);
+        let _ = std::fs::remove_dir_all(&self.data_dir);
+    }
+}
+
+impl DemoDaemon {
+    fn socket(&self) -> std::path::PathBuf {
+        self.runtime_dir.join("akson/admin.sock")
+    }
+
+    fn call(&self, req: &ControlRequest) -> Result<serde_json::Value, String> {
+        match send_request(&self.socket(), req) {
+            Ok(ControlResponse::Ok { result }) => Ok(result),
+            Ok(ControlResponse::Problem { problem }) => {
+                Err(format!("{} ({})", problem.title, problem.status))
+            }
+            Err(e) => Err(format!("daemon unreachable: {e}")),
+        }
+    }
+}
+
+fn spawn_demo_daemon(
+    aksond: &std::path::Path,
+    name: &str,
+    port: u16,
+    worker: Option<&str>,
+) -> Result<DemoDaemon, String> {
+    let base = std::env::temp_dir().join(format!("akson-demo-{}-{name}", std::process::id()));
+    let runtime_dir = base.join("run");
+    let data_dir = base.join("data");
+    std::fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(aksond);
+    cmd.arg("serve")
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("AKSON_DATA_DIR", &data_dir)
+        .env("AKSON_ISSUER", "demo")
+        .env("AKSON_AGENT", name)
+        .env("AKSON_RECEIVE_ADDR", format!("127.0.0.1:{port}"))
+        .env_remove("AKSON_INTERFACE_URL")
+        .env_remove("AKSON_WORKER_CMD")
+        .env_remove("AKSON_WORKER_EXEC")
+        .env_remove("AKSON_ON_TASK")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(w) = worker {
+        cmd.env("AKSON_WORKER_CMD", w);
+    }
+    let child = cmd.spawn().map_err(|e| format!("cannot start aksond: {e}"))?;
+    let daemon = DemoDaemon {
+        child,
+        runtime_dir,
+        data_dir,
+    };
+    // Wait for the admin socket to answer.
+    for _ in 0..100 {
+        if daemon.call(&ControlRequest::WhoAmI).is_ok() {
+            return Ok(daemon);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err("the daemon did not come up within 10s".to_owned())
+}
+
+fn demo() -> ExitCode {
+    match run_demo() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("akson demo: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_demo() -> Result<(), String> {
+    let aksond = sibling_binary("aksond")?;
+    println!("== akson demo: the whole loop, two throwaway daemons on loopback ==\n");
+
+    println!("1. starting bob (the performer; its worker is a shell stand-in)…");
+    let bob = spawn_demo_daemon(
+        &aksond,
+        "bob",
+        18471,
+        Some(r#"[ -r /inputs/diff ] || exit 40; printf "reviewed: LGTM" > /output/response"#),
+    )?;
+    println!("   starting alice (the requester)…");
+    let alice = spawn_demo_daemon(&aksond, "alice", 18472, None)?;
+
+    println!("\n2. exchanging identity tokens (the out-of-band step, done for you):");
+    let bob_token = bob.call(&ControlRequest::Token)?;
+    let alice_token = alice.call(&ControlRequest::Token)?;
+    let bob_line = bob_token["presentation"].as_str().unwrap_or_default().to_owned();
+    let alice_line = alice_token["presentation"].as_str().unwrap_or_default().to_owned();
+    println!("   bob's line:   {bob_line}");
+    println!("   alice's line: {alice_line}");
+
+    println!("\n3. each operator imports the other's line under a label THEY choose:");
+    alice.call(&ControlRequest::PeerAdd {
+        token: bob_line,
+        label: "bob".to_owned(),
+        endpoint: None,
+        update: false,
+    })?;
+    bob.call(&ControlRequest::PeerAdd {
+        token: alice_line,
+        label: "alice".to_owned(),
+        endpoint: None,
+        update: false,
+    })?;
+    println!("   alice: peer add <bob's line> bob      # alice's yes");
+    println!("   bob:   peer add <alice's line> alice  # bob's yes");
+
+    println!("\n4. first contact (mutually verified against the imported identities):");
+    let ping = alice.call(&ControlRequest::PeerPing {
+        label: "bob".to_owned(),
+    })?;
+    println!("   introduced: {}", ping["introduced"].as_str().unwrap_or("?"));
+
+    println!("\n5. alice sends a code-review task to \"bob\" (her label):");
+    let spec = TaskSpec {
+        performer: "bob".to_owned(),
+        task_type: "https://akson.invalid/task/code-review/v1".to_owned(),
+        objective: "Review the supplied diff.".to_owned(),
+        inputs: vec![aksond::TaskInput {
+            id: "diff".to_owned(),
+            media_type: "text/x-diff".to_owned(),
+            text: "--- a\n+++ b\n".to_owned(),
+        }],
+        deliverables: vec![aksond::Deliverable {
+            role: "response".to_owned(),
+            media_type: "text/plain".to_owned(),
+        }],
+        capabilities: vec!["respond".to_owned(), "read_supplied_inputs".to_owned()],
+        deadline: "2030-01-01T00:00:00Z".to_owned(),
+        max_response_bytes: 8192,
+    };
+    let sent = alice.call(&ControlRequest::TaskSend(spec))?;
+    let task_id = sent["task_id"].as_str().unwrap_or_default().to_owned();
+    println!("   sent: {task_id}");
+
+    println!("\n6. on bob's side the task sits INERT until a human decides:");
+    let card = bob.call(&ControlRequest::TaskShow {
+        task_id: task_id.clone(),
+    })?;
+    println!("   the risk card says:");
+    println!("     {}", card["sentence"].as_str().unwrap_or("?").replace('\n', "\n     "));
+    if let Some(label) = card["requester_label"].as_str() {
+        println!("     (bob's label for this requester: {label})");
+    }
+
+    println!("\n7. bob approves (this issues a one-shot work order)…");
+    bob.call(&ControlRequest::TaskApprove {
+        task_id: task_id.clone(),
+        processor: None,
+        artifacts: false,
+    })?;
+
+    // The work order is ONE-SHOT (a failed attempt is burned, by design), so
+    // choose the execution path up front: the sandbox when this host can run
+    // it, `task fulfill` — same gates, same signature, no sandbox — when not.
+    if all_required_available(&diagnose()) {
+        println!("8. bob runs the worker in the sandbox…");
+        bob.call(&ControlRequest::TaskRun {
+            task_id: task_id.clone(),
+        })?;
+        println!("   sandboxed run completed (no network, no credentials, only the named input)");
+    } else {
+        println!("8. this host can't run the sandbox (see `akson doctor`), so bob");
+        println!("   fulfils from its own agent instead — still gated and signed:");
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        bob.call(&ControlRequest::TaskFulfill {
+            task_id: task_id.clone(),
+            outputs: vec![FulfillOutput {
+                role: "response".to_owned(),
+                media_type: "text/plain".to_owned(),
+                content_base64: STANDARD.encode("reviewed: LGTM"),
+            }],
+        })?;
+    }
+
+    println!("9. bob delivers the signed result…");
+    bob.call(&ControlRequest::TaskDeliver {
+        task_id: task_id.clone(),
+    })?;
+
+    println!("\n10. alice reads the verified bytes (they re-hashed to the signed digest):");
+    let output = alice.call(&ControlRequest::TaskOutput {
+        task_id: task_id.clone(),
+        role: Some("response".to_owned()),
+    })?;
+    let bytes = output["outputs"][0]["content"]
+        .as_str()
+        .and_then(|b| {
+            use base64::engine::general_purpose::STANDARD;
+            use base64::Engine as _;
+            STANDARD.decode(b).ok()
+        })
+        .unwrap_or_default();
+    println!("    → {:?}", String::from_utf8_lossy(&bytes));
+
+    println!("\n== demo complete; both daemons and their state are being cleaned up ==");
+    println!("Next: `aksond init` for your real daemon, `akson token` for your real line.");
+    Ok(())
 }

@@ -867,6 +867,9 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>akson peer remove &lt;label&gt;</code></td><td>Remove a peer; re-adding later starts a fresh relationship.</td></tr>
   <tr><td><code>akson peer ping &lt;label&gt;</code></td><td>Dial the first-contact introduction now (a first task send also does).</td></tr>
   <tr><td><code>akson peer knocks</code></td><td>Refused introductions — who claimed to be whom, unauthenticated.</td></tr>
+  <tr><td><code>akson demo</code></td><td>The whole loop on loopback: two throwaway daemons pair, exchange a signed task, clean up.</td></tr>
+  <tr><td><code>akson mcp install &lt;claude|codex&gt;</code></td><td>Register the MCP server with a harness — verified absolute path, runtime dir carried in env.</td></tr>
+  <tr><td><code>akson service install [--now]</code></td><td>A supervised systemd user service for <code>aksond serve</code>, with the delegated cgroup the sandbox needs.</td></tr>
   <tr><td><code>akson peer auto-approve &lt;agent&gt; …</code></td><td>Standing policy: approve a peer's task type up to a byte cap without a prompt — approval only, never a processor or export grant, and running is still your move. <a href="#mcp">More</a>.</td></tr>
   <tr><td><code>akson task send &lt;spec.json&gt;</code></td><td>Sign and post a task to a peer.</td></tr>
   <tr><td><code>akson task inbox</code></td><td>Tasks awaiting your decision.</td></tr>

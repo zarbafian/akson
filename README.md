@@ -78,6 +78,10 @@ Build the daemon and CLI:
 cargo build -p aksond -p akson-cli   # produces target/debug/{aksond,akson}
 ~~~
 
+> **See it work in one command:** `akson demo` runs the whole loop on
+> loopback — two throwaway daemons exchange identity tokens, introduce,
+> and move a signed task from send to verified bytes — then cleans up.
+>
 > Running just one daemon? `aksond init` needs **no addressing env at all** —
 > the listener defaults to `127.0.0.1:18443`, the interface URL derives from
 > it, and init ends by printing your identity token. The two-daemon demo below
