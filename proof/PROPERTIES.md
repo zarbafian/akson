@@ -160,8 +160,11 @@ inductive proof (base `Init ⇒ IndInv`, consecution `IndInv ∧ Next ⇒ IndInv
 implication `IndInv ⇒ TargetInv`) with Apalache 0.58.3 — removing TLC's
 run-length bound entirely:
 
-- (The invitation-era PairingLedgerInd inductive proof was retired with
-  invitation pairing; an inductive proof over Introduction is follow-up.)
+- **IntroductionInd**: no-admission-without-import + one-material-per-epoch
+  hold after *any* number of remove/re-add cycles — MaxEpoch is an arbitrary
+  natural (ConstInit) and induction removes the run-length bound. The
+  symbolic handshake set is size-capped (Gen(4)); its contents stay
+  arbitrary, and handshakes never interact.
 -   steps. The strengthening pins `peers`/`consumedWrites` to `everConsumed`
   and threads `dead ⇒ ¬active ⇒ ¬everConsumed`.
 - **RollbackAdversaryInd**: `OneShotNonceForever` holds for **arbitrary

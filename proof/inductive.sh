@@ -20,6 +20,9 @@ run() { # run <label> <apalache-args...>
 }
 
 
+run "IntroductionInd     base       " --cinit=ConstInit --init=Init    --inv=IndInv    --length=0 specs/IntroductionInd.tla
+run "IntroductionInd     consecution" --cinit=ConstInit --init=IndInit --inv=IndInv    --length=1 specs/IntroductionInd.tla
+run "IntroductionInd     implication" --cinit=ConstInit --init=IndInit --inv=TargetInv --length=0 specs/IntroductionInd.tla
 run "RollbackAdversaryInd base       " --cinit=ConstInit --init=Init    --inv=IndInv    --length=0 specs/RollbackAdversaryInd.tla
 run "RollbackAdversaryInd consecution" --cinit=ConstInit --init=IndInit --inv=IndInv    --length=1 specs/RollbackAdversaryInd.tla
 run "RollbackAdversaryInd implication" --cinit=ConstInit --init=IndInit --inv=TargetInv --length=0 specs/RollbackAdversaryInd.tla

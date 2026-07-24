@@ -190,6 +190,12 @@ if [ -x "$ROOT/tools/apalache/bin/apalache-mc" ]; then
   # implication obligations were checked over an empty state predicate.
   # A false invariant over a satisfiable init MUST be refuted.
   if apa --cinit=ConstInit --init=IndInit --inv=ProbeFalse --length=0 \
+       specs/IntroductionInd.tla | grep -q 'The outcome is: Error'; then
+    echo "ok    ind-sat-introduction: IndInit is satisfiable"
+  else
+    echo "FAIL  ind-sat-introduction: IndInit unsatisfiable - induction was vacuous"; fail=1
+  fi
+  if apa --cinit=ConstInit --init=IndInit --inv=ProbeFalse --length=0 \
        specs/RollbackAdversaryInd.tla | grep -q 'The outcome is: Error'; then
     echo "ok    ind-sat-rollback: IndInit is satisfiable"
   else
