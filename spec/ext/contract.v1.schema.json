@@ -165,10 +165,11 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "agent"],
+      "required": ["issuer", "agent", "root"],
       "properties": {
         "issuer": { "type": "string", "minLength": 1, "maxLength": 512 },
-        "agent": { "type": "string", "minLength": 1, "maxLength": 512 }
+        "agent": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "root": { "type": "string", "minLength": 1, "maxLength": 128 }
       }
     },
     "inputEntry": {

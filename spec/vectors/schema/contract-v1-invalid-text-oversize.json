@@ -1,6 +1,6 @@
 {
   "name": "schema/contract-v1-invalid-text-oversize",
-  "description": "a text input Part may not exceed the 1 MiB ceiling (design \u00a711.1)",
+  "description": "a text input Part may not exceed the 1 MiB ceiling (design §11.1)",
   "input": {
     "schema": "contract",
     "version": 1,
@@ -13,11 +13,13 @@
       "context_id": "ctx-0001",
       "requester": {
         "issuer": "akson:pairing:demo",
-        "agent": "requester.example"
+        "agent": "requester.example",
+        "root": "root-fixture"
       },
       "performer": {
         "issuer": "akson:pairing:demo",
-        "agent": "reviewer.example"
+        "agent": "reviewer.example",
+        "root": "root-fixture"
       },
       "objective": "Review the supplied patch for correctness and safety.",
       "inputs": [

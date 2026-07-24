@@ -13,11 +13,13 @@
       "context_id": "ctx-0001",
       "requester": {
         "issuer": "akson:pairing:demo",
-        "agent": "requester.example"
+        "agent": "requester.example",
+        "root": "root-fixture"
       },
       "performer": {
         "issuer": "akson:pairing:demo",
-        "agent": "reviewer.example"
+        "agent": "reviewer.example",
+        "root": "root-fixture"
       },
       "objective": "Review the supplied patch for correctness and safety.",
       "inputs": [

@@ -201,6 +201,7 @@ async fn run_serve(args: Args) -> Result<(), Err> {
             Identity {
                 issuer: "local".to_owned(),
                 agent: agent.clone(),
+                root: me.own_root.clone(),
             },
             std::collections::BTreeSet::new(),
             format!("https://{advertise}:{}/a2a", bound.port()),

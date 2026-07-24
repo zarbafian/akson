@@ -8,7 +8,8 @@
       "schema_version": 1,
       "verifier": {
         "issuer": "akson:pairing:demo",
-        "agent": "validator.example"
+        "agent": "validator.example",
+        "root": "root-fixture"
       },
       "subjects": [
         "56232ed4fe73b46014d23e42ec8e4b0c03f6fc6000870b8022024d8e9bce2ef6",
@@ -21,6 +22,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "8b940c82eca49140f5357d786dd9b09b587c2e30c8ddfb1afab666f75b0ca784"
+    "canonical_sha256": "a753676b54d0dbbda14fe516b50676d4c7b507ea76252e0ac5c85109285e55c8"
   }
 }

@@ -82,8 +82,8 @@ fn exchange_body(
         "schema_version": 1, "contract_id": contract_id,
         "revision": 0, "task_type": "https://akson.invalid/task/code-review/v1",
         "message_id": message_id,
-        "requester": {"issuer": requester.0, "agent": requester.1},
-        "performer": {"issuer": performer.0, "agent": performer.1},
+        "requester": {"issuer": requester.0, "agent": requester.1, "root": "root-fixture"},
+        "performer": {"issuer": performer.0, "agent": performer.1, "root": "root-fixture"},
         "objective": "review the supplied diff",
         "inputs": [{
             "id": "diff", "message_id": message_id, "part_index": 1, "kind": "text",

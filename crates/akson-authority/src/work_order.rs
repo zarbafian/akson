@@ -15,10 +15,10 @@
 //! # use akson_contract::Identity;
 //! # let order = WorkOrder {
 //! #   version: 1, work_order_id: "11111111-1111-4111-8111-111111111111".into(),
-//! #   issuer: Identity { issuer: "local".into(), agent: "authority".into() },
+//! #   issuer: Identity { issuer: "local".into(), agent: "authority".into(), root: "root-fixture".into() },
 //! #   issuer_assurance: "local-human".into(),
 //! #   audience: Audience { daemon: "aksond".into(), executor: "worker-1".into() },
-//! #   request_origin: RequestOrigin { peer: Identity { issuer: "iss".into(), agent: "requester".into() }, tls_certificate_sha256: "ab".repeat(32) },
+//! #   request_origin: RequestOrigin { peer: Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture".into() }, tls_certificate_sha256: "ab".repeat(32) },
 //! #   task_id: "task-1".into(), context_id: "ctx-1".into(), message_id: "msg-1".into(),
 //! #   contract_revision: 0, contract_digest: "a".repeat(64),
 //! #   capabilities: CapabilityVector::new(vec![Grant::Respond(RespondScope {
@@ -218,6 +218,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 

@@ -46,14 +46,23 @@ required `root` field alongside the existing issuer-qualified pair:
   pinned in that peer's verified card, else the message is refused
   (`identity-mismatch`). The pair is thus authenticated display and §6.3
   qualification, never a lookup key.
-- Affected payload types bump **in lockstep** to `v2` (contract, decision,
-  and the result-manifest/outcome payloads that embed party identities):
-  `application/vnd.akson-dev.contract.v2+json`, etc. The DSSE envelope media
-  type (ADR-0012) is unchanged. Schemas remain reject-unknown; `root` is
-  required — there is no dual-shape window.
-- Pre-release clean cut (design draft §5): v1 payloads are not accepted on
-  the wire after the upgrade. Stored v1 artifacts remain verifiable as
-  historical records under their original schemas.
+- Every payload schema that embeds a party identity (contract, decision,
+  outcome, verifier-summary) gains the field **in lockstep, revised in place
+  within v1** (amended 2026-07-24): the v2 media-type bump this ADR first
+  specified exists to prevent a dual-shape window against *deployed* v1
+  peers, and none exist — the wire format is pre-release and unregistered
+  (`MEDIA_TYPES_ARE_PROVISIONAL`). Because the schemas are reject-unknown
+  and `root` is required, an old payload fails closed identically under the
+  revised v1: there is still no dual-shape window. Had v1 shipped, this
+  would have been the v2. The DSSE envelope media type (ADR-0012) is
+  unchanged.
+- The receiver binds the SIGNED claim to the CHANNEL: a proposal's
+  `requester.root` must equal the transport-authenticated root of the
+  connection that delivered it, and `performer.root` must equal the local
+  endpoint's own root — refusals before any task is created.
+- Pre-release clean cut (design draft §5): pre-revision payloads are not
+  accepted on the wire after the upgrade. Stored artifacts remain verifiable
+  as historical records under their original schemas.
 - Local authority state re-keys accordingly: `auto_approve`, `peer_keys`
   relationship linkage, and sent-request matching move to the root
   thumbprint. The CLI resolves label → root at task creation, once;

@@ -18,8 +18,8 @@
 //! #   "revision": 0,
 //! #   "task_type": "https://akson.invalid/task/echo",
 //! #   "message_id": "msg-1",
-//! #   "requester": {"issuer": "a.example", "agent": "requester"},
-//! #   "performer": {"issuer": "b.example", "agent": "performer"},
+//! #   "requester": {"issuer": "a.example", "agent": "requester", "root": "root-fixture"},
+//! #   "performer": {"issuer": "b.example", "agent": "performer", "root": "root-fixture"},
 //! #   "objective": "demo",
 //! #   "inputs": [],
 //! #   "deliverables": [{"role": "report", "media_type": "text/plain"}],
@@ -50,6 +50,11 @@ use sha2::{Digest, Sha256};
 pub struct Identity {
     pub issuer: String,
     pub agent: String,
+    /// RFC 7638 thumbprint of the party's identity root key (ADR-0014): the
+    /// relationship key. The receiver binds the requester's signed `root` to
+    /// the transport-authenticated root of the delivering connection, and the
+    /// performer's to its own — issuer/agent are authenticated display.
+    pub root: String,
 }
 
 /// A Part's content kind. `text` digests exact UTF-8; `data` digests JCS JSON.

@@ -8,7 +8,8 @@
       "schema_version": 1,
       "verifier": {
         "issuer": "akson:pairing:demo",
-        "agent": "validator.example"
+        "agent": "validator.example",
+        "root": "root-fixture"
       },
       "subjects": [],
       "check_profile": "akson-evidence-validate/v1",

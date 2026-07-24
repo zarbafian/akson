@@ -987,6 +987,7 @@ mod tests {
         akson_contract::Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 

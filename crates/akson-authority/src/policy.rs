@@ -16,7 +16,7 @@
 //! ```
 //! use akson_authority::{evaluate, PolicyDecision, StandingRule};
 //! use akson_contract::Identity;
-//! let peer = Identity { issuer: "iss".into(), agent: "requester".into() };
+//! let peer = Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture".into() };
 //! let rules = vec![StandingRule::deny(peer.clone(), Some("https://akson.invalid/spam".into()))];
 //! // A denied task type is refused without a prompt; anything else prompts.
 //! assert_eq!(evaluate(&rules, &peer, "https://akson.invalid/spam"), PolicyDecision::Deny);
@@ -129,6 +129,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 

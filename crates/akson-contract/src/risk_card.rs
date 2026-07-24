@@ -19,8 +19,8 @@
 //! # let value = json!({
 //! #   "schema_version": 1, "contract_id": "00000000-0000-4000-8000-000000000000",
 //! #   "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "m1",
-//! #   "requester": {"issuer": "iss", "agent": "requester"},
-//! #   "performer": {"issuer": "iss", "agent": "performer"}, "objective": "o",
+//! #   "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+//! #   "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
 //! #   "inputs": [], "deliverables": [{"role": "r", "media_type": "text/plain"}],
 //! #   "evidence_slots": [], "requested_capabilities": ["respond"],
 //! #   "processor_constraints": {"disclosure": "none"},
@@ -346,8 +346,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/task/code-review/v1",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
             "objective": "review the diff",
             "inputs": [{
                 "id": "diff", "message_id": "m1", "part_index": 1, "kind": "text",

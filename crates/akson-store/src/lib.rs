@@ -3002,8 +3002,8 @@ mod tests {
             "revision": rev,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
             "objective": "o",
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],
@@ -3033,8 +3033,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
             "objective": objective,
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],
@@ -3195,6 +3195,7 @@ mod tests {
             issuer: Identity {
                 issuer: "local".to_owned(),
                 agent: "authority".to_owned(),
+                root: "root-fixture".to_owned(),
             },
             issuer_assurance: "local-human".to_owned(),
             audience: Audience {
@@ -3205,6 +3206,7 @@ mod tests {
                 peer: Identity {
                     issuer: "iss".to_owned(),
                     agent: "requester".to_owned(),
+                    root: "root-fixture".to_owned(),
                 },
                 tls_certificate_sha256: "ab".repeat(32),
             },

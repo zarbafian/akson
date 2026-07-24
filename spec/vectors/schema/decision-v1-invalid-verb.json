@@ -14,7 +14,8 @@
       "context_id": "ctx-0001",
       "decider": {
         "issuer": "akson:pairing:demo",
-        "agent": "reviewer.example"
+        "agent": "reviewer.example",
+        "root": "root-fixture"
       },
       "decided_at": "2026-07-16T12:00:00Z"
     }

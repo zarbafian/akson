@@ -108,6 +108,9 @@ impl PeerResolver for StorePeerResolver {
             requester_origin: Identity {
                 issuer: pk.issuer,
                 agent: pk.agent_id,
+                // The transport-authenticated root: the contract's signed
+                // requester.root must equal it (ADR-0014, via Identity Eq).
+                root: pk.root_thumbprint.clone(),
             },
             proposal_key,
             peer_id: pk.root_thumbprint,
@@ -662,6 +665,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 
@@ -732,8 +736,8 @@ mod tests {
         let value = json!({
             "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
             "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"}, "objective": "o",
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
             "inputs": [{
                 "id": "src", "message_id": "msg-1", "part_index": 1, "kind": "text",
                 "media_type": "text/plain", "charset": "utf-8", "canonical_rule": "utf8-exact",

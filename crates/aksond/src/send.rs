@@ -123,6 +123,7 @@ pub fn prepare_send(
     let performer = Identity {
         issuer: peer.identity.issuer.clone().unwrap_or_default(),
         agent: peer.identity.agent_id.clone(),
+        root: performer_root_resolved.clone(),
     };
 
     let contract_id = uuid_v4();
@@ -163,8 +164,8 @@ pub fn prepare_send(
         "revision": 0,
         "task_type": spec.task_type,
         "message_id": message_id,
-        "requester": { "issuer": local.issuer, "agent": local.agent },
-        "performer": { "issuer": performer.issuer, "agent": performer.agent },
+        "requester": { "issuer": local.issuer, "agent": local.agent, "root": local.root },
+        "performer": { "issuer": performer.issuer, "agent": performer.agent, "root": performer.root },
         "objective": spec.objective,
         "inputs": inputs,
         "deliverables": deliverables,
@@ -405,6 +406,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 
@@ -456,8 +458,8 @@ mod tests {
         let contract = json!({
             "schema_version": 1, "contract_id": contract_id, "revision": 0,
             "task_type": spec.task_type, "message_id": message_id,
-            "requester": { "issuer": local.issuer, "agent": local.agent },
-            "performer": { "issuer": performer.issuer, "agent": performer.agent },
+            "requester": { "issuer": local.issuer, "agent": local.agent, "root": local.root },
+            "performer": { "issuer": performer.issuer, "agent": performer.agent, "root": performer.root },
             "objective": spec.objective,
             "inputs": inputs,
             "deliverables": spec.deliverables.iter().map(|d| json!({"role": d.role, "media_type": d.media_type})).collect::<Vec<_>>(),

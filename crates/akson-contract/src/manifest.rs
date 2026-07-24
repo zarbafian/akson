@@ -19,7 +19,7 @@
 //! # let value = json!({
 //! #   "schema_version": 1, "contract_id": "00000000-0000-4000-8000-000000000000",
 //! #   "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "m1",
-//! #   "requester": {"issuer": "a", "agent": "b"}, "performer": {"issuer": "c", "agent": "d"},
+//! #   "requester": {"issuer": "a", "agent": "b", "root": "root-fixture"}, "performer": {"issuer": "c", "agent": "d", "root": "root-fixture"},
 //! #   "objective": "o",
 //! #   "inputs": [{"id": "src", "message_id": "m1", "part_index": 0, "kind": "text",
 //! #     "media_type": "text/plain", "charset": "utf-8", "canonical_rule": "utf8-exact",

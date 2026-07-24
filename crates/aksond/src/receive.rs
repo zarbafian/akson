@@ -250,6 +250,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 
@@ -261,8 +262,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/t",
             "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
             "objective": "o",
             "inputs": [{
                 "id": "src", "message_id": "msg-1", "part_index": 1,

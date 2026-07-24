@@ -26,7 +26,7 @@
 //! # let out = OutputEntry { role: "review".into(), artifact_id: "art-1".into(),
 //! #   part_index: 0, media_type: "text/plain".into(), byte_length: 12, sha256: "d".repeat(64) };
 //! let manifest = ResultManifest::assemble(header, vec![out], vec![], vec![], vec![]);
-//! let requester = Identity { issuer: "iss".into(), agent: "requester".into() };
+//! let requester = Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture".into() };
 //! let outcome = Outcome::for_manifest(
 //!     &manifest, OutcomeState::Accepted, requester, "2026-07-18T00:00:00Z".into()).unwrap();
 //! // The outcome binds exactly this manifest.
@@ -260,6 +260,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: "requester".to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 

@@ -13,11 +13,13 @@
       "context_id": "ctx-0001",
       "requester": {
         "issuer": "akson:pairing:demo",
-        "agent": "requester.example"
+        "agent": "requester.example",
+        "root": "root-fixture"
       },
       "performer": {
         "issuer": "akson:pairing:demo",
-        "agent": "reviewer.example"
+        "agent": "reviewer.example",
+        "root": "root-fixture"
       },
       "objective": "Review the supplied patch for correctness and safety.",
       "inputs": [
@@ -86,6 +88,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "5aa7afe7a3dd953b5d7ec3871b788eb5b2397fa62a0a2fa7396ec9f61978bcdd"
+    "canonical_sha256": "4ac3dc83e1f83ef2c7562ba3710ecb448b3033a364242e693d2c0cc3a5f90fce"
   }
 }

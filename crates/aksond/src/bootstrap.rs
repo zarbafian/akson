@@ -116,7 +116,13 @@ impl DaemonConfig {
         let on_task = env_nonempty("AKSON_ON_TASK");
         Self {
             data_dir,
-            local_performer: Identity { issuer, agent },
+            // The local root is populated at bootstrap, once the identity
+            // keys exist (ADR-0014: the performer's signed root must be ours).
+            local_performer: Identity {
+                issuer,
+                agent,
+                root: String::new(),
+            },
             interface_url,
             receive_addr,
             worker_command,
@@ -167,11 +173,13 @@ impl DaemonState {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         store.resolve_crashed_attempts(now)?;
         store.resolve_crashed_calls(now)?;
+        let mut config = config.clone();
+        config.local_performer.root = own_root(&identity);
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
             identity,
             endpoint_cert,
-            config: config.clone(),
+            config,
         })
     }
 
@@ -182,8 +190,9 @@ impl DaemonState {
         store: Store,
         identity: IdentityKeys,
         endpoint_cert: EndpointCert,
-        config: DaemonConfig,
+        mut config: DaemonConfig,
     ) -> Self {
+        config.local_performer.root = own_root(&identity);
         Self {
             store: Arc::new(Mutex::new(store)),
             identity,
@@ -970,6 +979,16 @@ fn valid_hint(hint: &str) -> bool {
         && port.parse::<u16>().map(|p| p > 0).unwrap_or(false)
 }
 
+/// This endpoint's own identity root thumbprint (ADR-0014): what the
+/// performer field of every inbound contract must carry.
+fn own_root(identity: &IdentityKeys) -> String {
+    identity
+        .purpose_key(KeyPurpose::AgentCard)
+        .verifying()
+        .to_jwk()
+        .thumbprint()
+}
+
 fn unknown_label(label: &str) -> Problem {
     Problem::new(
         404,
@@ -1036,6 +1055,7 @@ mod tests {
             local_performer: Identity {
                 issuer: "iss".to_owned(),
                 agent: "performer".to_owned(),
+                root: "root-fixture".to_owned(),
             },
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
@@ -1130,6 +1150,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
+            root: "root-fixture".to_owned(),
         }
     }
 
@@ -1139,8 +1160,8 @@ mod tests {
             "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
             "revision": 0, "task_type": "https://akson.invalid/task/code-review/v1",
             "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester"},
-            "performer": {"issuer": "iss", "agent": "performer"}, "objective": "o",
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
             "inputs": [{
                 "id": "diff", "message_id": "msg-1", "part_index": 1, "kind": "text",
                 "media_type": "text/x-diff", "charset": "utf-8", "canonical_rule": "utf8-exact",

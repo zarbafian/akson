@@ -795,7 +795,10 @@ async fn paired_endpoints() -> (Endpoint, Endpoint) {
 fn pin_peer(local: &Endpoint, peer: &Endpoint) {
     let store = local.state.store();
     let store = store.lock().unwrap();
-    let root = peer.cert.fingerprint.value.clone();
+    // The peer's REAL identity root (its agent-card thumbprint, populated at
+    // bootstrap): the signed contract's requester.root carries this value, so
+    // the pinned relationship must too (ADR-0014).
+    let root = peer.state.config().local_performer.root.clone();
     store.add_peer_import(&root, &peer.agent, "", NOW).unwrap();
     let identity = akson_crypto::identity::PeerIdentity {
         issuer: Some("iss".to_owned()),
@@ -838,7 +841,9 @@ fn serve(endpoint: &mut Endpoint, listener: TcpListener) {
         ReceiveState::new(
             endpoint.state.store(),
             StorePeerResolver,
-            ident(&endpoint.agent),
+            // The daemon's REAL local identity (root populated at bootstrap):
+            // inbound performer.root must equal it (ADR-0014).
+            endpoint.state.config().local_performer.clone(),
             BTreeSet::new(),
             endpoint.url.clone(),
         )
@@ -892,6 +897,7 @@ fn ident(agent: &str) -> Identity {
     Identity {
         issuer: "iss".to_owned(),
         agent: agent.to_owned(),
+        root: "root-fixture".to_owned(),
     }
 }
 

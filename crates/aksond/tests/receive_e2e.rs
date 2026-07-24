@@ -47,6 +47,7 @@ fn ident(agent: &str) -> Identity {
     Identity {
         issuer: "iss".to_owned(),
         agent: agent.to_owned(),
+        root: "root-fixture".to_owned(),
     }
 }
 
@@ -63,8 +64,8 @@ fn send_message_body_caps(proposal_key: &PurposeKey, caps: &[&str]) -> Vec<u8> {
         "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
         "revision": 0, "task_type": "https://akson.invalid/task/code-review/v1",
         "message_id": "msg-1",
-        "requester": {"issuer": "iss", "agent": "requester"},
-        "performer": {"issuer": "iss", "agent": "performer"}, "objective": "o",
+        "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
+        "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
         "inputs": [{
             "id": "diff", "message_id": "msg-1", "part_index": 1, "kind": "text",
             "media_type": "text/plain", "charset": "utf-8", "canonical_rule": "utf8-exact",
@@ -266,15 +267,14 @@ async fn a_paired_peer_posts_a_proposal_over_mtls_and_it_becomes_a_submitted_tas
         .put_peer(&stored_peer(
             "requester",
             "https://peer/a2a",
-            &peer_cert.fingerprint,
-        ))
+            &peer_cert.fingerprint, "root-fixture"))
         .unwrap();
     store
         .put_peer_key(
             &peer_cert.fingerprint.value,
             "contract-proposal",
             "requester",
-            "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
+            "iss", &peer_proposal_key.verifying().to_public_bytes(), "root-fixture", NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
 
@@ -319,15 +319,14 @@ async fn several_exchanges_share_one_keep_alive_connection() {
         .put_peer(&stored_peer(
             "requester",
             "https://peer/a2a",
-            &peer_cert.fingerprint,
-        ))
+            &peer_cert.fingerprint, "root-fixture"))
         .unwrap();
     store
         .put_peer_key(
             &peer_cert.fingerprint.value,
             "contract-proposal",
             "requester",
-            "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
+            "iss", &peer_proposal_key.verifying().to_public_bytes(), "root-fixture", NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
     let addr = spawn_receive(store.clone(), &server_tls_key, &server_cert).await;
@@ -445,15 +444,14 @@ async fn the_whole_lifecycle_receive_inbox_show_approve_and_complete() {
             .put_peer(&stored_peer(
                 "requester",
                 "https://peer/a2a",
-                &peer_cert.fingerprint,
-            ))
+                &peer_cert.fingerprint, "root-fixture"))
             .unwrap();
         store
             .put_peer_key(
             &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), "root-fixture", NOW)
             .unwrap();
     }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
@@ -611,15 +609,14 @@ async fn the_daemon_runs_the_approved_task_worker_in_the_sandbox() {
             .put_peer(&stored_peer(
                 "requester",
                 "https://peer/a2a",
-                &peer_cert.fingerprint,
-            ))
+                &peer_cert.fingerprint, "root-fixture"))
             .unwrap();
         store
             .put_peer_key(
             &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), "root-fixture", NOW)
             .unwrap();
     }
     let addr = spawn_receive(state.store(), &server_tls_key, &server_cert).await;
@@ -806,15 +803,14 @@ async fn the_openai_adapter_reviews_confined_via_a_brokered_model() {
             .put_peer(&stored_peer(
                 "requester",
                 "https://peer/a2a",
-                &peer_cert.fingerprint,
-            ))
+                &peer_cert.fingerprint, "root-fixture"))
             .unwrap();
         store
             .put_peer_key(
             &peer_cert.fingerprint.value,
                 "contract-proposal",
                 "requester",
-                "iss", &peer_proposal_key.verifying().to_public_bytes(), &peer_cert.fingerprint.value, NOW)
+                "iss", &peer_proposal_key.verifying().to_public_bytes(), "root-fixture", NOW)
             .unwrap();
     }
 
@@ -979,7 +975,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
                 message_id: "msg-1".to_owned(),
                 // Must equal the resolver-produced sender root (the key row's
                 // root) or the outcome path refuses the delivery.
-                performer_root: performer_cert.fingerprint.value.clone(),
+                performer_root: "root-fixture".to_owned(),
             },
             NOW,
         )
@@ -988,8 +984,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
         .put_peer(&stored_peer(
             "performer",
             "https://peer/a2a",
-            &performer_cert.fingerprint,
-        ))
+            &performer_cert.fingerprint, "root-fixture"))
         .unwrap();
     store
         .put_peer_key(
@@ -1000,7 +995,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
             &PurposeKey::from_seed(KeyPurpose::ContractProposal, &[3u8; 32])
                 .verifying()
                 .to_public_bytes(),
-            &performer_cert.fingerprint.value,
+            "root-fixture",
             NOW,
         )
         .unwrap();
@@ -1009,7 +1004,7 @@ async fn a_delivered_result_is_finalized_into_a_signed_outcome() {
             &performer_cert.fingerprint.value,
             "task-result",
             "performer",
-            "iss", &performer_task_result.verifying().to_public_bytes(), &performer_cert.fingerprint.value, NOW)
+            "iss", &performer_task_result.verifying().to_public_bytes(), "root-fixture", NOW)
         .unwrap();
     let store = Arc::new(Mutex::new(store));
 
@@ -1069,6 +1064,7 @@ fn stored_peer(
     agent: &str,
     endpoint: &str,
     tls_cert: &akson_crypto::identity::Fingerprint,
+    root: &str,
 ) -> akson_store::StoredPeer {
     akson_store::StoredPeer {
         identity: akson_crypto::identity::PeerIdentity {
@@ -1077,7 +1073,10 @@ fn stored_peer(
             workload_id: None,
             endpoint_id: endpoint.to_owned(),
             tls_cert: tls_cert.clone(),
-            agent_card_key: tls_cert.clone(),
+            agent_card_key: akson_crypto::identity::Fingerprint {
+                kind: akson_crypto::identity::FingerprintKind::Jwk7638,
+                value: root.to_owned(),
+            },
             key_bindings: vec![],
             security_projection_digest: tls_cert.clone(),
             full_card_digest: tls_cert.clone(),
@@ -1104,12 +1103,16 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
     let b_store = in_memory_store();
     // B pinned A as an ACTIVE peer and its contract-proposal key at pairing (by A's
     // endpoint-cert fingerprint).
+    let a_root = a_identity
+        .purpose_key(KeyPurpose::AgentCard)
+        .verifying()
+        .to_jwk()
+        .thumbprint();
     b_store
         .put_peer(&stored_peer(
             "requester",
             "https://peer/a2a",
-            &a_cert.fingerprint,
-        ))
+            &a_cert.fingerprint, &a_root))
         .unwrap();
     b_store
         .put_peer_key(
@@ -1121,7 +1124,7 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
                 .purpose_key(KeyPurpose::ContractProposal)
                 .verifying()
                 .to_public_bytes(),
-            &a_cert.fingerprint.value,
+            &a_root,
             NOW,
         )
         .unwrap();
@@ -1134,8 +1137,7 @@ async fn a_daemon_sends_a_proposal_that_reaches_the_performer_as_a_submitted_tas
         .put_peer(&stored_peer(
             "performer",
             &format!("https://127.0.0.1:{}/a2a", b_addr.port()),
-            &b_cert.fingerprint,
-        ))
+            &b_cert.fingerprint, "root-fixture"))
         .unwrap();
     let a_config = DaemonConfig {
         data_dir: std::env::temp_dir().join("aksond-send-unused"),
@@ -1201,18 +1203,19 @@ fn seed_peer(
     agent: &str,
     endpoint: &str,
     cert: &EndpointCert,
+    root: &str,
     proposal_pub: [u8; 32],
     task_result_pub: Option<[u8; 32]>,
 ) {
     store
-        .put_peer(&stored_peer(agent, endpoint, &cert.fingerprint))
+        .put_peer(&stored_peer(agent, endpoint, &cert.fingerprint, root))
         .unwrap();
     store
         .put_peer_key(
             &cert.fingerprint.value,
             "contract-proposal",
             agent,
-            "iss", &proposal_pub, &cert.fingerprint.value, NOW)
+            "iss", &proposal_pub, root, NOW)
         .unwrap();
     if let Some(tr) = task_result_pub {
         store
@@ -1220,7 +1223,7 @@ fn seed_peer(
             &cert.fingerprint.value,
                 "task-result",
                 agent,
-                "iss", &tr, &cert.fingerprint.value, NOW)
+                "iss", &tr, root, NOW)
             .unwrap();
     }
 }
@@ -1232,10 +1235,13 @@ fn receive_state_for(
     agent: &str,
     results: bool,
 ) -> Arc<ReceiveState<StorePeerResolver>> {
+    let _ = agent;
     let base = ReceiveState::new(
         state.store(),
         StorePeerResolver,
-        ident(agent),
+        // The daemon's REAL local identity — inbound performer.root must
+        // equal its root (ADR-0014).
+        state.config().local_performer.clone(),
         BTreeSet::new(),
         "https://local/a2a".to_owned(),
     );
@@ -1316,18 +1322,30 @@ async fn two_daemons_run_the_whole_task_round_trip() {
     let a_url = format!("https://127.0.0.1:{}/a2a", a_addr.port());
     let b_url = format!("https://127.0.0.1:{}/a2a", b_addr.port());
 
-    // Pair both directions.
+    // Pair both directions, under each daemon's REAL identity root — the
+    // signed contract roots must match the pinned relationships (ADR-0014).
+    let a_root = a_identity
+        .purpose_key(KeyPurpose::AgentCard)
+        .verifying()
+        .to_jwk()
+        .thumbprint();
+    let b_root = b_identity
+        .purpose_key(KeyPurpose::AgentCard)
+        .verifying()
+        .to_jwk()
+        .thumbprint();
     let a_store = in_memory_store();
     seed_peer(
         &a_store,
         "performer",
         &b_url,
         &b_cert,
+        &b_root,
         b_proposal_pub,
         Some(b_task_result_pub),
     );
     let b_store = in_memory_store();
-    seed_peer(&b_store, "requester", &a_url, &a_cert, a_proposal_pub, None);
+    seed_peer(&b_store, "requester", &a_url, &a_cert, &a_root, a_proposal_pub, None);
 
     let cfg = |dir: &str, agent: &str| DaemonConfig {
         data_dir: std::env::temp_dir().join(dir),
