@@ -112,8 +112,9 @@
 <section id="loop">
   <h2>One loop</h2>
   <p class="deck">
-    Two people pair their endpoints once, over any channel they already trust. From then
-    on their agents delegate work directly — no broker in the middle, no shared API key.
+    Two people exchange a public identity token once, over any channel they already
+    trust, and each imports the other's under a name they choose. From then on their
+    agents delegate work directly — no broker in the middle, no shared API key.
   </p>
 
   <div class="wire" role="img" aria-label="Alice sends bob a signed proposal; it lands inert. Bob approves after reading the risk card, runs it in a sandboxed worker with no network, and delivers a signed result. Alice re-checks every digest and records a signed, durable outcome.">
@@ -192,8 +193,9 @@
       <span class="k">transport</span>
       <h3>Direct and local-first</h3>
       <p>Two endpoints pair with no hosted account and no relay, over mutually
-      authenticated TLS 1.3 — each pins the other's certificate by fingerprint at
-      pairing, not by CA, not by DNS.</p>
+      authenticated TLS 1.3 — each commits to the other's identity root out of band (a
+      public token) and pins the certificate the introduction binds to it, not by CA,
+      not by DNS.</p>
     </div>
     <div class="card">
       <span class="k">receive</span>
@@ -270,15 +272,15 @@
     <div class="card">
       <span class="k">model-checked</span>
       <h3>Seven TLA+ models</h3>
-      <p>Task lifecycle, contract chain, receive pipeline, pairing ledger, broker budget,
-      a rollback adversary, and liveness — explored over crashes at every commit point,
-      endless replays, and hostile deliveries.</p>
+      <p>Task lifecycle, contract chain, receive pipeline, the token introduction, broker
+      budget, a rollback adversary, and liveness — explored over crashes at every commit
+      point, endless replays, and hostile deliveries.</p>
     </div>
     <div class="card">
       <span class="k">proved unbounded</span>
       <h3>Inductive proofs</h3>
-      <p>Apalache discharges inductive invariants for the pairing ledger and the rollback
-      adversary — properties that hold after <em>any</em> number of steps, not just within
+      <p>Apalache discharges inductive invariants for the token introduction and the
+      rollback adversary — properties that hold after <em>any</em> number of steps, not just within
       a bounded run.</p>
     </div>
     <div class="card">

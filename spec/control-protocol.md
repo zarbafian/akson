@@ -68,8 +68,7 @@ problem that names only the surface, never the op's internals.
 |---|---|---|---|---|
 | `diagnose` | — | admin | `doctor` / `status` | `{daemon:"aksond", capabilities:[…]}` — sandbox/host health |
 | `who_am_i` | — | admin | `whoami` | `{issuer, agent, interface_url, receive_addr, endpoint_fingerprint, data_dir}` |
-| `peer_list` | — | admin | `peer list` | `{peers:[{agent_id, endpoint, status}]}` |
-| `peer_confirm` | `agent_id` | admin | `peer confirm <agent>` | `{confirmed:bool, agent_id}` |
+| `peer_list` | — | admin | `peer list` | `{imports:[{label, root_thumbprint, endpoint_hint, status, claims}]}` — labeled relationships with their introduction state |
 | `token` | — | admin | `token` | `{token, presentation, root_thumbprint, hint}` — this endpoint's identity token (ADR-0013) |
 | `peer_add` | `token, label, endpoint?, update?` | admin | `peer add <token> <label>` | the recorded import — the trust act of pairing (§8.2 step 3) |
 | `peer_label` | `label, new_label` | admin | `peer label <old> <new>` | the renamed label (purely local) |

@@ -75,6 +75,7 @@
     <a href="#broker">The broker</a>
     <a href="#evidence">Evidence</a>
     <div class="grp">Interfaces</div>
+    <a href="#first-contact">First contact</a>
     <a href="#wire">The wire</a>
     <a href="#control">The control plane</a>
     <a href="#crates">The crate map</a>
@@ -524,6 +525,56 @@ reported to the operator, and never silently retried.</code></pre>
   verified result as attributable input — the <a href="../guide/#reading">guide says how</a>.</p>
 </div>
 
+<h2 id="first-contact" class="chapter-start">First contact</h2>
+<p class="deck">
+  The pinned mTLS the rest of this page assumes has to be established somehow. It is
+  established out of band, by a public token — never by a bearer secret on the wire.
+  (§8.2, ADR-0013/0015)
+</p>
+<p>
+  Each endpoint has one <strong>identity token</strong>: a printable, QR-able line
+  (<code>akson1…</code>, bech32m) that commits to its identity root key — the key that
+  signs its Agent Card. The token is public: possession grants nothing, so it travels
+  over any channel whose <em>integrity</em> you trust, needing no confidentiality. Two
+  operators exchange tokens and each runs <code>akson peer add &lt;token&gt; &lt;label&gt;</code>
+  — the import is the whole trust decision, and the label is a local name <em>you</em>
+  choose, never one the peer declares.
+</p>
+<p>
+  A relationship is keyed by the root's thumbprint, not by the self-declared name, so two
+  peers who both call themselves <code>claude</code> simply coexist. On first connection
+  the two daemons run the <strong>introduction</strong>: a mutual, fail-closed
+  verification bound to that TLS session (RFC 9266 exporter), in a fixed order so a
+  hijacked endpoint learns nothing.
+</p>
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Step</th><th>What holds</th></tr>
+  <tr><td>Hello</td>
+      <td>The dialer names the target and its own root thumbprint. An unimported root is
+          refused after a constant-time lookup, before any signature work — the cheap
+          admission gate, and a refused caller lands in a local knock log.</td></tr>
+  <tr><td>Responder proves first</td>
+      <td>Its key bindings, signed Agent Card, and proof of possession — the dialer checks
+          the card's key <em>is</em> the imported root, then and only then discloses its
+          own material. A wrong endpoint or MITM without the root key harvests nothing.</td></tr>
+  <tr><td>Commit</td>
+      <td>A compare-and-swap on <code>(root, epoch)</code>: a removal that raced the
+          handshake fails it; changed material for a pinned peer suspends for review
+          (§8.4), never re-pins. Then the connection closes; work runs on a fresh, pinned
+          connection.</td></tr>
+</table>
+</div>
+<p>
+  From then on the identity is everything downstream binds to: the signed contract
+  carries each party's <code>root</code> (ADR-0014), and the receiver refuses a proposal
+  whose signed requester root does not match the channel it arrived on. There is no
+  invitation, no bearer secret, no pending-confirm dance — deleted, along with
+  <code>AKSON_PAIR_ADDR</code> and its listener. The public
+  <code>/.well-known/agent-card.json</code> is the one surface an unimported stranger may
+  read; it is display-only until an introduction verifies it against a root you imported.
+</p>
+
 <h2 id="wire" class="chapter-start">The wire</h2>
 <p class="deck">
   Standard A2A 1.0 where a standard exists; a small, versioned extension surface where
@@ -564,9 +615,9 @@ reported to the operator, and never silently retried.</code></pre>
   </tr>
   <tr>
     <td>Signing</td>
-    <td>Ed25519 keys, purpose-bound (a proposal key cannot sign a result), exchanged and
-        pinned at pairing; DSSE envelopes for contracts and results; JWS for the agent
-        card.</td>
+    <td>Ed25519 keys, purpose-bound (a proposal key cannot sign a result), verified and
+        pinned at first contact against the peer's out-of-band identity-token root; DSSE
+        envelopes for contracts and results; JWS for the agent card.</td>
   </tr>
 </table>
 </div>
@@ -594,8 +645,8 @@ reported to the operator, and never silently retried.</code></pre>
 <table>
   <tr><th>Socket</th><th>Surface</th></tr>
   <tr><td><code>admin.sock</code></td>
-      <td>Authority-bearing operator ops: pair, approve, run, fulfil, deliver, send,
-          configure processors.</td></tr>
+      <td>Authority-bearing operator ops: import a peer, approve, run, fulfil, deliver,
+          send, configure processors.</td></tr>
   <tr><td><code>worker.sock</code></td>
       <td>The narrow surface the worker uses to submit its result. Nothing else — a
           compromised worker cannot approve a contract or send a task, because those
@@ -631,7 +682,7 @@ reported to the operator, and never silently retried.</code></pre>
   <tr><td><code>akson-worker</code></td><td>The clean-worker protocol and the output gate, including inertness checks.</td></tr>
   <tr><td><code>akson-broker</code></td><td>The processor broker: durable sub-attempts; the only egress path for approved plaintext.</td></tr>
   <tr><td><code>akson-evidence</code></td><td>Result manifests, in-toto statements, the SARIF profile, evidence validation.</td></tr>
-  <tr><td><code>akson-crypto</code></td><td>Key lifecycle, purpose binding, thumbprints, JWS — thin wrappers over reviewed libraries.</td></tr>
+  <tr><td><code>akson-crypto</code></td><td>Key lifecycle, purpose binding, thumbprints, JWS, and the bech32m identity-token codec — thin wrappers over reviewed libraries.</td></tr>
   <tr><td><code>akson-store</code></td><td>Encrypted SQLite state, outbox/inbox, replay tombstones, the audit chain, state-generation checkpoint.</td></tr>
   <tr><td><code>akson-adapter-sdk</code></td><td>The adapter contract, fixtures, and the §16.3 conformance harness.</td></tr>
   <tr><td><code>adapters/*</code></td><td>OpenAI-compatible, Anthropic, and Gemini worker adapters, built on the SDK, run under the strict profile.</td></tr>

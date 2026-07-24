@@ -230,6 +230,15 @@ export PATH="$PWD/target/release:$PATH"</code></pre>
   mutually authenticated TLS.
 </p>
 
+<div class="note">
+  <span class="tag">Or just watch it</span>
+  <p><code>akson demo</code> runs this entire round trip for you — two throwaway daemons
+  exchange identity tokens, introduce, and move a signed task from send to verified
+  bytes, then clean up. The walk-through below is the same loop by hand, so each step is
+  yours to see. For a real single daemon, <code>aksond init</code> needs no addressing
+  environment at all and ends by printing the identity token you hand a peer.</p>
+</div>
+
 <h3>1 · Start bob, the endpoint that will do the work</h3>
 <p>
   <code>AKSON_WORKER_CMD</code> is what the sandbox runs for an approved task. Here it is a
@@ -591,13 +600,19 @@ alice task output &lt;id&gt; --role response</code></pre>
 
 <div class="cmd host">
   <div class="cmd-head"><span class="who">register it once</span><button class="copy">Copy</button></div>
-<pre><code>cargo build --release -p akson-mcp       <span class="c"># put target/release on PATH, or use the full path</span>
+<pre><code>cargo build --release -p akson-mcp       <span class="c"># build the server binary</span>
 
-claude mcp add akson -- akson-mcp        <span class="c"># Claude Code</span>
-<span class="c"># or, in ~/.codex/config.toml:</span>
-<span class="c">#   [mcp_servers.akson]</span>
-<span class="c">#   command = "akson-mcp"</span></code></pre>
+akson mcp install claude                 <span class="c"># or: akson mcp install codex</span></code></pre>
 </div>
+<p>
+  <code>akson mcp install</code> registers the server with the absolute path resolved
+  and verified, and carries your <code>XDG_RUNTIME_DIR</code> into the server's
+  environment — the two sharp edges that cost a debugging round if you wire it up by
+  hand. It refuses to write a path from a world-writable directory, and prints the
+  keep-the-authority-tools-gated reminder every time. The manual equivalents still work:
+  <code>claude mcp add --scope user akson --env XDG_RUNTIME_DIR=… -- /abs/path/akson-mcp</code>,
+  or an <code>[mcp_servers.akson]</code> block in <code>~/.codex/config.toml</code>.
+</p>
 
 <p>
   Then, in a session: <em>"check my akson inbox"</em> → the agent lists tasks →
@@ -910,22 +925,26 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
 
 <h3><code>akson doctor</code> says <code>cgroup_delegation MISSING</code></h3>
 <p>
-  Expected over a plain SSH session — there is no delegated cgroup there. Start the daemon
-  inside a delegated scope instead:
+  Expected over a plain SSH session — there is no delegated cgroup there. The daemon
+  needs to run inside a delegated scope. <code>akson service install</code> writes a
+  systemd <em>user</em> service with <code>Delegate=yes</code> already set, carrying your
+  current akson environment into the unit (mode <code>0600</code>, since it may hold a
+  worker credential):
 </p>
 
 <div class="cmd host">
   <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
 <pre><code>sudo loginctl enable-linger "$USER"   <span class="c"># once, so your user systemd survives logout</span>
 
-systemd-run --user --unit=akson -p Delegate=yes --collect \
-  --setenv=AKSON_DATA_DIR="$HOME/.akson" \
-  --setenv=AKSON_AGENT=bob --setenv=AKSON_ISSUER=orgB \
-  --setenv=AKSON_RECEIVE_ADDR=0.0.0.0:18444 \
-  aksond serve
+akson service install --now           <span class="c"># writes ~/.config/systemd/user/akson.service, enables + starts it</span>
 
 journalctl --user -u akson -f</code></pre>
 </div>
+<p>
+  Prefer to do it by hand? The equivalent is
+  <code>systemd-run --user -p Delegate=yes --setenv=… aksond serve</code>, or an
+  <code>akson.service</code> unit with <code>[Service] Delegate=yes</code>.
+</p>
 
 <h3><code>akson task run</code> fails</h3>
 <p>
@@ -951,7 +970,7 @@ NOT READY: the clean worker cannot launch — missing user_namespaces.</code></p
   <tr>
     <td><code>503 no-confinement</code></td>
     <td>No delegated cgroup subtree to put the worker in.</td>
-    <td>Start the daemon under <code>systemd-run --user -p Delegate=yes</code>, above.</td>
+    <td>Start the daemon under a delegated scope — <code>akson service install</code>, above.</td>
   </tr>
   <tr>
     <td><code>500 worker-failed</code></td>
