@@ -70,6 +70,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env();
     let state = Arc::new(DaemonState::bootstrap(&config)?);
 
+    // Under a systemd-delegated cgroup (`Delegate=yes`, e.g. `akson service
+    // install --system`), enable the memory/pids controllers on our subtree so
+    // the sandbox's worker leaves can be confined. A no-op when a usable
+    // delegated subtree already exists or none is available (the sandbox then
+    // stays fail-closed and `task run` refuses rather than run un-isolated).
+    if let Err(e) = akson_sandbox::prepare_delegated_subtree() {
+        eprintln!("aksond: could not prepare the delegated cgroup ({e}); worker confinement may be unavailable");
+    }
+
     // Private per-user runtime directory for the sockets (0700).
     let dir = socket_dir();
     std::fs::create_dir_all(&dir)?;

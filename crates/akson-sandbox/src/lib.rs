@@ -25,7 +25,7 @@ mod namespace;
 mod probe;
 mod seccomp;
 
-pub use cgroup::{CgroupError, CgroupLimits, CgroupScope};
+pub use cgroup::{prepare_delegated_subtree, CgroupError, CgroupLimits, CgroupScope};
 pub use channel::broker_socketpair;
 pub use diagnostics::{all_required_available, diagnose, Diagnostic};
 pub use landlock::{LandlockError, LandlockOutcome, LandlockPolicy};

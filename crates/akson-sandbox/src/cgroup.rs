@@ -165,6 +165,57 @@ pub(crate) fn find_delegated_parent() -> Option<PathBuf> {
     }
 }
 
+/// Prepare a systemd-delegated cgroup so the worker leaves can actually take
+/// limits. `Delegate=yes` hands the service a cgroup that *owns* its subtree and
+/// lists `memory`/`pids` in `cgroup.controllers`, but leaves
+/// `cgroup.subtree_control` empty — and cgroup v2 forbids enabling controllers on
+/// a cgroup that still holds processes. So move ourselves into a leaf and then
+/// enable the controllers on the now-processless delegated cgroup — which is
+/// exactly what [`find_delegated_parent`] then discovers, and what the worker
+/// leaves inherit. Called once at daemon startup.
+///
+/// A deliberate no-op when a usable delegated subtree already exists (a
+/// pre-delegated environment such as CI's isolation job) or when there is no
+/// writable delegated cgroup with the controllers available (a plain login
+/// shell) — in the latter case the sandbox stays fail-closed, exactly as before.
+pub fn prepare_delegated_subtree() -> std::io::Result<()> {
+    if find_delegated_parent().is_some() {
+        return Ok(());
+    }
+    let cgline = fs::read_to_string("/proc/self/cgroup")?;
+    let Some(rel) = cgline
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .map(|r| r.trim().trim_start_matches('/').to_string())
+    else {
+        return Ok(());
+    };
+    let dir = Path::new("/sys/fs/cgroup").join(&rel);
+    let controllers = fs::read_to_string(dir.join("cgroup.controllers")).unwrap_or_default();
+    let available: Vec<&str> = controllers.split_whitespace().collect();
+    let usable = available.contains(&"memory") && available.contains(&"pids") && writable(&dir);
+    if !usable {
+        return Ok(());
+    }
+    // Vacate the delegated cgroup: move every process systemd placed here (us)
+    // into a leaf, so the parent can enable controllers for its children.
+    let leaf = dir.join("supervisor");
+    let _ = fs::create_dir(&leaf);
+    if let Ok(procs) = fs::read_to_string(dir.join("cgroup.procs")) {
+        for pid in procs.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            // Best-effort: a pid that already exited just fails this one write.
+            let _ = fs::write(leaf.join("cgroup.procs"), pid);
+        }
+    }
+    // Enable the controllers the worker leaves need.
+    let enable: String = ["memory", "pids", "cpu"]
+        .iter()
+        .filter(|c| available.contains(*c))
+        .map(|c| format!("+{c} "))
+        .collect();
+    fs::write(dir.join("cgroup.subtree_control"), enable.trim())
+}
+
 fn has_controllers(dir: &Path) -> bool {
     fs::read_to_string(dir.join("cgroup.subtree_control"))
         .map(|s| {
