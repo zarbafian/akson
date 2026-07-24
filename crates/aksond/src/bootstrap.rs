@@ -849,6 +849,7 @@ fn diagnose_report() -> serde_json::Value {
                 "feature": d.feature,
                 "available": d.available,
                 "required": d.required,
+                "detail": d.detail,
             })
         })
         .collect();

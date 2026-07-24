@@ -22,7 +22,7 @@
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
-use akson_sandbox::{all_required_available, diagnose, Diagnostic};
+use akson_sandbox::{all_required_available, diagnose};
 use aksond::{
     admin_socket_path, send_request, ControlRequest, ControlResponse, FulfillOutput, TaskSpec,
 };
@@ -806,7 +806,7 @@ fn peer_list() -> ExitCode {
         }
     }
     if !peers.is_empty() {
-        println!("invitation-paired peers ({}):", peers.len());
+        println!("established peers ({}):", peers.len());
         for p in &peers {
             println!(
                 "  {}  {}  [{}]",
@@ -1446,23 +1446,52 @@ fn whoami() -> ExitCode {
 /// Renders the sandbox capability report and returns a fail-closed exit code:
 /// `0` when every required capability is available, `1` when the clean worker
 /// could not launch (design §13.1: refuse rather than run un-isolated).
-fn doctor() -> ExitCode {
-    let report = diagnose();
-    let width = report.iter().map(|d| d.feature.len()).max().unwrap_or(0);
+/// One capability line for `akson doctor`, from either source — the running
+/// daemon's self-report or a local probe.
+struct Cap {
+    feature: String,
+    available: bool,
+    required: bool,
+    detail: String,
+}
 
-    println!("akson doctor — sandbox capabilities");
-    for d in &report {
-        println!("  {:>width$}  {}", d.feature, status_line(d), width = width);
+fn doctor() -> ExitCode {
+    // Prefer the running daemon's own probe: it sees its real cgroup context (a
+    // system service has a delegated cgroup, a plain login shell does not), so
+    // `cgroup_delegation` reflects what will actually confine a worker. Fall back
+    // to a local probe only when no daemon answers (e.g. a pre-install host check).
+    let (source, caps, ready) = match daemon_diagnose() {
+        Some((caps, ready)) => ("the running daemon", caps, ready),
+        None => {
+            let report = diagnose();
+            let ready = all_required_available(&report);
+            let caps = report
+                .iter()
+                .map(|d| Cap {
+                    feature: d.feature.to_owned(),
+                    available: d.available,
+                    required: d.required,
+                    detail: d.detail.clone(),
+                })
+                .collect::<Vec<_>>();
+            ("this shell (no daemon reachable)", caps, ready)
+        }
+    };
+
+    let width = caps.iter().map(|c| c.feature.len()).max().unwrap_or(0);
+    println!("akson doctor — sandbox capabilities, as seen by {source}");
+    for c in &caps {
+        println!("  {:>width$}  {}", c.feature, cap_line(c), width = width);
     }
 
-    if all_required_available(&report) {
+    if ready {
         println!("\nready: every required capability is available.");
         ExitCode::SUCCESS
     } else {
-        let missing: Vec<&str> = report
+        let missing: Vec<&str> = caps
             .iter()
-            .filter(|d| d.required && !d.available)
-            .map(|d| d.feature)
+            .filter(|c| c.required && !c.available)
+            .map(|c| c.feature.as_str())
             .collect();
         eprintln!(
             "\nNOT READY: the clean worker cannot launch — missing {}.",
@@ -1472,16 +1501,46 @@ fn doctor() -> ExitCode {
     }
 }
 
+/// Ask the running daemon for its own sandbox capabilities — it probes the
+/// cgroup context it actually runs in. `None` if unreachable or the reply has no
+/// capability array (an older daemon), so the caller falls back to a local probe.
+fn daemon_diagnose() -> Option<(Vec<Cap>, bool)> {
+    let result = match send_request(&resolve_admin_socket(), &ControlRequest::Diagnose) {
+        Ok(ControlResponse::Ok { result }) => result,
+        _ => return None,
+    };
+    let caps = result
+        .get("capabilities")?
+        .as_array()?
+        .iter()
+        .map(|c| Cap {
+            feature: c["feature"].as_str().unwrap_or("?").to_owned(),
+            available: c["available"].as_bool().unwrap_or(false),
+            required: c["required"].as_bool().unwrap_or(false),
+            detail: c["detail"].as_str().unwrap_or("").to_owned(),
+        })
+        .collect();
+    let ready = result
+        .get("sandbox_ready")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Some((caps, ready))
+}
+
 /// One capability's status column: `ok` / `MISSING` / `n/a`, an `(optional)` tag
 /// for non-required capabilities, and the human-readable detail.
-fn status_line(d: &Diagnostic) -> String {
-    let mark = match (d.available, d.required) {
+fn cap_line(c: &Cap) -> String {
+    let mark = match (c.available, c.required) {
         (true, _) => "ok",
         (false, true) => "MISSING",
         (false, false) => "n/a",
     };
-    let optional = if d.required { "" } else { " (optional)" };
-    format!("{mark:<8}{optional} — {}", d.detail)
+    let optional = if c.required { "" } else { " (optional)" };
+    if c.detail.is_empty() {
+        format!("{mark:<8}{optional}")
+    } else {
+        format!("{mark:<8}{optional} — {}", c.detail)
+    }
 }
 
 // ---------------------------------------------------------------------------
