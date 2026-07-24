@@ -335,14 +335,148 @@ fn mcp_install(harness: &str) -> ExitCode {
 fn service(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
     match args.next().as_deref().and_then(OsStr::to_str) {
         Some("install") => {
-            let now = matches!(next_arg(args).as_deref(), Some("--now"));
-            service_install(now)
+            let rest: Vec<String> = args.filter_map(|a| a.into_string().ok()).collect();
+            let mut now = false;
+            let mut system = false;
+            let mut user: Option<String> = None;
+            let mut it = rest.into_iter();
+            while let Some(flag) = it.next() {
+                match flag.as_str() {
+                    "--now" => now = true,
+                    "--system" => system = true,
+                    "--user" => user = it.next(),
+                    other => {
+                        eprintln!("akson: unknown flag {other}");
+                        return usage("akson service install [--system [--user <name>]] [--now]");
+                    }
+                }
+            }
+            if system {
+                service_install_system(user)
+            } else {
+                service_install_user(now)
+            }
         }
-        _ => usage("akson service install [--now]"),
+        _ => usage("akson service install [--system [--user <name>]] [--now]"),
     }
 }
 
-fn service_install(start_now: bool) -> ExitCode {
+/// `sudo akson service install --system [--user <name>]` — the one-command,
+/// always-on path: a *system* unit for `aksond serve` that survives reboot with
+/// no linger. Runs as the operator's user (so the CLI, same uid, reaches it) on
+/// a stable `/run/akson` socket, with the delegated cgroup the sandbox needs.
+fn service_install_system(user: Option<String>) -> ExitCode {
+    if aksond::current_uid() != 0 {
+        eprintln!("akson: --system needs root — run: sudo akson service install --system");
+        return ExitCode::from(2);
+    }
+    // Who the daemon runs as: an explicit --user, else the sudo invoker. Never
+    // root (the daemon must run under a normal uid the operator's CLI shares).
+    let target = user
+        .or_else(|| std::env::var("SUDO_USER").ok())
+        .filter(|u| !u.is_empty() && u != "root");
+    let target = match target {
+        Some(u) => u,
+        None => {
+            eprintln!("akson: could not tell which user to run as — invoke via sudo, or pass --user <name>");
+            return ExitCode::from(2);
+        }
+    };
+    if target.len() > 32 || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        eprintln!("akson: --user must be a plain system user name");
+        return ExitCode::from(2);
+    }
+    // A system service must run a root-owned binary: the unit is root-managed,
+    // so pointing ExecStart at a build tree the operator's (non-root) user can
+    // overwrite would hand that user control of a root-installed service. So we
+    // *install* aksond into /usr/local/bin (root-owned) and run it from there —
+    // also the conventional home for a system daemon. The source is the aksond
+    // beside this CLI; root already executed this CLI from that tree under sudo,
+    // so trusting its sibling is the same trust the operator just exercised.
+    let src = match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("aksond"))) {
+        Some(p) if p.is_file() => p,
+        _ => {
+            eprintln!("akson: could not find aksond next to this CLI — build it: cargo build --release -p aksond");
+            return ExitCode::from(2);
+        }
+    };
+    let dst = std::path::Path::new("/usr/local/bin/aksond");
+    let staged = std::path::Path::new("/usr/local/bin/.aksond.new");
+    let install_bin = || -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::copy(&src, staged)?;
+        std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(staged, dst)
+    };
+    if let Err(e) = install_bin() {
+        let _ = std::fs::remove_file(staged);
+        eprintln!("akson: could not install {} ({e})", dst.display());
+        return ExitCode::from(2);
+    }
+    println!("installed {} -> {}", src.display(), dst.display());
+    let exec = match systemd_quote(&dst.display().to_string()) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("akson: the daemon path is not usable in a unit file ({e})");
+            return ExitCode::from(2);
+        }
+    };
+    // Carry only AKSON_* explicitly present (e.g. under `sudo -E`); the system
+    // service otherwise relies on zero-env defaults under the target user's home.
+    let mut env_lines = String::new();
+    for key in [
+        "AKSON_DATA_DIR",
+        "AKSON_ISSUER",
+        "AKSON_AGENT",
+        "AKSON_INTERFACE_URL",
+        "AKSON_RECEIVE_ADDR",
+        "AKSON_WORKER_CMD",
+        "AKSON_WORKER_EXEC",
+        "AKSON_ON_TASK",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                match systemd_env_value(&v) {
+                    Ok(escaped) => {
+                        env_lines.push_str(&format!("Environment=\"{key}={escaped}\"\n"))
+                    }
+                    Err(e) => {
+                        eprintln!("akson: {key} cannot go in a unit file ({e})");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+        }
+    }
+    // RuntimeDirectory=akson creates /run/akson (0700, owned by the service
+    // user); AKSON_RUNTIME_DIR points the daemon at it so the operator's CLI
+    // finds the socket there (resolve_admin_socket fallback). WantedBy
+    // multi-user.target + no linger = comes back on boot on a headless box.
+    let unit = format!(
+        "[Unit]\nDescription=Akson daemon — signed task exchange between sovereign agents\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nUser={target}\nRuntimeDirectory=akson\nRuntimeDirectoryMode=0700\nEnvironment=AKSON_RUNTIME_DIR=/run/akson\n# The sandbox needs a delegated cgroup subtree (memory + pids controllers).\nDelegate=yes\n{env_lines}ExecStart={exec} serve\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n",
+    );
+    let unit_path = std::path::Path::new("/etc/systemd/system/akson.service");
+    if let Err(e) = write_private_atomic(unit_path, &unit) {
+        eprintln!("akson: {e}");
+        return ExitCode::from(2);
+    }
+    println!("wrote {} (User={target})", unit_path.display());
+    let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
+    match std::process::Command::new("systemctl")
+        .args(["enable", "--now", "akson.service"])
+        .status()
+    {
+        Ok(st) if st.success() => println!("akson.service enabled and started — survives reboot"),
+        _ => {
+            eprintln!("akson: could not enable the service; run: sudo systemctl enable --now akson.service");
+            return ExitCode::from(1);
+        }
+    }
+    println!("watch it with:  sudo journalctl -u akson -f");
+    ExitCode::SUCCESS
+}
+
+fn service_install_user(start_now: bool) -> ExitCode {
     let bin = match sibling_binary("aksond") {
         Ok(p) => p,
         Err(e) => {
@@ -1197,10 +1331,34 @@ fn task_deliver(task_id: &str) -> ExitCode {
     }
 }
 
+/// The stable rendezvous the `--system` service unit binds
+/// (`AKSON_RUNTIME_DIR=/run/akson`, created by `RuntimeDirectory=`).
+const SYSTEM_SOCKET_DIR: &str = "/run/akson";
+
+/// The admin socket to connect to. Honors the operator's own runtime dir first
+/// (`admin_socket_path()` already consults `$AKSON_RUNTIME_DIR`/`$XDG_RUNTIME_DIR`);
+/// if nothing is *listening* there, falls back to the system-service path so
+/// `akson …` reaches a `--system` daemon with no env var to set. Probes by
+/// attempting a connection rather than testing file existence — a dead daemon
+/// can leave a stale socket file behind, and that must not shadow a live one.
+/// Returns the per-user path when neither answers, so the "is `aksond serve`
+/// running?" error names it.
+fn resolve_admin_socket() -> std::path::PathBuf {
+    use std::os::unix::net::UnixStream;
+    let primary = admin_socket_path();
+    let system = std::path::Path::new(SYSTEM_SOCKET_DIR).join("admin.sock");
+    for cand in [&primary, &system] {
+        if UnixStream::connect(cand).is_ok() {
+            return cand.clone();
+        }
+    }
+    primary
+}
+
 /// Sends one admin control request, returning its result value or an exit code
 /// after printing a uniform error (a daemon refusal, or an unreachable daemon).
 fn call(req: &ControlRequest) -> Result<serde_json::Value, ExitCode> {
-    let path = admin_socket_path();
+    let path = resolve_admin_socket();
     match send_request(&path, req) {
         Ok(ControlResponse::Ok { result }) => Ok(result),
         Ok(ControlResponse::Problem { problem }) => {
@@ -1236,7 +1394,7 @@ fn usage(form: &str) -> ExitCode {
 /// Queries the running daemon over the admin control socket (design §16.2) and
 /// prints its health. Exits non-zero if the daemon is unreachable or not ready.
 fn status() -> ExitCode {
-    let path = admin_socket_path();
+    let path = resolve_admin_socket();
     match send_request(&path, &ControlRequest::Diagnose) {
         Ok(ControlResponse::Ok { result }) => {
             let ready = result.get("sandbox_ready").and_then(|v| v.as_bool()) == Some(true);

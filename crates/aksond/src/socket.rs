@@ -21,10 +21,19 @@ use serde::{Deserialize, Serialize};
 use crate::control::{authorize, ControlOp, Problem, Surface};
 use crate::peercred::{authenticate_same_uid, current_uid};
 
-/// The per-user runtime directory for the daemon's sockets. Prefers
-/// `$XDG_RUNTIME_DIR/akson` (a private, `0700`, per-user tmpfs), else a UID-scoped
-/// temp directory.
+/// The runtime directory holding the daemon's sockets. In priority:
+/// `$AKSON_RUNTIME_DIR` (the *exact* directory — used by the `--system` service
+/// unit, which points it at a `RuntimeDirectory=`-created `/run/akson`, so a
+/// system daemon and the operator's CLI rendezvous on a stable path);
+/// else `$XDG_RUNTIME_DIR/akson` (a private, `0700`, per-user tmpfs); else a
+/// UID-scoped temp directory. Both the daemon and the CLI resolve the path
+/// through this one function, so they always agree.
 pub fn socket_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("AKSON_RUNTIME_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(rt) if !rt.is_empty() => PathBuf::from(rt).join("akson"),
         _ => std::env::temp_dir().join(format!("akson-{}", current_uid())),

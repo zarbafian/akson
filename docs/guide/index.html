@@ -74,6 +74,7 @@
     <a href="#quickstart">Quickstart</a>
     <a href="#reading">Reading a result</a>
     <div class="grp">Go further</div>
+    <a href="#addressing">Addressing &amp; reachability</a>
     <a href="#model">Use a real model</a>
     <a href="#cooperate">Two agents cooperating</a>
     <a href="#delegate">Delegate to your agent</a>
@@ -406,6 +407,67 @@ sha256sum /tmp/out                                       <span class="c"># match
     What Akson guarantees is that you can prove exactly whose bytes they were.
   </p>
 </div>
+
+<h2 id="addressing" class="chapter-start">Addressing &amp; reachability: pairing across the internet</h2>
+<p class="deck">
+  The quickstart stays on loopback. To pair with a friend or colleague on another network,
+  the only new problem is reachability — akson does direct, pinned mutual TLS with
+  <strong>no NAT traversal</strong> (no STUN, relay, or hole-punching). The token identity
+  is location-independent; only the <code>@host:port</code> hint changes.
+</p>
+
+<p>Two facts shape the options:</p>
+<ul>
+  <li>The introduction is <strong>one mutual handshake over a single dial</strong>, so to
+    <em>establish</em> the relationship only the dialed side must be reachable — the other
+    can sit behind NAT as a pure dialer.</li>
+  <li>To <em>receive</em> tasks the sender dials your listener, so each side that needs to
+    receive work must be reachable at its advertised <code>AKSON_INTERFACE_URL</code>.</li>
+</ul>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Option</th><th>Set on each reachable endpoint</th><th>Notes</th></tr>
+  <tr>
+    <td><strong>Overlay VPN</strong> — Tailscale, WireGuard, ZeroTier, Nebula <em>(easiest)</em></td>
+    <td><code>AKSON_RECEIVE_ADDR=&lt;overlay-ip&gt;:18443</code><br><code>AKSON_INTERFACE_URL=https://&lt;overlay-ip&gt;:18443/a2a</code><br>token → <code>akson1…@100.64.0.1:18443</code></td>
+    <td>Both sides reachable, NAT handled, dynamic IPs gone. L4, so pinning is untouched.</td>
+  </tr>
+  <tr>
+    <td><strong>Port-forward</strong> one router + public IP / dyn-DNS</td>
+    <td><code>AKSON_RECEIVE_ADDR=0.0.0.0:18443</code><br><code>AKSON_INTERFACE_URL=https://you.example.net:18443/a2a</code></td>
+    <td>Only one side needs it; the other stays a dialer. Dyn-DNS + <code>peer add --update</code> on a changing IP.</td>
+  </tr>
+  <tr>
+    <td><strong>Reverse TCP tunnel</strong> — <code>ssh -R</code>, <code>ngrok tcp</code>, frp, cloudflared TCP</td>
+    <td><code>AKSON_RECEIVE_ADDR=127.0.0.1:18443</code><br><code>AKSON_INTERFACE_URL=https://5.tcp.ngrok.io:12345/a2a</code></td>
+    <td>For a peer who can't port-forward. Must be raw TCP — see below.</td>
+  </tr>
+  <tr>
+    <td><strong>Cloud VM</strong> with a public IP</td>
+    <td><code>AKSON_RECEIVE_ADDR=0.0.0.0:18443</code><br><code>AKSON_INTERFACE_URL=https://203.0.113.9:18443/a2a</code></td>
+    <td>Always reachable; the daemon's identity key lives on the VM.</td>
+  </tr>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">L4 passthrough only</span>
+  <p>Peers pin the <strong>exact certificate</strong> of the endpoint — there is no CA. Any
+  tunnel or proxy in between <strong>must forward raw TCP</strong> and must not terminate
+  TLS. A normal HTTPS reverse proxy (nginx <code>proxy_pass https</code>, a Cloudflare
+  proxied domain, <code>ngrok http</code>, any load balancer with its own certificate)
+  presents the wrong certificate and the handshake fails closed — and could not work
+  anyway, since the TLS is mutual. Only IP/TCP transports — VPN overlays, port-forwards,
+  raw-TCP tunnels — preserve pinning.</p>
+</div>
+
+<p>
+  A wildcard bind (<code>0.0.0.0</code>) can't be auto-advertised, so always set
+  <code>AKSON_INTERFACE_URL</code> explicitly when going beyond loopback. Moved peer?
+  <code>akson peer add &lt;token&gt; &lt;label&gt; --update</code> refreshes the hint without
+  touching trust.
+</p>
 
 <h2 id="model" class="chapter-start">Point it at a real model</h2>
 <p class="deck">
@@ -884,7 +946,7 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>akson peer knocks</code></td><td>Refused introductions — who claimed to be whom, unauthenticated.</td></tr>
   <tr><td><code>akson demo</code></td><td>The whole loop on loopback: two throwaway daemons pair, exchange a signed task, clean up.</td></tr>
   <tr><td><code>akson mcp install &lt;claude|codex&gt;</code></td><td>Register the MCP server with a harness — verified absolute path, runtime dir carried in env.</td></tr>
-  <tr><td><code>akson service install [--now]</code></td><td>A supervised systemd user service for <code>aksond serve</code>, with the delegated cgroup the sandbox needs.</td></tr>
+  <tr><td><code>sudo akson service install --system</code><br><code>akson service install [--now]</code></td><td>Run <code>aksond</code> as a supervised systemd service with the delegated cgroup the sandbox needs. <code>--system</code> is a system unit that survives reboot with no linger (recommended); the plain form is a rootless <em>user</em> service.</td></tr>
   <tr><td><code>akson peer auto-approve &lt;agent&gt; …</code></td><td>Standing policy: approve a peer's task type up to a byte cap without a prompt — approval only, never a processor or export grant, and running is still your move. <a href="#mcp">More</a>.</td></tr>
   <tr><td><code>akson task send &lt;spec.json&gt;</code></td><td>Sign and post a task to a peer.</td></tr>
   <tr><td><code>akson task inbox</code></td><td>Tasks awaiting your decision.</td></tr>
@@ -925,25 +987,28 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
 
 <h3><code>akson doctor</code> says <code>cgroup_delegation MISSING</code></h3>
 <p>
-  Expected over a plain SSH session — there is no delegated cgroup there. The daemon
-  needs to run inside a delegated scope. <code>akson service install</code> writes a
-  systemd <em>user</em> service with <code>Delegate=yes</code> already set, carrying your
-  current akson environment into the unit (mode <code>0600</code>, since it may hold a
-  worker credential):
+  Expected over a plain SSH session — there is no delegated cgroup there, so the sandbox
+  can't confine a worker (you can still pair, send, and receive). Run the daemon as a
+  supervised service instead. The recommended system form below is verified on a fresh
+  Ubuntu 22.04 and 24.04 install, through a reboot:
 </p>
 
 <div class="cmd host">
   <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
-<pre><code>sudo loginctl enable-linger "$USER"   <span class="c"># once, so your user systemd survives logout</span>
+<pre><code><span class="c"># Recommended — a system service that comes back on reboot, no linger.</span>
+sudo akson service install --system   <span class="c"># installs aksond to /usr/local/bin, writes /etc/systemd/system/akson.service, enables + starts it</span>
+akson whoami                          <span class="c"># the CLI reaches it on /run/akson automatically — no env var</span>
+sudo journalctl -u akson -f
 
-akson service install --now           <span class="c"># writes ~/.config/systemd/user/akson.service, enables + starts it</span>
-
-journalctl --user -u akson -f</code></pre>
+<span class="c"># Rootless alternative — a per-user service; needs linger to survive logout/reboot.</span>
+sudo loginctl enable-linger "$USER"
+akson service install --now           <span class="c"># ~/.config/systemd/user/akson.service (carries your akson env, mode 0600)</span></code></pre>
 </div>
 <p>
-  Prefer to do it by hand? The equivalent is
-  <code>systemd-run --user -p Delegate=yes --setenv=… aksond serve</code>, or an
-  <code>akson.service</code> unit with <code>[Service] Delegate=yes</code>.
+  Both set <code>Delegate=yes</code>; the daemon then enables the <code>memory</code> and
+  <code>pids</code> controllers on its delegated subtree at startup, so the sandbox can
+  confine workers. On Ubuntu 24.04 the sandbox additionally needs unprivileged user
+  namespaces, which are blocked by default — see below.
 </p>
 
 <h3><code>akson task run</code> fails</h3>
