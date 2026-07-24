@@ -9,7 +9,7 @@
       "verifier": {
         "issuer": "akson:pairing:demo",
         "agent": "validator.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "subjects": [],
       "check_profile": "akson-evidence-validate/v1",

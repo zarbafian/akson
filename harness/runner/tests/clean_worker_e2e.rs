@@ -39,7 +39,7 @@ fn work_order() -> WorkOrder {
     let id = |agent: &str| Identity {
         issuer: "local".to_owned(),
         agent: agent.to_owned(),
-        root: "root-fixture".to_owned(),
+        root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
     };
     WorkOrder {
         version: 1,

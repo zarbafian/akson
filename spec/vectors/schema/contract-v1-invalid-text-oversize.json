@@ -14,12 +14,12 @@
       "requester": {
         "issuer": "akson:pairing:demo",
         "agent": "requester.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "performer": {
         "issuer": "akson:pairing:demo",
         "agent": "reviewer.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "objective": "Review the supplied patch for correctness and safety.",
       "inputs": [

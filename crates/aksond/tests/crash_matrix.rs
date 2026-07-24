@@ -41,7 +41,7 @@ fn config(dir: &Path) -> DaemonConfig {
         local_performer: Identity {
             issuer: "iss".to_owned(),
             agent: "performer".to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         },
         interface_url: "https://local/a2a".to_owned(),
         receive_addr: None,
@@ -58,7 +58,7 @@ fn work_order(id: &str, nonce: &str) -> WorkOrder {
         issuer: Identity {
             issuer: "local".to_owned(),
             agent: "authority".to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         },
         issuer_assurance: "local-human".to_owned(),
         audience: Audience {
@@ -69,7 +69,7 @@ fn work_order(id: &str, nonce: &str) -> WorkOrder {
             peer: Identity {
                 issuer: "iss".to_owned(),
                 agent: "requester".to_owned(),
-                root: "root-fixture".to_owned(),
+                root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             },
             tls_certificate_sha256: "ab".repeat(32),
         },

@@ -15,13 +15,13 @@
       "decider": {
         "issuer": "akson:pairing:demo",
         "agent": "reviewer.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "decided_at": "2026-07-16T12:00:00Z"
     }
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "4af1973a9c93276c65ccb12e1f73ec68a820a6cb2764d3011495e95f69654ec0"
+    "canonical_sha256": "5122c5ab8e4b4d2447ec84a7e3c35fb2c9dca7151b877154815d76c800876379"
   }
 }

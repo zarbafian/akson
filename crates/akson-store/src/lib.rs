@@ -3002,8 +3002,8 @@ mod tests {
             "revision": rev,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": "o",
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],
@@ -3033,8 +3033,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": objective,
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],
@@ -3195,7 +3195,7 @@ mod tests {
             issuer: Identity {
                 issuer: "local".to_owned(),
                 agent: "authority".to_owned(),
-                root: "root-fixture".to_owned(),
+                root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             },
             issuer_assurance: "local-human".to_owned(),
             audience: Audience {
@@ -3206,7 +3206,7 @@ mod tests {
                 peer: Identity {
                     issuer: "iss".to_owned(),
                     agent: "requester".to_owned(),
-                    root: "root-fixture".to_owned(),
+                    root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
                 },
                 tls_certificate_sha256: "ab".repeat(32),
             },
@@ -3593,7 +3593,7 @@ mod tests {
             .put_peer_key("fp-abc",
                 "contract-proposal",
                 "peer-1",
-                "local", &proposal.verifying().to_public_bytes(), "root-fixture", 100)
+                "local", &proposal.verifying().to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
             .unwrap();
         // The proposal key is resolvable by TLS fingerprint + purpose.
         let pk = store
@@ -3659,7 +3659,7 @@ mod tests {
         store.put_peer(&sample_peer("to be removed")).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, "root-fixture", 100)
+            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
             .unwrap();
         assert!(store
             .peer_key("old-fp", "contract-proposal")
@@ -3692,7 +3692,7 @@ mod tests {
                     performer_agent: "p".to_owned(),
                     performer_issuer: "iss".to_owned(),
                     message_id: "m".to_owned(),
-                    performer_root: "root-fixture".to_owned(),
+                    performer_root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
                 },
                 100,
             )
@@ -3827,7 +3827,7 @@ mod tests {
             performer_agent: "performer".to_owned(),
             performer_issuer: "iss".to_owned(),
             message_id: "msg-1".to_owned(),
-            performer_root: "root-fixture".to_owned(),
+            performer_root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         };
         store.put_sent_request(&req, 100).unwrap();
         assert_eq!(store.get_sent_request(&"a".repeat(64)).unwrap(), Some(req));
@@ -3856,7 +3856,7 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, "root-fixture", 100)
+            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
             .unwrap();
         // The same peer's endpoint cert is found from its identity...
         assert_eq!(

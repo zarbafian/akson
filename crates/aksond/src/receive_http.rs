@@ -103,8 +103,25 @@ pub fn handle_receive(
     };
 
     // A delivered result carries a result-manifest envelope, not a proposal —
-    // route it to the requester-outcome path (design §14.5).
+    // route it to the requester-outcome path (design §14.5). The common
+    // header gates apply here too (sec5 review): content type, protocol
+    // version, and the body digest — peer and manifest authentication are
+    // necessary but a results route must not be a laxer front door.
     if let Some(envelope) = result_manifest_envelope(&message.parts) {
+        if req.content_type != "application/a2a+json"
+            || req.a2a_version != Some("1.0")
+            || akson_store::delivery::verify_content_digest(
+                req.content_digest.unwrap_or_default(),
+                req.body,
+            )
+            .is_err()
+        {
+            return Ok(problem(
+                422,
+                "bad-result-envelope",
+                "the result delivery fails the A2A header gates",
+            ));
+        }
         let delivered = delivered_outputs(&message.parts);
         return Ok(handle_result(
             store,
@@ -331,7 +348,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 
@@ -341,8 +358,8 @@ mod tests {
             "schema_version": 1,
             "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
             "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": "o",
             "inputs": [{
                 "id": "src", "message_id": "msg-1", "part_index": 1, "kind": "text",

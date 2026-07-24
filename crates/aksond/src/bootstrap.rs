@@ -211,7 +211,10 @@ impl DaemonState {
             let store = self.store.lock().map_err(|_| internal())?;
             let Some(import) = store.peer_import_by_label(performer).map_err(|_| internal())?
             else {
-                return Ok(None);
+                // Labels are the ONLY send addressing (sec5 review): a bare
+                // agent name would resolve by an attacker-influenced string
+                // and then carry a genuine root, laundering the misroute.
+                return Err(unknown_label(performer));
             };
             // A label must not silently shadow a real agent id (slice-3
             // review): if a DIFFERENT pinned peer also answers to this exact
@@ -724,18 +727,17 @@ impl DaemonState {
             }
             ControlRequest::TaskDeliver { task_id } => run_delivery(self, task_id),
             ControlRequest::TaskSend(spec) => {
-                // The spec's performer may be an operator label (design §8.2):
-                // resolve it to the pinned peer's ROOT — the relationship key —
+                // The spec's performer is the operator's LABEL (design §8.2),
+                // resolved to the pinned peer's ROOT — the relationship key —
                 // introducing first on first contact, exactly like `peer ping`.
-                // A bare agent name passes through and is honored downstream
-                // only while it is unambiguous.
+                // Bare agent names refuse (sec5 review).
                 match self.resolve_performer(&spec.performer)? {
                     Some((root, agent)) => {
                         let mut spec = spec.clone();
                         spec.performer = agent;
                         run_send(self, &spec, Some(&root))
                     }
-                    None => run_send(self, spec, None),
+                    None => unreachable!("resolve_performer refuses non-labels"),
                 }
             }
             ControlRequest::RequestProcessorCall {
@@ -1055,7 +1057,7 @@ mod tests {
             local_performer: Identity {
                 issuer: "iss".to_owned(),
                 agent: "performer".to_owned(),
-                root: "root-fixture".to_owned(),
+                root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             },
             interface_url: "https://local/a2a".to_owned(),
             receive_addr: None,
@@ -1150,7 +1152,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 
@@ -1160,8 +1162,8 @@ mod tests {
             "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
             "revision": 0, "task_type": "https://akson.invalid/task/code-review/v1",
             "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "objective": "o",
             "inputs": [{
                 "id": "diff", "message_id": "msg-1", "part_index": 1, "kind": "text",
                 "media_type": "text/x-diff", "charset": "utf-8", "canonical_rule": "utf8-exact",
@@ -1194,7 +1196,7 @@ mod tests {
             },
         ];
         let covered = CoveredValues {
-            peer: "root-fixture".to_owned(),
+            peer: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             message_id: "msg-1".to_owned(),
             body_digest: "AA".repeat(32),
             interface_url: "https://local/a2a".to_owned(),
@@ -1322,7 +1324,7 @@ mod tests {
                             },
                             agent_card_key: Fingerprint {
                                 kind: FingerprintKind::Jwk7638,
-                                value: "root-fixture".to_owned(),
+                                value: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
                             },
                             key_bindings: vec![],
                             security_projection_digest: Fingerprint::json_sha256(b"{}"),
@@ -1336,7 +1338,7 @@ mod tests {
                 .put_peer_key("req-fp",
                     "contract-proposal",
                     "requester",
-                    "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture", NOW)
+                    "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NOW)
                 .unwrap();
             submit_one(&store)
         };

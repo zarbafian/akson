@@ -101,12 +101,30 @@ pub fn finalize_result(
     // The delivering ROOT must be the root this task was sent to: a
     // same-named peer that learns the digest/task id must not be able to
     // substitute its own signed result (PK-cutover review). Empty roots
-    // (pre-V20 requests) refuse — fail closed.
-    if sent.performer_root.is_empty() || sent.performer_root != sender_root {
+    // (pre-V20 requests) refuse — fail closed. The sender tuple's own root
+    // must agree with the channel root too, so an integration caller cannot
+    // splice one identity's tuple with another's channel (sec5 review).
+    if sent.performer_root.is_empty()
+        || sent.performer_root != sender_root
+        || sender.root != sender_root
+    {
         return Err(problem(
             403,
             "wrong-performer",
             "the result was not delivered by the assigned performer",
+        ));
+    }
+    // Every header field the requester will countersign must match what it
+    // actually sent — a performer must not be able to obtain a signed outcome
+    // over false context or contract metadata (sec5 review). The revision is
+    // bound through the digest (a digest names exactly one revision).
+    if sent.contract_id != manifest.header.contract_id
+        || sent.context_id != manifest.header.context_id
+    {
+        return Err(problem(
+            409,
+            "result-mismatch",
+            "the result's contract or context metadata does not match the outstanding request",
         ));
     }
 
@@ -220,18 +238,25 @@ pub fn finalize_result(
             now,
         )
         .map_err(store_problem)?;
-    let recorded_digest = match write {
-        akson_store::OutcomeWrite::Recorded => outcome_digest,
-        akson_store::OutcomeWrite::AlreadyRecorded { outcome_digest } => outcome_digest,
-    };
-
-    Ok(serde_json::json!({
-        "finalized": true,
-        "task_id": manifest.header.task_id,
-        "state": "accepted",
-        "bundle_digest": bundle_digest,
-        "outcome_digest": recorded_digest,
-    }))
+    // A redelivery answers with the STORED outcome alone: pairing the stored
+    // outcome digest with a freshly computed bundle digest would describe two
+    // different pieces of evidence as one (sec5 review).
+    Ok(match write {
+        akson_store::OutcomeWrite::Recorded => serde_json::json!({
+            "finalized": true,
+            "task_id": manifest.header.task_id,
+            "state": "accepted",
+            "bundle_digest": bundle_digest,
+            "outcome_digest": outcome_digest,
+        }),
+        akson_store::OutcomeWrite::AlreadyRecorded { outcome_digest } => serde_json::json!({
+            "finalized": true,
+            "redelivery": true,
+            "task_id": manifest.header.task_id,
+            "state": "accepted",
+            "outcome_digest": outcome_digest,
+        }),
+    })
 }
 
 fn store_problem(_e: akson_store::StoreError) -> Problem {
@@ -283,7 +308,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 
@@ -337,7 +362,7 @@ mod tests {
                     performer_agent: "performer".to_owned(),
                     performer_issuer: "iss".to_owned(),
                     message_id: "msg-1".to_owned(),
-                    performer_root: "root-fixture".to_owned(),
+                    performer_root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
                 },
                 NOW,
             )
@@ -353,7 +378,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -400,7 +425,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -425,7 +450,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -454,7 +479,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -477,7 +502,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -502,7 +527,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &wrong.verifying(),
             &envelope,
@@ -570,7 +595,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -599,7 +624,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &signed_manifest("task-1"),
@@ -640,7 +665,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -673,7 +698,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("performer"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,
@@ -695,7 +720,7 @@ mod tests {
             &store,
             &ident("requester"),
             &ident("impostor"),
-            "root-fixture",
+            "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             &outcome_key(),
             &performer_task_result_key().verifying(),
             &envelope,

@@ -14,12 +14,12 @@
       "requester": {
         "issuer": "akson:pairing:demo",
         "agent": "requester.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "performer": {
         "issuer": "akson:pairing:demo",
         "agent": "reviewer.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "objective": "Review the supplied patch for correctness and safety.",
       "inputs": [
@@ -88,6 +88,6 @@
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "4ac3dc83e1f83ef2c7562ba3710ecb448b3033a364242e693d2c0cc3a5f90fce"
+    "canonical_sha256": "cb8fc70250b46354b7d7eaf90ac0afd485b104d185f47128acc0a877fb321827"
   }
 }

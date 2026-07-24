@@ -15,7 +15,7 @@
       "decider": {
         "issuer": "akson:pairing:demo",
         "agent": "reviewer.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "decided_at": "2026-07-16T12:00:00Z"
     }

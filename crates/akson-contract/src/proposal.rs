@@ -20,8 +20,8 @@
 //! # let value = json!({
 //! #   "schema_version": 1, "contract_id": "00000000-0000-4000-8000-000000000000",
 //! #   "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "m1",
-//! #   "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-//! #   "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
+//! #   "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+//! #   "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "objective": "o",
 //! #   "inputs": [], "deliverables": [{"role": "r", "media_type": "text/plain"}],
 //! #   "evidence_slots": [], "requested_capabilities": [], "processor_constraints": {"disclosure": "none"},
 //! #   "limits": {"deadline": "2030-01-01T00:00:00Z", "max_response_bytes": 1024},
@@ -34,8 +34,8 @@
 //! let proposal = verify_proposal(&envelope, &key.verifying()).unwrap(); // performer verifies
 //! check_proposal_identities(
 //!     &proposal.contract,
-//!     &Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture".into() }, // mTLS origin + its root
-//!     &Identity { issuer: "iss".into(), agent: "performer".into(), root: "root-fixture".into() }, // local endpoint identity
+//!     &Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() }, // mTLS origin + its root
+//!     &Identity { issuer: "iss".into(), agent: "performer".into(), root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() }, // local endpoint identity
 //! ).unwrap();
 //! ```
 
@@ -129,8 +129,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": "o",
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],
@@ -153,7 +153,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 

@@ -19,8 +19,8 @@
 //! # let value = json!({
 //! #   "schema_version": 1, "contract_id": "00000000-0000-4000-8000-000000000000",
 //! #   "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "m1",
-//! #   "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-//! #   "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
+//! #   "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+//! #   "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "objective": "o",
 //! #   "inputs": [], "deliverables": [{"role": "r", "media_type": "text/plain"}],
 //! #   "evidence_slots": [], "requested_capabilities": ["respond"],
 //! #   "processor_constraints": {"disclosure": "none"},
@@ -202,6 +202,13 @@ impl RiskCard {
             "Approve {} to run \"{}\": {n} input(s) ({total_bytes} B) go to the worker{processor_clause}; up to {} B come back to {recipient} by {}.",
             self.who.requester.agent, self.who.task_type, self.limits.max_response_bytes, self.limits.deadline,
         );
+        // The identity that AUTHORIZES is the root, not the self-declared
+        // name: two same-named requesters must be distinguishable on the very
+        // surface the human approves from (ADR-0014, sec5 review).
+        let sentence = format!(
+            "{sentence}\nRequester root: {}",
+            self.who.requester.root
+        );
 
         let mut what_leaves: Vec<String> = inputs
             .iter()
@@ -346,8 +353,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/task/code-review/v1",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": "review the diff",
             "inputs": [{
                 "id": "diff", "message_id": "m1", "part_index": 1, "kind": "text",

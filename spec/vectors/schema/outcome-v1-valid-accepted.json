@@ -16,13 +16,13 @@
       "requester": {
         "issuer": "akson:pairing:demo",
         "agent": "requester.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "signed_at": "2026-07-17T12:00:00Z"
     }
   },
   "expected": {
     "valid": true,
-    "canonical_sha256": "4286b0c02667744b157f0f488b77e5b7fb38d9ddae95a1c82589469c6cd09ab1"
+    "canonical_sha256": "369eaeccc41c9667e524375a9cb3841846d87baf02999db6032f34cc233e379a"
   }
 }

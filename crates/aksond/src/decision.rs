@@ -167,7 +167,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: agent.to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 
@@ -176,8 +176,8 @@ mod tests {
         let value = json!({
             "schema_version": 1, "contract_id": "3f2a1b4c-9d8e-4f70-a1b2-c3d4e5f60718",
             "revision": 0, "task_type": "https://akson.invalid/t", "message_id": "msg-1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"}, "objective": "o",
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "objective": "o",
             "inputs": [{
                 "id": "diff", "message_id": "msg-1", "part_index": 1, "kind": "text",
                 "media_type": "text/x-diff", "charset": "utf-8", "canonical_rule": "utf8-exact",

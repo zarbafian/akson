@@ -22,7 +22,7 @@
 //!     contract_digest: "a".repeat(64),
 //!     task_id: "task-1".into(),
 //!     context_id: "ctx-1".into(),
-//!     decider: Identity { issuer: "iss".into(), agent: "performer".into(), root: "root-fixture".into() },
+//!     decider: Identity { issuer: "iss".into(), agent: "performer".into(), root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() },
 //!     reason_code: None,
 //!     note: None,
 //!     decided_at: "2026-01-01T00:00:00Z".into(),
@@ -118,6 +118,11 @@ pub fn sign_decision(decision: &Decision, key: &PurposeKey) -> Result<Envelope, 
 /// Fails closed unless: the key is pinned for `contract-decision`, the DSSE
 /// envelope verifies (one signature, matching `payloadType`, thumbprint, strict
 /// Ed25519), the payload is canonical I-JSON, and it validates against the
+/// SECURITY NOTE (sec5 review, latent until a decision-receive route
+/// exists): this verifies the signature under WHATEVER key the caller
+/// supplies — it does not bind that key to `decider.root`. A receiver must
+/// resolve the verification key from the decider's root-bound peer record
+/// (as the receive server does for proposals), never from the envelope.
 /// decision schema.
 pub fn verify_decision(
     envelope: &Envelope,
@@ -181,7 +186,7 @@ mod tests {
             decider: Identity {
                 issuer: "iss".to_owned(),
                 agent: "performer".to_owned(),
-                root: "root-fixture".to_owned(),
+                root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             },
             reason_code: None,
             note: None,
@@ -196,8 +201,8 @@ mod tests {
             "revision": 0,
             "task_type": "https://akson.invalid/t",
             "message_id": "m1",
-            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture"},
-            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture"},
+            "requester": {"issuer": "iss", "agent": "requester", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "performer": {"issuer": "iss", "agent": "performer", "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "objective": "o",
             "inputs": [],
             "deliverables": [{"role": "r", "media_type": "text/plain"}],

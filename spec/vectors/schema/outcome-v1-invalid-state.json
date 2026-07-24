@@ -16,7 +16,7 @@
       "requester": {
         "issuer": "akson:pairing:demo",
         "agent": "requester.example",
-        "root": "root-fixture"
+        "root": "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "signed_at": "2026-07-17T12:00:00Z"
     }

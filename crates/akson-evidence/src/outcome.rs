@@ -26,7 +26,7 @@
 //! # let out = OutputEntry { role: "review".into(), artifact_id: "art-1".into(),
 //! #   part_index: 0, media_type: "text/plain".into(), byte_length: 12, sha256: "d".repeat(64) };
 //! let manifest = ResultManifest::assemble(header, vec![out], vec![], vec![], vec![]);
-//! let requester = Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture".into() };
+//! let requester = Identity { issuer: "iss".into(), agent: "requester".into(), root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() };
 //! let outcome = Outcome::for_manifest(
 //!     &manifest, OutcomeState::Accepted, requester, "2026-07-18T00:00:00Z".into()).unwrap();
 //! // The outcome binds exactly this manifest.
@@ -185,6 +185,10 @@ impl Outcome {
     /// Verifies an outcome envelope under the `requester-outcome` purpose. Fails
     /// closed unless the key is pinned for that purpose, the DSSE envelope verifies
     /// (one signature, matching `payloadType`, thumbprint, strict Ed25519), and the
+    /// SECURITY NOTE (sec5 review, latent until an outcome-receive route
+    /// exists): this verifies under the supplied key only — `requester.root`
+    /// stays self-asserted. A future receiver must resolve the key from the
+    /// requester's root-bound peer record before trusting the binding.
     /// canonical I-JSON payload validates against the schema.
     pub fn verify(envelope: &Envelope, key: &PurposeVerifyingKey) -> Result<Self, OutcomeError> {
         let payload_type = SchemaId::OutcomeV1.payload_media_type();
@@ -260,7 +264,7 @@ mod tests {
         Identity {
             issuer: "iss".to_owned(),
             agent: "requester".to_owned(),
-            root: "root-fixture".to_owned(),
+            root: "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         }
     }
 

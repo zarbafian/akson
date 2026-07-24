@@ -659,7 +659,11 @@ fn task_show(task_id: &str) -> ExitCode {
         Err(code) => return code,
     };
     if let Some(sentence) = result["sentence"].as_str() {
-        println!("{sentence}\n");
+        println!("{sentence}");
+        if let Some(label) = result["requester_label"].as_str() {
+            println!("Your label for this requester: {label}");
+        }
+        println!();
     }
     let empty = Vec::new();
     for section in result["sections"].as_array().unwrap_or(&empty) {
