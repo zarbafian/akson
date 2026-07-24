@@ -110,25 +110,36 @@ fn ensure_trusted_dir(dir: &std::path::Path) -> Result<(), String> {
 }
 
 /// Escapes a value for a systemd `Environment="KEY=<value>"` line: within the
-/// double quotes only `"` and `\` are special. A control character (newline
-/// especially) cannot be represented on one line and would let a value inject
-/// a fresh unit directive — so those are refused outright (sec6 review).
+/// double quotes only `"` and `\` are special, and `%` triggers systemd
+/// specifier expansion, so it is doubled to keep the literal. A control
+/// character (newline especially) cannot be represented on one line and would
+/// let a value inject a fresh unit directive — so those are refused outright
+/// (sec6 review; `%` per the codex review).
 fn systemd_env_value(value: &str) -> Result<String, String> {
     if value.chars().any(|c| c.is_control()) {
         return Err("environment value contains a control character".to_owned());
     }
-    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
+    Ok(value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%"))
 }
 
 /// Escapes a value for a systemd command-line token (quoted): reject controls,
-/// escape backslash and quote. The whole token is wrapped in `"..."` so a path
-/// with spaces stays one argument (sec6 review: an unquoted `/tmp/a b/aksond`
-/// would run `/tmp/a`).
+/// escape backslash and quote, double `%` (specifier expansion). The whole token
+/// is wrapped in `"..."` so a path with spaces stays one argument (sec6 review:
+/// an unquoted `/tmp/a b/aksond` would run `/tmp/a`).
 fn systemd_quote(value: &str) -> Result<String, String> {
     if value.chars().any(|c| c.is_control()) {
         return Err("command path contains a control character".to_owned());
     }
-    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+    Ok(format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%")
+    ))
 }
 
 /// Escapes a value for a TOML basic string (`"..."`): reject controls (which
@@ -140,6 +151,28 @@ fn toml_basic_string(value: &str) -> Result<String, String> {
         return Err("value contains a control character".to_owned());
     }
     Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
+/// Resolve a well-known system tool to an absolute path in a trusted directory,
+/// so `sudo`'s inherited PATH cannot substitute a hostile binary that would then
+/// run as root (codex review).
+fn trusted_tool(name: &str) -> Option<std::path::PathBuf> {
+    ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        .iter()
+        .map(|d| std::path::Path::new(d).join(name))
+        .find(|p| p.is_file())
+}
+
+/// Run a trusted system tool by absolute path with a sanitized environment.
+fn run_trusted(name: &str, args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    let path = trusted_tool(name).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("{name} not found"))
+    })?;
+    std::process::Command::new(path)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .status()
 }
 
 /// Writes `contents` to `path` with owner-only (`0600`) permissions, via a
@@ -382,9 +415,41 @@ fn service_install_system(user: Option<String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if target.len() > 32 || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if target.is_empty()
+        || target.len() > 32
+        || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         eprintln!("akson: --user must be a plain system user name");
         return ExitCode::from(2);
+    }
+    // "never root" must survive a numeric id or an aliased account: reject an
+    // all-numeric name (so `--user 0` can't slip past) and resolve the account,
+    // refusing UID 0 or a name that does not exist (codex review). `id` runs from
+    // a trusted path with a sanitized environment.
+    if target.chars().all(|c| c.is_ascii_digit()) {
+        eprintln!("akson: --user must be a user name, not a numeric id");
+        return ExitCode::from(2);
+    }
+    let resolved_uid = trusted_tool("id").and_then(|id| {
+        std::process::Command::new(id)
+            .args(["-u", "--", &target])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+    });
+    match resolved_uid {
+        Some(0) => {
+            eprintln!("akson: refusing to run the service as root — choose a non-root --user");
+            return ExitCode::from(2);
+        }
+        None => {
+            eprintln!("akson: --user {target} is not a known account");
+            return ExitCode::from(2);
+        }
+        Some(_) => {}
     }
     // A system service must run a root-owned binary: the unit is root-managed,
     // so pointing ExecStart at a build tree the operator's (non-root) user can
@@ -403,8 +468,34 @@ fn service_install_system(user: Option<String>) -> ExitCode {
     let dst = std::path::Path::new("/usr/local/bin/aksond");
     let staged = std::path::Path::new("/usr/local/bin/.aksond.new");
     let install_bin = || -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::copy(&src, staged)?;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // Refuse a symlinked source (it could point at a root-only file) and
+        // require a regular file (codex review).
+        if std::fs::symlink_metadata(&src)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "aksond source is a symlink",
+            ));
+        }
+        let mut sf = std::fs::File::open(&src)?;
+        if !sf.metadata()?.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "aksond source is not a regular file",
+            ));
+        }
+        // Stage into a freshly created file with an EXPLICIT mode — never the
+        // source's, so a setuid source cannot momentarily become a setuid root
+        // binary here. /usr/local/bin is root-only, so nothing but a prior run
+        // races the create_new (codex review).
+        let _ = std::fs::remove_file(staged);
+        let mut df = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(staged)?;
+        std::io::copy(&mut sf, &mut df)?;
+        df.sync_all()?;
         std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o755))?;
         std::fs::rename(staged, dst)
     };
@@ -461,11 +552,8 @@ fn service_install_system(user: Option<String>) -> ExitCode {
         return ExitCode::from(2);
     }
     println!("wrote {} (User={target})", unit_path.display());
-    let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
-    match std::process::Command::new("systemctl")
-        .args(["enable", "--now", "akson.service"])
-        .status()
-    {
+    let _ = run_trusted("systemctl", &["daemon-reload"]);
+    match run_trusted("systemctl", &["enable", "--now", "akson.service"]) {
         Ok(st) if st.success() => println!("akson.service enabled and started — survives reboot"),
         _ => {
             eprintln!("akson: could not enable the service; run: sudo systemctl enable --now akson.service");
@@ -1348,17 +1436,41 @@ fn resolve_admin_socket() -> std::path::PathBuf {
     let primary = admin_socket_path();
     let system = std::path::Path::new(SYSTEM_SOCKET_DIR).join("admin.sock");
     for cand in [&primary, &system] {
-        if UnixStream::connect(cand).is_ok() {
+        if socket_dir_is_trusted(cand) && UnixStream::connect(cand).is_ok() {
             return cand.clone();
         }
     }
     primary
 }
 
+/// The socket's directory must be owned by the current uid and not group/other
+/// writable — otherwise a foreign user could pre-create a listener at a
+/// predictable path (e.g. under `/tmp`) and capture admin requests, which carry
+/// secrets like a processor credential. A directory that does not exist is fine:
+/// there is nothing to impersonate, so the connect just fails with "daemon not
+/// running" (codex review).
+fn socket_dir_is_trusted(sock: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(dir) = sock.parent() else {
+        return false;
+    };
+    match std::fs::metadata(dir) {
+        Ok(m) => m.uid() == aksond::current_uid() && (m.mode() & 0o022) == 0,
+        Err(_) => true,
+    }
+}
+
 /// Sends one admin control request, returning its result value or an exit code
 /// after printing a uniform error (a daemon refusal, or an unreachable daemon).
 fn call(req: &ControlRequest) -> Result<serde_json::Value, ExitCode> {
     let path = resolve_admin_socket();
+    if !socket_dir_is_trusted(&path) {
+        eprintln!(
+            "akson: refusing to use the daemon socket at {} — its directory is not securely owned by you.",
+            path.display()
+        );
+        return Err(ExitCode::from(1));
+    }
     match send_request(&path, req) {
         Ok(ControlResponse::Ok { result }) => Ok(result),
         Ok(ControlResponse::Problem { problem }) => {
@@ -1395,6 +1507,13 @@ fn usage(form: &str) -> ExitCode {
 /// prints its health. Exits non-zero if the daemon is unreachable or not ready.
 fn status() -> ExitCode {
     let path = resolve_admin_socket();
+    if !socket_dir_is_trusted(&path) {
+        eprintln!(
+            "akson: refusing to use the daemon socket at {} — its directory is not securely owned by you.",
+            path.display()
+        );
+        return ExitCode::from(1);
+    }
     match send_request(&path, &ControlRequest::Diagnose) {
         Ok(ControlResponse::Ok { result }) => {
             let ready = result.get("sandbox_ready").and_then(|v| v.as_bool()) == Some(true);
@@ -1505,7 +1624,11 @@ fn doctor() -> ExitCode {
 /// cgroup context it actually runs in. `None` if unreachable or the reply has no
 /// capability array (an older daemon), so the caller falls back to a local probe.
 fn daemon_diagnose() -> Option<(Vec<Cap>, bool)> {
-    let result = match send_request(&resolve_admin_socket(), &ControlRequest::Diagnose) {
+    let path = resolve_admin_socket();
+    if !socket_dir_is_trusted(&path) {
+        return None;
+    }
+    let result = match send_request(&path, &ControlRequest::Diagnose) {
         Ok(ControlResponse::Ok { result }) => result,
         _ => return None,
     };

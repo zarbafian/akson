@@ -154,7 +154,9 @@ pub(crate) fn find_delegated_parent() -> Option<PathBuf> {
         .trim_start_matches('/');
     let mut dir = Path::new("/sys/fs/cgroup").join(rel);
     loop {
-        if has_controllers(&dir) && writable(&dir) {
+        // Never treat the hierarchy root as a delegated subtree: it is not ours
+        // to place workers in, and it is exempt from the no-internal-process rule.
+        if dir != Path::new("/sys/fs/cgroup") && has_controllers(&dir) && writable(&dir) {
             return Some(dir);
         }
         let parent = dir.parent()?.to_path_buf();
@@ -190,6 +192,12 @@ pub fn prepare_delegated_subtree() -> std::io::Result<()> {
     else {
         return Ok(());
     };
+    // Refuse to prepare the hierarchy root (`0::/`): enabling controllers there
+    // or migrating its members would be a host-wide mutation. Only an actual
+    // delegated sub-cgroup is ours to touch.
+    if rel.is_empty() {
+        return Ok(());
+    }
     let dir = Path::new("/sys/fs/cgroup").join(&rel);
     let controllers = fs::read_to_string(dir.join("cgroup.controllers")).unwrap_or_default();
     let available: Vec<&str> = controllers.split_whitespace().collect();
@@ -197,16 +205,15 @@ pub fn prepare_delegated_subtree() -> std::io::Result<()> {
     if !usable {
         return Ok(());
     }
-    // Vacate the delegated cgroup: move every process systemd placed here (us)
-    // into a leaf, so the parent can enable controllers for its children.
+    // Vacate the delegated cgroup by moving ONLY ourselves into a leaf, so the
+    // parent can enable controllers for its children. We deliberately do not
+    // migrate other members: in the expected case (a systemd `Delegate=yes`
+    // unit) we are the sole process here, and if we are not, the subtree_control
+    // write below fails the no-internal-process rule and the sandbox stays
+    // fail-closed — far safer than moving processes that are not ours.
     let leaf = dir.join("supervisor");
     let _ = fs::create_dir(&leaf);
-    if let Ok(procs) = fs::read_to_string(dir.join("cgroup.procs")) {
-        for pid in procs.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            // Best-effort: a pid that already exited just fails this one write.
-            let _ = fs::write(leaf.join("cgroup.procs"), pid);
-        }
-    }
+    fs::write(leaf.join("cgroup.procs"), std::process::id().to_string())?;
     // Enable the controllers the worker leaves need.
     let enable: String = ["memory", "pids", "cpu"]
         .iter()
