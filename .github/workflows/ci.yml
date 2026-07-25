@@ -106,3 +106,19 @@ jobs:
       # mutation breaks one protocol rule and TLC must produce a counterexample.
       - name: negative checks — the checks must be able to fail
         run: make -C proof negative
+
+  # C1 family-substrate vectors: every repo's CI re-derives the shared
+  # vectors independently. Pinned via plan/family-lock.json row
+  # 'family-vectors-c1' (byom tag c1-r1); bump follows the D3 choreography.
+  family-vectors:
+    name: family-vectors cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: zarbafian/byom
+          ref: 60561a2694f0c607e3ef5ba7fef4d5ae00861dc8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 family-vectors/xcheck.py
