@@ -19,9 +19,9 @@
 #
 # Unlike run-bench.sh this needs BOTH hosts to be performers — each must have a
 # worker and a processor with a key, and each must pin the other's task-result
-# key. serve.sh with ROLE=peer does that.
+# key. Run serve.sh with ROLE=performer (and a provider key) on BOTH hosts.
 #
-#   REQUESTER_SSH=bench@1.2.3.4 PERFORMER_SSH=bench@5.6.7.8 \
+#   ALICE_SSH=bench@1.2.3.4 BOB_SSH=bench@5.6.7.8 \
 #     ALICE_IP=10.0.0.1 BOB_IP=10.0.0.2 ./cooperate.sh
 set -euo pipefail
 

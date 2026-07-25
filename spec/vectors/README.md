@@ -4,7 +4,8 @@ Implementation-independent test vectors for every canonical byte sequence,
 digest, and signature Akson produces: JCS canonicalization, JWK thumbprints,
 DSSE pre-authentication encoding and signatures, Agent Card JWS signatures
 (`jws/`), reliable-delivery Content-Digest and covered-value commitments
-(`delivery/`), pairing verifier/transcript/proof-of-possession (`pairing/`),
+(`delivery/`), identity-token and introduction transcripts (`token/`,
+`introduction/` — the pairing-era families were removed with ADR-0015),
 I-JSON acceptance, schema validation, input-manifest digests, result manifests,
 and outcomes.
 
