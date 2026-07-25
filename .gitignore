@@ -5,3 +5,4 @@ target/
 /xcheck/.venv
 __pycache__/
 *.pyc
+.cargo/
