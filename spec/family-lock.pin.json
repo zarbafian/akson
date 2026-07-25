@@ -1,6 +1,6 @@
 {
   "manifest_repo": "agentic-program",
   "manifest_path": "plan/family-lock.json",
-  "manifest_sha256": "b9080fbad3f324536bbdd000347c0d8db7dc6f1eff1b13e2561e3bdbf5ff4aa8",
+  "manifest_sha256": "0fe94609dfe68482457ecd342fe96196a451d243bb2017422030c77c3889fa79",
   "note": "Vendored family-lock pointer (plan D3). CI must fetch/compare the manifest at this digest; local PINs alone are never provenance."
 }
