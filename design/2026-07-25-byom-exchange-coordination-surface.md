@@ -9,9 +9,12 @@ Date: 2026-07-25
 
 ## Why a third socket
 
-Byom (via kovee's `byom_akson_dispatch_v1` driver) must stage and dispatch
-outbound contracts and read coordination state — and it **must not** hold or
-reach akson's admin surface (byom §17, family contract L62–L63). The admin
+**Kovee's `byom_akson_dispatch_v1` driver is the sole caller of this surface**
+— byom's delegation engine *authorizes* (issues the act and consumed permit)
+and never calls akson or holds any akson credential (byom §17.2, family
+contract L62–L63). The driver must stage and dispatch outbound contracts and
+read coordination state — and it **must not** hold or reach akson's admin
+surface. The admin
 socket cannot be profile-scoped for this: a scoped token on a broad listener
 is explicitly rejected (plan C4), and the control protocol's same-UID rule is
 exactly what makes admin unreachable from a separately-identified driver.
@@ -68,10 +71,14 @@ inbound authority.
 - **Introduction protocol** — ADR-0015 unchanged: first contact on the RECEIVE
   surface, no pairing listener; the coordination surface is local-only and
   never crosses the wire.
-- **Closed registry** — no new extension URIs (D5): exchange payloads ride
-  `task_type` with byom-owned schemas; the four phase-owned signed shapes
-  (`AksonByomRequest/Acceptance/Result/AdmissionClassification`) are payload
-  content, validated byom-side.
+- **Schema changes through the front door** (plan D5 as revised): exchange
+  payloads ride `task_type` with byom-owned schemas where a payload suffices;
+  where a phase needs a carrier akson's closed schemas cannot hold, C4 adds an
+  in-tree akson schema version through the ADR + golden-vector process. The
+  four phase-owned signed shapes — `AksonByomRequestClassification`,
+  `AksonByomAcceptanceClassification`, `AksonByomResultClassification`,
+  `AksonByomAdmissionClassification` — are payload content validated
+  byom-side; the C4 carrier table names each shape's exact carrier.
 
 ## Test surface (C4 exit, producer-only)
 
@@ -91,7 +98,9 @@ Evidence, not features. Each row is recorded with its artifact when satisfied:
 | A0.1 | Pinned release artifacts (aksond, akson, akson-mcp, adapters) with SBOM/provenance | lock-manifest rows + build attestation |
 | A0.2 | ADR-0015 introduction vectors pinned; no PAIR-port assumption in any fleet/bench script | vector refs; grep-clean fleet scripts |
 | A0.3 | Key custody status recorded honestly (interim custody is a named residual carried into every I2 claim) | threat-model residual entry |
-| A0.4 | Extension namespaces + licensing status recorded (release gate, per akson's own plan) | status note |
+| A0.4a | Extension-URI namespace: **met** (`https://akson.cc/ext` secured) | namespace.rs constant |
+| A0.4b | Payload media-type registration: **provisional** (`MEDIA_TYPES_ARE_PROVISIONAL = true`) — release gate | status note |
+| A0.4c | Licensing: **open** (Apache-2.0 proposed, maintainer decision) — release gate | status note |
 | A0.5 | Hardened deployment profile: separate Unix identities per daemon, hardened service units, explicit egress policy | profile doc + unit files |
 | A0.6 | Test proving no inherited SSH/cloud credentials are reachable from workers | named test in the fleet harness |
 
