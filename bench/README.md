@@ -5,8 +5,8 @@ routable network, with a real model behind the performer's broker:
 
 ```
 alice (requester)                         bob (performer)
-  pair  ───────────── invitation ──────────▶ accept
-  send  ───────── signed proposal ─────────▶ submitted task
+  peer add ◀────── identity tokens ──────▶ peer add   (out of band, once)
+  send  ─── introduction, then proposal ────▶ submitted task
                                              approve → run (confined adapter
                                                        ─▶ broker ─▶ OpenAI)
   outcome ◀──────── signed result ────────── deliver
@@ -62,9 +62,25 @@ ssh bob 'cd ~/akson/bench && ROLE=performer SELF_IP=10.0.0.2 PROVIDER=openai \
 ssh alice 'cd ~/akson/bench && ROLE=requester SELF_IP=10.0.0.1 ./serve.sh'
 ```
 
-Open the two ports between the droplets (a DO firewall / VPC rule): each host's
-RECEIVE and PAIR ports (alice 18443/19443, bob 18444/19444 by default). Then pair
-them once (invite on alice → copy to bob → accept → both `peer confirm`).
+Open one port per host between the droplets (a DO firewall / VPC rule): each
+host's RECEIVE port (alice 18443, bob 18444 by default). There is no separate
+pairing listener — first contact is a mutual introduction on the RECEIVE
+surface (ADR-0015).
+
+Pairing is one identity-token import per side; `run-bench.sh` does it for you
+on its first run. The manual equivalent (with `target/release` on `PATH`):
+
+```
+# on each host: print this endpoint's token, hand it to the other operator
+akson token                         # → akson1…@<ip>:<port>
+
+# on alice:                         # on bob:
+akson peer add <bob-token> bob      akson peer add <alice-token> alice
+
+# on alice — dial the introduction now (optional; the first task send
+# triggers the same handshake):
+akson peer ping bob
+```
 
 ## Run the bench
 
@@ -89,6 +105,12 @@ For each provider it switches bob's active worker (processors persist, so no key
 re-enters), then times the full round trip for every scenario, and prints a
 `provider × scenario` table of `n / ok / p50 / p95` (loop seconds). Add or edit
 `scenarios/*.json` to extend the matrix.
+
+Two more drivers share the same provisioned pair: `keepalive.sh` (many
+exchanges over ONE mutual-TLS connection, exercising connection reuse) and
+`cooperate.sh` (six alternating rounds where each side takes its turn
+performing — start both with `ROLE=alice` / `ROLE=bob` so each gets a worker).
+Each script's header documents its variables.
 
 ## Reading the numbers
 

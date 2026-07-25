@@ -75,15 +75,18 @@ problem that names only the surface, never the op's internals.
 | `peer_import_remove` | `label` | admin | `peer remove <label>` | tombstones the import, advances its epoch, drops pinned state |
 | `peer_knocks` | — | admin | `peer knocks` | refused introductions (claims are unauthenticated) |
 | `peer_ping` | `label` | admin | `peer ping <label>` | dials the introduction now (ADR-0015) |
+| `peer_auto_approve` | `agent_id` (the peer's local **label**), `task_types[]`, `max_response_bytes` | admin | `peer auto-approve <label> --task-type <t>… [--max-bytes N] \| --off` | standing auto-approval bound to the introduced root: these task types from this peer, within the byte ceiling, run without a per-task prompt (never grants processor/artifacts); empty `task_types` clears it — `{auto_approve:"on"\|"off", …}` |
 | `task_inbox` | — | admin | `task inbox` | `{tasks:[{task_id, contract_id, revision, state:"submitted"}]}` |
 | `task_show` | `task_id` | admin | `task show <id>` | `{task_id, revision, sentence, sections:[{heading, lines}]}` — the §5.2 risk card |
 | `task_approve` | `task_id`, `processor?`, `artifacts?` | admin | `task approve <id> [--processor <id>] [--artifacts]` | `{approved:true, work_order_id, granted_capabilities:[…]}` |
 | `task_deny` | `task_id`, `reason` | admin | `task deny <id> <reason>` | a signed reject decision |
 | `task_run` | `task_id` | admin | `task run <id>` | `{ran:true, task_id, response_bytes, artifacts, result:{bundle_digest, …}}` |
+| `task_fulfill` | `task_id`, `outputs[]` of `{role, media_type, content_base64}` | admin | `task fulfill <id> --file <path> [--role <role>] [--media-type <mt>]` | `{fulfilled:true, task_id, outputs, result:{bundle_digest, …}}` — an operator-produced result in place of a sandboxed run (no worker); still gated against the granted scope and signed over these exact bytes |
 | `task_deliver` | `task_id` | admin | `task deliver <id>` | `{delivered:true, …}` |
 | `task_send` | a `TaskSpec` object | admin | `task send <spec.json>` | `{sent:true, task_id, contract_digest}` |
 | `task_sent` | — | admin | `task sent` | the requests this daemon sent |
 | `task_outcomes` | — | admin | `task outcomes` | the recorded requester outcomes |
+| `task_output` | `task_id`, `role?` | admin | `task output <id> [--role <role>]` | `{task_id, outputs:[{artifact_id, role, media_type, byte_length, sha256, content}]}` — `content` is base64 (byte-exact under the digest); serves whichever side this endpoint is: the performer's staged outputs, or the ones a delivered result carried |
 | `processor_add` | `processor_id, provider, origin_host, origin_port, local?, tls_certificate_sha256?, path?, auth?, headers[]` | admin | `processor add …` | `{added:true, processor_id}` |
 | `processor_list` | — | admin | `processor list` | `{processors:[{processor_id, provider, origin, local, pinned}]}` |
 | `processor_credential` | `processor_id`, `credential` | admin | `processor credential <id> <cred>` | `{credential_set:true, processor_id}` |
