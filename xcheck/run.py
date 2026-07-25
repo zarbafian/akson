@@ -208,14 +208,19 @@ def check_delivery(name: str, case: dict) -> None:
     expect_eq(name, "commitment", commitment, exp["commitment_hex"])
 
 
-def check_introduction(name: str, case: dict) -> None:
-    """Independent introduction-transcript bytes (ADR-0015): the signing bytes
-    are exactly the RFC 8785 canonical JSON of the transcript with the domain
-    field inside; digest + Ed25519 proof of possession over them."""
+def _intro_canonical(transcript: dict) -> bytes:
+    """The bytes every introduction proof signs (ADR-0015): the RFC 8785
+    canonical JSON of the transcript with the domain field inside — the one
+    canonicalization, nothing else to agree on."""
+    t = dict(transcript)
+    t["domain"] = "akson-introduction-v1"
+    return rfc8785.dumps(t)
+
+
+def check_introduction_transcript(name: str, case: dict) -> None:
+    """Transcript signing bytes for one role; digest + Ed25519 PoP over them."""
     inp, exp = case["input"], case["expected"]
-    transcript = dict(inp["transcript"])
-    transcript["domain"] = "akson-introduction-v1"
-    canonical = rfc8785.dumps(transcript)
+    canonical = _intro_canonical(inp["transcript"])
     expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
     expect_eq(name, "digest", hashlib.sha256(canonical).hexdigest(), exp["digest_hex"])
     if "signature_b64url" in exp:
@@ -224,6 +229,136 @@ def check_introduction(name: str, case: dict) -> None:
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(inp["public_key_hex"])).verify(
             b64url_decode(exp["signature_b64url"]), canonical
         )
+
+
+def check_introduction_hello(name: str, case: dict) -> None:
+    """Flight 1's exact wire bytes: the field set and order are the frozen
+    fact (protocol_version, token_version, target_root, claimed_root, nonce);
+    a plain compact JSON serialization in that order must reproduce them."""
+    h, exp = case["input"]["hello"], case["expected"]
+    wire = json.dumps(
+        {
+            "protocol_version": h["protocol_version"],
+            "token_version": h["token_version"],
+            "target_root": h["target_root"],
+            "claimed_root": h["claimed_root"],
+            "nonce": h["nonce"],
+        },
+        separators=(",", ":"),
+    )
+    expect_eq(name, "hello wire", wire, exp["wire"])
+    expect_eq(name, "hello round-trip", json.loads(exp["wire"]), h)
+
+
+def check_introduction_proof(name: str, case: dict) -> None:
+    """One role's full proof body (IntroMaterial): rebuild the key-binding
+    record, its RFC 8785 digest, the digest-bound transcript bytes, the card
+    JWS, and every proof-of-possession signature from the seeds alone."""
+    inp, exp = case["input"], case["expected"]
+    material = exp["material"]
+
+    # Keys: seed -> Ed25519 pair, RFC 7638 thumbprint via jwcrypto.
+    keys = {}
+    for purpose, seed_hex in inp["keys"].items():
+        sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
+        x = b64url(sk.public_key().public_bytes_raw())
+        keys[purpose] = {
+            "sk": sk,
+            "jwk": {"crv": "Ed25519", "kty": "OKP", "x": x},
+            "thumbprint": jwk.JWK(kty="OKP", crv="Ed25519", x=x).thumbprint(),
+        }
+
+    # The key-binding record, exactly as the signer builds it: the claimed TLS
+    # certificate is the signer's side of the transcript.
+    t = inp["transcript"]
+    signer_tls = t["dialer_tls_sha256"] if inp["role"] == "dialer" else t["responder_tls_sha256"]
+    validity = inp["validity"]
+    key_binding = {
+        "schema_version": 1,
+        "subject": inp["subject"],
+        "tls_certificate_sha256": signer_tls,
+        "keys": {
+            purpose: {
+                "jwk": k["jwk"],
+                "thumbprint": k["thumbprint"],
+                "generation": validity["generation"],
+                "not_before": validity["not_before"],
+                "not_after": validity["not_after"],
+            }
+            for purpose, k in keys.items()
+        },
+    }
+    expect_eq(name, "key binding", key_binding, material["key_binding"])
+    kb_digest = hashlib.sha256(rfc8785.dumps(key_binding)).hexdigest()
+    expect_eq(name, "key binding digest", kb_digest, exp["key_binding_sha256"])
+
+    # The digest-bound transcript bytes every proof signs.
+    bound = dict(t)
+    bound["key_binding_sha256"] = kb_digest
+    canonical = _intro_canonical(bound)
+    expect_eq(name, "transcript canonical", canonical.decode("utf-8"), exp["transcript_canonical"])
+    expect_eq(
+        name,
+        "transcript digest",
+        hashlib.sha256(canonical).hexdigest(),
+        exp["transcript_digest_hex"],
+    )
+
+    # Proof of possession by every advertised key over exactly those bytes.
+    for purpose, k in keys.items():
+        expect_eq(
+            name,
+            f"proof {purpose}",
+            b64url(k["sk"].sign(canonical)),
+            material["proofs"].get(purpose),
+        )
+    expect_eq(name, "proof purposes", sorted(material["proofs"]), sorted(keys))
+
+    # The extended card: the input card plus one root JWS (same construction
+    # as the jws/ family: JCS payload, {alg,typ,kid} protected header).
+    card_key = keys["agent-card"]
+    payload = rfc8785.dumps(inp["card"])
+    protected = b64url(
+        rfc8785.dumps({"alg": "EdDSA", "typ": "JOSE", "kid": card_key["thumbprint"]})
+    )
+    signing_input = protected.encode() + b"." + b64url(payload).encode()
+    signature = b64url(card_key["sk"].sign(signing_input))
+    expect_eq(
+        name,
+        "extended card",
+        {**inp["card"], "signatures": [{"protected": protected, "signature": signature}]},
+        material["extended_card"],
+    )
+
+
+def check_introduction_refusal(name: str, case: dict) -> None:
+    """Refusal wire shapes (ADR-0015 error matrix): the RFC 9457 problem body
+    is exactly {type, title, status} in that order, no detail. The
+    indistinguishability of every pre-verification trigger is asserted by the
+    Rust test driving the real handler (aksond/tests/introduce_e2e.rs)."""
+    p, exp = case["input"]["problem"], case["expected"]
+    body = json.dumps(
+        {"type": p["type"], "title": p["title"], "status": p["status"]},
+        separators=(",", ":"),
+    )
+    expect_eq(name, "problem body", body, exp["body"])
+    expect_eq(name, "status", p["status"], exp["status"])
+    expect_eq(name, "content type", exp["content_type"], "application/problem+json")
+
+
+def check_introduction(name: str, case: dict) -> None:
+    """Independent introduction vectors (ADR-0015), dispatched by input shape:
+    transcript bytes per role, the hello wire shape, both proof bodies, and
+    the refusal shapes."""
+    inp = case["input"]
+    if "hello" in inp:
+        check_introduction_hello(name, case)
+    elif "keys" in inp:
+        check_introduction_proof(name, case)
+    elif "problem" in inp:
+        check_introduction_refusal(name, case)
+    else:
+        check_introduction_transcript(name, case)
 
 
 BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"

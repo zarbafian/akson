@@ -1,0 +1,26 @@
+{
+  "name": "introduction/transcript-dialer",
+  "kind": "introduction",
+  "description": "ADR-0015 introduction transcript, dialer role: the signing bytes are EXACTLY the RFC 8785 canonical JSON with the domain field inside; the role member is inside the signed bytes, so this differs from introduction/transcript (responder) only by \"role\":\"dialer\" — a responder proof can never replay as a dialer proof. Digest + Ed25519 PoP over the bytes.",
+  "input": {
+    "transcript": {
+      "protocol_version": 1,
+      "token_version": 1,
+      "role": "dialer",
+      "dialer_root": "d-root-thumbprint-aaaaaaaaaaaaaaaaaaaaaaaaa",
+      "responder_root": "r-root-thumbprint-bbbbbbbbbbbbbbbbbbbbbbbbb",
+      "dialer_tls_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "responder_tls_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "tls_exporter": "ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ",
+      "nonce": "bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ",
+      "key_binding_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "private_key_hex": "0808080808080808080808080808080808080808080808080808080808080808",
+    "public_key_hex": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca"
+  },
+  "expected": {
+    "canonical": "{\"dialer_root\":\"d-root-thumbprint-aaaaaaaaaaaaaaaaaaaaaaaaa\",\"dialer_tls_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"domain\":\"akson-introduction-v1\",\"key_binding_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"nonce\":\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ\",\"protocol_version\":1,\"responder_root\":\"r-root-thumbprint-bbbbbbbbbbbbbbbbbbbbbbbbb\",\"responder_tls_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"role\":\"dialer\",\"tls_exporter\":\"ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ\",\"token_version\":1}",
+    "digest_hex": "bad24d5e89a6506987618ccc8f4394ebf9fe80ea6fa3601528eda83647c11564",
+    "signature_b64url": "n971fGZhQA9i6eMr2Nm6ztiOYPVfZOneRKs45lh1xMcFsZYBFSpVwKwOcSFbriE5BC8rXe20swbdTDnpJatvDQ"
+  }
+}

@@ -348,6 +348,180 @@ fn removal_between_flights_refuses_the_stale_handshake() {
     assert_eq!((code, close), (403, true), "one instance per connection");
 }
 
+/// The refusal golden vectors (`spec/vectors/introduction/refusal-*.json`,
+/// ADR-0015 error matrix), driven against the REAL handler:
+///
+/// - every pre-verification failure — wrong method, wrong media type, an
+///   unimported dialer, an unknown path, a complete without a hello — must
+///   produce the byte-identical generic problem (indistinguishability is the
+///   normative property, so byte equality is the assertion);
+/// - an active peer re-introducing with changed material must produce the
+///   specific post-proof `peer-suspended` problem, byte-identical too.
+#[test]
+fn refusal_vectors_pin_the_wire_shapes() {
+    use akson_pairing::introduction::{
+        build_intro_material, Hello, IntroTranscript, Role, COMPLETE_PATH, HELLO_PATH,
+        INTRODUCTION_MEDIA_TYPE, PROTOCOL_VERSION, TOKEN_VERSION,
+    };
+    use aksond::{respond_introduction, PendingIntro};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use serde_json::Value;
+
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../spec/vectors/introduction");
+    let load = |stem: &str| -> (u16, String, String) {
+        let case: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!("{stem}.json"))).unwrap(),
+        )
+        .unwrap();
+        let e = &case["expected"];
+        (
+            e["status"].as_u64().unwrap() as u16,
+            e["content_type"].as_str().unwrap().to_owned(),
+            e["body"].as_str().unwrap().to_owned(),
+        )
+    };
+    let (generic_status, generic_ct, generic_body) = load("refusal-generic");
+    let (susp_status, susp_ct, susp_body) = load("refusal-peer-suspended");
+
+    let now = 1_800_000_000i64;
+    let alice = identity("alice", 3);
+    let bob = identity("bob", 5);
+    let mallory = identity("mallory", 9);
+    let store_b = store();
+    store_b
+        .lock()
+        .unwrap()
+        .add_peer_import(&alice.own_root, "alice", "", now)
+        .unwrap();
+
+    let exporter = [9u8; 32];
+    let alice_tls = alice.cert.fingerprint.value.clone();
+    let nonce = URL_SAFE_NO_PAD.encode([7u8; 32]);
+    let hello_body = |claimed: &str| {
+        serde_json::to_vec(&Hello {
+            protocol_version: PROTOCOL_VERSION,
+            token_version: TOKEN_VERSION,
+            target_root: bob.own_root.clone(),
+            claimed_root: claimed.to_owned(),
+            nonce: nonce.clone(),
+        })
+        .unwrap()
+    };
+
+    // Pre-verification failures, each on a fresh connection: all must be the
+    // one generic shape, byte for byte.
+    let triggers: Vec<(&str, &str, &str, Vec<u8>)> = vec![
+        ("bad-method", HELLO_PATH, "GET", hello_body(&alice.own_root)),
+        ("bad-media-type", HELLO_PATH, "POST", hello_body(&alice.own_root)),
+        ("not-imported", HELLO_PATH, "POST", hello_body(&mallory.own_root)),
+        ("unknown-path", "/akson/introduce/v1/nope", "POST", hello_body(&alice.own_root)),
+        ("complete-without-hello", COMPLETE_PATH, "POST", b"{}".to_vec()),
+    ];
+    for (trigger, path, method, body) in triggers {
+        let pending = PendingIntro::default();
+        let content_type = if trigger == "bad-media-type" {
+            "application/json"
+        } else {
+            INTRODUCTION_MEDIA_TYPE
+        };
+        let (code, ct, out, close) = respond_introduction(
+            &bob,
+            &store_b,
+            &pending,
+            path,
+            method,
+            content_type,
+            "203.0.113.7",
+            Some(&alice_tls),
+            Some(&exporter),
+            &body,
+            now,
+        );
+        assert_eq!(
+            (code, ct.as_str(), String::from_utf8(out).unwrap().as_str(), close),
+            (generic_status, generic_ct.as_str(), generic_body.as_str(), true),
+            "trigger {trigger} must produce the exact generic refusal"
+        );
+    }
+
+    // A full valid introduction first, so alice is ACTIVE at bob...
+    let transcript = |role: Role| IntroTranscript {
+        protocol_version: PROTOCOL_VERSION,
+        token_version: TOKEN_VERSION,
+        role,
+        dialer_root: alice.own_root.clone(),
+        responder_root: bob.own_root.clone(),
+        dialer_tls_sha256: alice_tls.clone(),
+        responder_tls_sha256: bob.cert.fingerprint.value.clone(),
+        tls_exporter: URL_SAFE_NO_PAD.encode(exporter),
+        nonce: nonce.clone(),
+        key_binding_sha256: String::new(),
+    };
+    let complete = |keys: &BTreeMap<KeyPurpose, PurposeKey>| {
+        serde_json::to_vec(
+            &build_intro_material(
+                &transcript(Role::Dialer),
+                "local",
+                "alice",
+                &alice.signed_card,
+                keys,
+                "2020-01-01T00:00:00Z",
+                "2035-01-01T00:00:00Z",
+                0,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let run = |path: &str, pending: &PendingIntro, body: &[u8]| {
+        respond_introduction(
+            &bob,
+            &store_b,
+            pending,
+            path,
+            "POST",
+            INTRODUCTION_MEDIA_TYPE,
+            "203.0.113.7",
+            Some(&alice_tls),
+            Some(&exporter),
+            body,
+            now,
+        )
+    };
+    let pending = PendingIntro::default();
+    let (code, ..) = run(HELLO_PATH, &pending, &hello_body(&alice.own_root));
+    assert_eq!(code, 200, "hello admits");
+    let (code, ..) = run(COMPLETE_PATH, &pending, &complete(&alice.keys));
+    assert_eq!(code, 200, "first introduction commits");
+
+    // ...then a re-introduction under the same root with CHANGED statement
+    // keys: post-proof, mutually authenticated, and suspended — the specific
+    // problem shape, byte for byte.
+    let mut changed = BTreeMap::new();
+    for purpose in KeyPurpose::PAIRED {
+        if purpose == KeyPurpose::TlsEndpoint {
+            continue;
+        }
+        let seed = if purpose == KeyPurpose::AgentCard {
+            [3 ^ (purpose as u8); 32] // the same root as alice
+        } else {
+            [0x77 ^ (purpose as u8); 32] // every other key rotated
+        };
+        changed.insert(purpose, PurposeKey::from_seed(purpose, &seed));
+    }
+    let pending = PendingIntro::default();
+    let (code, ..) = run(HELLO_PATH, &pending, &hello_body(&alice.own_root));
+    assert_eq!(code, 200, "an active peer's hello still admits");
+    let (code, ct, out, close) = run(COMPLETE_PATH, &pending, &complete(&changed));
+    assert_eq!(
+        (code, ct.as_str(), String::from_utf8(out).unwrap().as_str(), close),
+        (susp_status, susp_ct.as_str(), susp_body.as_str(), true),
+        "changed material must produce the exact peer-suspended problem"
+    );
+}
+
 /// The public discovery surface (design §8.2): an ANONYMOUS client — no
 /// certificate at all — can fetch `/.well-known/agent-card.json` and nothing
 /// else; the served card is the signed, profile-valid one.

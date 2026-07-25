@@ -1,0 +1,17 @@
+{
+  "name": "introduction/refusal-peer-suspended",
+  "kind": "introduction",
+  "description": "ADR-0015 post-proof problem: an already-active peer re-introducing with CHANGED identity material is suspended per design §8.4 rather than re-pinned. Post-proof the parties are mutually authenticated, so this specific RFC 9457 problem type is allowed (unlike every pre-verification refusal, which is the single generic shape).",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:peer-suspended",
+      "title": "pinned identity material changed; operator review required",
+      "status": 409
+    }
+  },
+  "expected": {
+    "status": 409,
+    "content_type": "application/problem+json",
+    "body": "{\"type\":\"urn:akson:error:peer-suspended\",\"title\":\"pinned identity material changed; operator review required\",\"status\":409}"
+  }
+}

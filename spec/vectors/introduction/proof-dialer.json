@@ -1,0 +1,201 @@
+{
+  "name": "introduction/proof-dialer",
+  "kind": "introduction",
+  "description": "ADR-0015 flight 3 (complete): the dialer's full proof body (IntroMaterial) — key-binding record, root-signed extended Agent Card, and Ed25519 proofs of possession by every advertised key over the session transcript with the record's RFC 8785 digest bound in. Deterministic test seeds; the material must also pass verify_introduction against the signer's root.",
+  "input": {
+    "role": "dialer",
+    "keys": {
+      "agent-card": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "contract-proposal": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+      "task-result": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+    },
+    "subject": {
+      "issuer": "local",
+      "agent": "alice"
+    },
+    "validity": {
+      "not_before": "2020-01-01T00:00:00Z",
+      "not_after": "2030-01-01T00:00:00Z",
+      "generation": 0
+    },
+    "now_unix": 1748736000,
+    "card": {
+      "capabilities": {
+        "extendedAgentCard": true,
+        "extensions": [
+          {
+            "required": true,
+            "uri": "https://akson.cc/ext/contract/v1"
+          },
+          {
+            "required": true,
+            "uri": "https://akson.cc/ext/key-binding/v1"
+          },
+          {
+            "required": true,
+            "uri": "https://akson.cc/ext/delivery/v1"
+          },
+          {
+            "required": true,
+            "uri": "https://akson.cc/ext/result-evidence/v1"
+          },
+          {
+            "required": true,
+            "uri": "https://akson.cc/ext/outcome/v1"
+          }
+        ],
+        "pushNotifications": false,
+        "streaming": false
+      },
+      "description": "akson endpoint",
+      "name": "alice",
+      "securityRequirements": [
+        {
+          "schemes": {
+            "mtls": {}
+          }
+        }
+      ],
+      "securitySchemes": {
+        "mtls": {
+          "mtlsSecurityScheme": {
+            "description": "pinned mutual TLS"
+          }
+        }
+      },
+      "supportedInterfaces": [
+        {
+          "protocolBinding": "HTTP+JSON",
+          "protocolVersion": "1.0",
+          "url": "https://alice.example:7300/a2a"
+        }
+      ],
+      "version": "1.0.0"
+    },
+    "transcript": {
+      "protocol_version": 1,
+      "token_version": 1,
+      "role": "dialer",
+      "dialer_root": "VDux_CmeAgi2AvrAFW0bInmtCjMDD9kHOfzia5l81w0",
+      "responder_root": "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+      "dialer_tls_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "responder_tls_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "tls_exporter": "ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ",
+      "nonce": "bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ"
+    }
+  },
+  "expected": {
+    "key_binding_sha256": "63b53080d9d03acead933ea69e4713c3096b095d9ec4500fd00b7106b1a1814c",
+    "transcript_canonical": "{\"dialer_root\":\"VDux_CmeAgi2AvrAFW0bInmtCjMDD9kHOfzia5l81w0\",\"dialer_tls_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"domain\":\"akson-introduction-v1\",\"key_binding_sha256\":\"63b53080d9d03acead933ea69e4713c3096b095d9ec4500fd00b7106b1a1814c\",\"nonce\":\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2Utbm9uY2UhIQ\",\"protocol_version\":1,\"responder_root\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"responder_tls_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"role\":\"dialer\",\"tls_exporter\":\"ZXhwb3J0ZXItdmFsdWUtZXhwb3J0ZXItdmFsdWUhIQ\",\"token_version\":1}",
+    "transcript_digest_hex": "94cde0d19dcf100bb996cd20bc88b6db5c2565fb91055101fc7459b7357d6179",
+    "material": {
+      "extended_card": {
+        "capabilities": {
+          "extendedAgentCard": true,
+          "extensions": [
+            {
+              "required": true,
+              "uri": "https://akson.cc/ext/contract/v1"
+            },
+            {
+              "required": true,
+              "uri": "https://akson.cc/ext/key-binding/v1"
+            },
+            {
+              "required": true,
+              "uri": "https://akson.cc/ext/delivery/v1"
+            },
+            {
+              "required": true,
+              "uri": "https://akson.cc/ext/result-evidence/v1"
+            },
+            {
+              "required": true,
+              "uri": "https://akson.cc/ext/outcome/v1"
+            }
+          ],
+          "pushNotifications": false,
+          "streaming": false
+        },
+        "description": "akson endpoint",
+        "name": "alice",
+        "securityRequirements": [
+          {
+            "schemes": {
+              "mtls": {}
+            }
+          }
+        ],
+        "securitySchemes": {
+          "mtls": {
+            "mtlsSecurityScheme": {
+              "description": "pinned mutual TLS"
+            }
+          }
+        },
+        "signatures": [
+          {
+            "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6IlZEdXhfQ21lQWdpMkF2ckFGVzBiSW5tdENqTUREOWtIT2Z6aWE1bDgxdzAiLCJ0eXAiOiJKT1NFIn0",
+            "signature": "JCeoPnNVVsc-IWuxvoZAjk7K61FAYqAEOaJTZsRUZ3np6arOycvD3guPgamp9rer6tAbB-JL7XSlrDWMbAWZCA"
+          }
+        ],
+        "supportedInterfaces": [
+          {
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": "1.0",
+            "url": "https://alice.example:7300/a2a"
+          }
+        ],
+        "version": "1.0.0"
+      },
+      "key_binding": {
+        "keys": {
+          "agent-card": {
+            "generation": 0,
+            "jwk": {
+              "crv": "Ed25519",
+              "kty": "OKP",
+              "x": "vHy8tWNjdfodgkNNRmck2SN39TuYBpXdSdJtDOEiBaU"
+            },
+            "not_after": "2030-01-01T00:00:00Z",
+            "not_before": "2020-01-01T00:00:00Z",
+            "thumbprint": "VDux_CmeAgi2AvrAFW0bInmtCjMDD9kHOfzia5l81w0"
+          },
+          "contract-proposal": {
+            "generation": 0,
+            "jwk": {
+              "crv": "Ed25519",
+              "kty": "OKP",
+              "x": "Zej5sLxurhJBafBXb5c2LSlajPX3cLReFDV85kfTPuw"
+            },
+            "not_after": "2030-01-01T00:00:00Z",
+            "not_before": "2020-01-01T00:00:00Z",
+            "thumbprint": "M0dEnOaYDKeVVR38m-Fj5L9CHhQnVbB-Zye-rAywe4s"
+          },
+          "task-result": {
+            "generation": 0,
+            "jwk": {
+              "crv": "Ed25519",
+              "kty": "OKP",
+              "x": "rPErSswcZgqDJq7TQDnvtyil5JZIgkD1CpMqt6ulF1E"
+            },
+            "not_after": "2030-01-01T00:00:00Z",
+            "not_before": "2020-01-01T00:00:00Z",
+            "thumbprint": "xNWYPJmWqgHCvmeHArmwMJ-t5g5KHjwPNbmzwNoVCWQ"
+          }
+        },
+        "schema_version": 1,
+        "subject": {
+          "agent": "alice",
+          "issuer": "local"
+        },
+        "tls_certificate_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "proofs": {
+        "agent-card": "xxwRtzkzWLXUNBR8xPfdQciNVapKn1yEgZpfPXC24-_uVGeCm3Co92FLdI_sVs8kS_XBvlwnhyC2dFfcFXAbBg",
+        "contract-proposal": "I5fgStQkMrXk3utF2CilPPCxPnm9ImwP4H-0yOTuTDEJBhJKs1jnUJ6KObOV3hZJHT7o-fTJAhlFjl0aB3sEAA",
+        "task-result": "1WP4fMjCsisj0_MFoNsRyOnmGWvHCH_7Iusmch6gqUKjVbWL6GY8yG8aoUfvH68nG1F5-Xul_ojFKUSfAJutAg"
+      }
+    }
+  }
+}

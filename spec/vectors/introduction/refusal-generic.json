@@ -1,0 +1,34 @@
+{
+  "name": "introduction/refusal-generic",
+  "kind": "introduction",
+  "description": "ADR-0015 error matrix: every pre-verification failure at the responder maps to this single RFC 9457 problem — one type, one shape, no distinguishing detail. The triggers list names the code paths that must all produce these exact bytes (indistinguishability is asserted by the Rust conformance test driving the real handler).",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:introduction-refused",
+      "title": "the introduction was refused",
+      "status": 403
+    },
+    "triggers": [
+      "bad-method",
+      "bad-media-type",
+      "missing-session-binding",
+      "malformed-hello",
+      "malformed-claimed-root",
+      "bad-version",
+      "wrong-target",
+      "not-imported",
+      "hello-on-used-connection",
+      "complete-without-hello",
+      "malformed-material",
+      "bad-proof",
+      "post-proof-epoch-change",
+      "unknown-path",
+      "rate-limited"
+    ]
+  },
+  "expected": {
+    "status": 403,
+    "content_type": "application/problem+json",
+    "body": "{\"type\":\"urn:akson:error:introduction-refused\",\"title\":\"the introduction was refused\",\"status\":403}"
+  }
+}
