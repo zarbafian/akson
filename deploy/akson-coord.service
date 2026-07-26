@@ -1,0 +1,56 @@
+[Unit]
+Description=Akson coordination driver (akson_byom_exchange_v1) — stages and dispatches outbound contracts
+Documentation=file:///usr/share/doc/akson/deploy/README.md
+After=akson-daemon.service
+Requires=akson-daemon.service
+
+[Service]
+Type=simple
+User=akson-coord
+Group=akson-coord
+# The driver is kovee's byom_akson_dispatch_v1 caller (family contract L63:
+# Kovee calls, byom authorizes). Its binary lives with the kovee install.
+ExecStart=/usr/local/bin/kovee-akson-driver
+Restart=on-failure
+RestartSec=2
+
+# It reaches exactly one thing: the coordination socket. The daemon's
+# AKSON_COORD_UID names this identity, so admission is an OS access domain.
+Environment=AKSON_RUNTIME_DIR=/run/akson
+SupplementaryGroups=akson-coord
+
+# --- hardening: stricter than the daemon, since it needs no namespaces -----
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# A Unix socket and nothing else — no network egress of its own.
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete
+SystemCallArchitectures=native
+UnsetEnvironment=SSH_AUTH_SOCK SSH_AGENT_PID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY DIGITALOCEAN_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY
+
+# The point of the separate identity: this unit can stage bytes and burn its
+# own consent receipts. It cannot mint consent, reach a credential, or touch
+# admin.sock — those are the operator's own UID.
+
+[Install]
+WantedBy=multi-user.target

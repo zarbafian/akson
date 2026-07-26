@@ -1,0 +1,60 @@
+[Unit]
+Description=Akson daemon — signed task exchange between sovereign agents
+Documentation=file:///usr/share/doc/akson/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=akson
+Group=akson
+ExecStart=/usr/local/bin/aksond serve
+Restart=on-failure
+RestartSec=2
+
+# --- what the daemon needs -------------------------------------------------
+# The clean-worker sandbox needs a delegated cgroup v2 subtree (memory, pids).
+Delegate=yes
+RuntimeDirectory=akson
+RuntimeDirectoryMode=0700
+StateDirectory=akson
+StateDirectoryMode=0700
+Environment=AKSON_RUNTIME_DIR=/run/akson
+Environment=AKSON_DATA_DIR=/var/lib/akson
+
+# --- hardening the sandbox tolerates --------------------------------------
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/akson
+PrivateTmp=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=no
+RemoveIPC=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+# The daemon itself opens only AF_UNIX (control sockets) and AF_INET/AF_INET6
+# (the RECEIVE listener and the broker's egress).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The daemon needs no capabilities: it binds a high port, and the sandbox's
+# privilege comes from unprivileged user namespaces, not from the parent.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Credentials the operator's login holds must not be inheritable (A0.6).
+UnsetEnvironment=SSH_AUTH_SOCK SSH_AGENT_PID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY DIGITALOCEAN_TOKEN ANTHROPIC_API_KEY OPENAI_API_KEY
+
+# --- deliberately NOT set, with reasons -----------------------------------
+# PrivateUsers=yes          breaks the sandbox's unprivileged user namespace
+# RestrictNamespaces=...    the sandbox creates user/mount/pid/net namespaces
+# ProtectKernelTunables=yes blocks the mount propagation the sandbox needs
+# SystemCallFilter=...      would have to permit clone/unshare/mount/pivot_root,
+#                           i.e. exactly the calls a filter exists to remove —
+#                           the inner sandbox is the enforcement boundary here
+# ProtectControlGroups=yes  incompatible with Delegate=yes
+# IPAddressDeny=/Allow=     the broker's own egress allowlist is the authority;
+#                           a coarser second copy here would drift from it
+
+[Install]
+WantedBy=multi-user.target
