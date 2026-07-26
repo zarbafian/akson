@@ -30,16 +30,28 @@ pub enum Surface {
     Admin,
     /// The narrow adapter/worker socket — task I/O only.
     Worker,
+    /// The coordination socket (ADR-0016): a *different* local principal
+    /// stages outbound contracts and reads coordination state. It reaches no
+    /// admin operation, and admin's own consent minting is not on it.
+    Coord,
 }
 
 impl Surface {
     /// Whether this surface is at least as privileged as `required`.
+    ///
+    /// The relation is stated case by case rather than inferred, because
+    /// ADR-0016 makes it deliberately asymmetric: admin dominates both of the
+    /// narrow surfaces (so an operator can diagnose them), while `Worker` and
+    /// `Coord` dominate nothing at all — including each other. A coord
+    /// connection reaching a worker op, or the reverse, is exactly the
+    /// confusion the third socket exists to prevent.
     fn satisfies(self, required: Surface) -> bool {
-        // Admin dominates Worker; Worker satisfies only Worker.
-        matches!(
-            (self, required),
-            (Surface::Admin, _) | (Surface::Worker, Surface::Worker)
-        )
+        match (self, required) {
+            (Surface::Admin, _) => true,
+            (Surface::Worker, Surface::Worker) => true,
+            (Surface::Coord, Surface::Coord) => true,
+            _ => false,
+        }
     }
 }
 
@@ -94,6 +106,28 @@ pub enum ControlOp {
     Inspect,
     /// Report daemon and sandbox health (`akson doctor`, `akson status`).
     Diagnose,
+    /// Mint the one-shot consent receipt for an exact staged digest, after the
+    /// operator has seen its risk card. Admin-only, deliberately: the outward
+    /// disclosure is never the coordination driver's to authorize (ADR-0016).
+    StageConsent,
+
+    // --- Coordination surface (ADR-0016, akson_byom_exchange_v1) ---
+    /// Identity + protocol/feature versions, for the driver's own handshake.
+    CoordWhoAmI,
+    /// A verified peer's identity tuple and card claims.
+    CoordPeerShow,
+    /// Stage outbound bytes, inert and idempotent on their content digest.
+    CoordStage,
+    /// The status and digests of a staged contract.
+    CoordStageShow,
+    /// One-shot: consume a consent receipt and dispatch the staged bytes.
+    CoordDispatch,
+    /// The verification status of a dispatched task.
+    CoordTaskStatus,
+    /// Durable cursored coordination events.
+    CoordEventsRead,
+    /// `FederationCapabilityEvidence` for a peer.
+    CoordCapabilityEvidence,
 }
 
 impl ControlOp {
@@ -107,6 +141,14 @@ impl ControlOp {
             | ControlOp::SubmitResult
             | ControlOp::ReferenceEvidence
             | ControlOp::RequestProcessorCall => Surface::Worker,
+            ControlOp::CoordWhoAmI
+            | ControlOp::CoordPeerShow
+            | ControlOp::CoordStage
+            | ControlOp::CoordStageShow
+            | ControlOp::CoordDispatch
+            | ControlOp::CoordTaskStatus
+            | ControlOp::CoordEventsRead
+            | ControlOp::CoordCapabilityEvidence => Surface::Coord,
             _ => Surface::Admin,
         }
     }
@@ -147,6 +189,9 @@ impl Problem {
             detail: Some(
                 match surface {
                     Surface::Worker => "the worker surface cannot perform admin operations",
+                    // Names the surface and nothing else: a refusal must not
+                    // tell a coordination driver which ops exist elsewhere.
+                    Surface::Coord => "the coordination surface cannot perform this operation",
                     Surface::Admin => "operation not permitted",
                 }
                 .to_owned(),
