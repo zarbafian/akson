@@ -16,7 +16,19 @@ RestartSec=2
 # The clean-worker sandbox needs a delegated cgroup v2 subtree (memory, pids).
 Delegate=yes
 RuntimeDirectory=akson
-RuntimeDirectoryMode=0700
+# 0710 (not 0700): the coordination driver's identity must TRAVERSE this
+# directory to reach coord.sock. It cannot list it, and the socket's own
+# SO_PEERCRED check — not the mode — is the boundary (ADR-0016).
+RuntimeDirectoryMode=0710
+Group=akson
+# The driver's numeric UID, so the daemon binds coord.sock at all. Unset ⇒
+# the socket is never created (ADR-0016's "absent rather than guarded") — the
+# correct default: a host with no driver should not expose the surface.
+# systemd has no specifier for another user's UID, so the installer
+# substitutes it, and deploy/verify.sh reports whether it is set:
+#   sudo systemctl edit akson-daemon.service
+#   [Service] Environment=AKSON_COORD_UID=<id -u akson-coord>
+# Environment=AKSON_COORD_UID=
 StateDirectory=akson
 StateDirectoryMode=0700
 Environment=AKSON_RUNTIME_DIR=/run/akson

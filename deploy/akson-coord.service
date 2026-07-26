@@ -17,7 +17,10 @@ RestartSec=2
 # It reaches exactly one thing: the coordination socket. The daemon's
 # AKSON_COORD_UID names this identity, so admission is an OS access domain.
 Environment=AKSON_RUNTIME_DIR=/run/akson
-SupplementaryGroups=akson-coord
+# Membership in the daemon's group is what lets this identity TRAVERSE
+# /run/akson (mode 0710, owned akson:akson) to reach coord.sock. Traversal is
+# not authorization — the socket's SO_PEERCRED check is (ADR-0016).
+SupplementaryGroups=akson
 
 # --- hardening: stricter than the daemon, since it needs no namespaces -----
 NoNewPrivileges=yes

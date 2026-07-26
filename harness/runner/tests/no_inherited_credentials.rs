@@ -19,6 +19,9 @@
 //!
 //!   cargo test -p akson-harness --test no_inherited_credentials -- --ignored --nocapture
 
+// A test asserts; a panic IS the failure signal (as in `clean_worker_e2e`).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use akson_sandbox::{
     BubblewrapLauncher, CgroupLimits, CgroupScope, DenyAction, SandboxLauncher, SandboxSpec,
     SeccompPolicy,

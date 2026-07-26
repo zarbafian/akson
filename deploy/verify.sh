@@ -21,6 +21,18 @@ mkdir -p "$XDG_RUNTIME_DIR" "$AKSON_DATA_DIR" 2>/dev/null
 "$AKSON" doctor; doctor_rc=$?
 echo "  akson doctor exit: $doctor_rc"
 
+echo "== coordination surface (ADR-0016)"
+if grep -q '^Environment=AKSON_COORD_UID=[0-9]' deploy/akson-daemon.service 2>/dev/null; then
+  echo "  AKSON_COORD_UID is set — coord.sock will be bound for that identity"
+else
+  echo "  AKSON_COORD_UID is NOT set — coord.sock is deliberately absent on this host."
+  echo "  A host running the C4 driver must substitute it:"
+  echo "    sudo systemctl edit akson-daemon.service   # Environment=AKSON_COORD_UID=\$(id -u akson-coord)"
+fi
+grep -q '^RuntimeDirectoryMode=0710' deploy/akson-daemon.service \
+  && echo "  runtime dir is 0710 — the driver's group can traverse, not list" \
+  || echo "  WARNING: runtime dir mode does not permit the driver to traverse to coord.sock"
+
 echo "== directives this profile deliberately omits (and why)"
 grep -E '^# (PrivateUsers|RestrictNamespaces|ProtectKernelTunables|SystemCallFilter|ProtectControlGroups|IPAddressDeny)' \
   deploy/akson-daemon.service | sed 's/^# /  /'
