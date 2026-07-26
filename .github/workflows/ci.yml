@@ -213,6 +213,9 @@ jobs:
           # manifest digest; the manifest holds the tree's commit.
           pin_sha=$(python3 -c "import json;print(json.load(open('consumer/spec/family-lock.pin.json'))['manifest_sha256'])")
           echo "vendored pin expects manifest sha256 $pin_sha"
-          test "$pin_sha" = "fb7282c0f3af47a2fb6e288eaefc1bb8656f00bf6a80839c6fd81e2b8eac2de7" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
+          # This constant is a second copy of the family manifest digest. The
+          # program's plan/check-dag.py asserts it equals the manifest, so a
+          # re-pin that forgets this file fails there rather than here.
+          test "$pin_sha" = "90cfcfdca35542af7b330ecefdb052cd8801ded4a9b4b32add1ffca48d3ed100" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
           test "$(git rev-parse HEAD)" = "b3a8f4ad96c6992e029080faec93837a1fedeb40" || { echo "checked-out byom tree is not the locked commit"; exit 1; }
       - run: python3 family-vectors/xcheck.py
