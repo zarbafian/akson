@@ -5,8 +5,19 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-AKSOND="${AKSOND:-target/debug/aksond}"
-AKSON="${AKSON:-target/debug/akson}"
+# Default to wherever cargo actually builds. `.cargo/config.toml` can redirect
+# `build.target-dir` off this filesystem, in which case a hardcoded
+# "target/debug" points at nothing — so ask cargo, and let the caller override.
+cargo_target_dir() {
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then printf '%s\n' "$CARGO_TARGET_DIR"; return 0; fi
+  cargo metadata --format-version 1 --no-deps 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null &&
+    return 0
+  printf '%s\n' "target"
+}
+TARGET_DIR="$(cargo_target_dir)"
+AKSOND="${AKSOND:-$TARGET_DIR/debug/aksond}"
+AKSON="${AKSON:-$TARGET_DIR/debug/akson}"
 [ -x "$AKSON" ] || { echo "verify: build first (cargo build -p aksond -p akson-cli)"; exit 2; }
 
 echo "== host sandbox preconditions"

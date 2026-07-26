@@ -16,7 +16,21 @@ trap 'kill "${SERVE_PID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 echo "building akson-harness..."
 cargo build -q -p akson-harness --manifest-path "$ROOT/Cargo.toml"
-BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/akson-harness"
+
+# Where cargo actually put it. CARGO_TARGET_DIR is only one of the ways a build
+# gets redirected — `.cargo/config.toml`'s `build.target-dir` is another, and
+# this repo uses it to keep targets off the root filesystem. Guessing
+# "$ROOT/target" made this script fail looking for a binary cargo never wrote
+# there, so ask cargo instead of assuming.
+cargo_target_dir() {
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then printf '%s\n' "$CARGO_TARGET_DIR"; return 0; fi
+  cargo metadata --format-version 1 --no-deps --manifest-path "$ROOT/Cargo.toml" 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null &&
+    return 0
+  printf '%s\n' "$ROOT/target"
+}
+BIN="$(cargo_target_dir)/debug/akson-harness"
+[ -x "$BIN" ] || { echo "scenario-pairing: no akson-harness binary at $BIN" >&2; exit 2; }
 
 echo "endpoint-b: writing its identity token (the out-of-band exchange)"
 "$BIN" token --seed 2 --token-out "$WORK/b.token"
