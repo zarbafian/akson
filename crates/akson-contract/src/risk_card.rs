@@ -205,10 +205,7 @@ impl RiskCard {
         // The identity that AUTHORIZES is the root, not the self-declared
         // name: two same-named requesters must be distinguishable on the very
         // surface the human approves from (ADR-0014, sec5 review).
-        let sentence = format!(
-            "{sentence}\nRequester root: {}",
-            self.who.requester.root
-        );
+        let sentence = format!("{sentence}\nRequester root: {}", self.who.requester.root);
 
         let mut what_leaves: Vec<String> = inputs
             .iter()

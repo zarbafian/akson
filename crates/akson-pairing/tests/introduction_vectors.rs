@@ -185,8 +185,8 @@ fn check_proof(name: &str, input: &Value, expected: &Value) {
         .iter()
         .map(|e| e["uri"].as_str().unwrap().to_owned())
         .collect();
-    let now = time::OffsetDateTime::from_unix_timestamp(input["now_unix"].as_i64().unwrap())
-        .unwrap();
+    let now =
+        time::OffsetDateTime::from_unix_timestamp(input["now_unix"].as_i64().unwrap()).unwrap();
     let verified = verify_introduction(
         signer_root,
         &t,
@@ -227,5 +227,8 @@ fn introduction_vectors() {
             check_transcript(&name, input, expected);
         }
     }
-    assert!(count >= 5, "expected the full introduction vector set, ran {count}");
+    assert!(
+        count >= 5,
+        "expected the full introduction vector set, ran {count}"
+    );
 }

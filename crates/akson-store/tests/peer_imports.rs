@@ -39,7 +39,8 @@ fn import_roundtrip_and_label_resolution() {
 #[test]
 fn duplicate_root_is_reported_never_overwritten() {
     let s = store();
-    s.add_peer_import(ROOT_A, "dana-claude", "a:1", 100).unwrap();
+    s.add_peer_import(ROOT_A, "dana-claude", "a:1", 100)
+        .unwrap();
     assert_eq!(
         s.add_peer_import(ROOT_A, "other-name", "b:2", 200).unwrap(),
         ImportOutcome::DuplicateRoot
@@ -90,7 +91,8 @@ fn re_add_after_removal_is_a_new_epoch() {
     s.add_peer_import(ROOT_A, "claude", "a:1", 100).unwrap();
     s.remove_peer_import(ROOT_A, 150).unwrap();
     assert_eq!(
-        s.add_peer_import(ROOT_A, "claude-again", "a:9", 300).unwrap(),
+        s.add_peer_import(ROOT_A, "claude-again", "a:9", 300)
+            .unwrap(),
         ImportOutcome::Added
     );
     let revived = s.peer_import(ROOT_A).unwrap().unwrap();
@@ -107,11 +109,15 @@ fn update_refreshes_label_and_hint_but_never_epoch() {
     s.add_peer_import(ROOT_A, "claude", "a:1", 100).unwrap();
     s.add_peer_import(ROOT_B, "sam", "b:1", 100).unwrap();
     assert_eq!(
-        s.update_peer_import(ROOT_A, Some("dana"), Some("a:2")).unwrap(),
+        s.update_peer_import(ROOT_A, Some("dana"), Some("a:2"))
+            .unwrap(),
         ImportOutcome::Updated
     );
     let row = s.peer_import(ROOT_A).unwrap().unwrap();
-    assert_eq!((row.label.as_str(), row.endpoint_hint.as_str()), ("dana", "a:2"));
+    assert_eq!(
+        (row.label.as_str(), row.endpoint_hint.as_str()),
+        ("dana", "a:2")
+    );
     assert_eq!(row.epoch, 1);
     // Renaming onto another live import's label is refused...
     assert_eq!(
@@ -134,14 +140,20 @@ fn update_refreshes_label_and_hint_but_never_epoch() {
 #[test]
 fn knocks_dedupe_count_and_order() {
     let s = store();
-    s.record_knock(ROOT_A, "203.0.113.5", "not-imported", 100).unwrap();
-    s.record_knock(ROOT_A, "203.0.113.5", "not-imported", 130).unwrap();
-    s.record_knock(ROOT_B, "203.0.113.6", "bad-version", 120).unwrap();
+    s.record_knock(ROOT_A, "203.0.113.5", "not-imported", 100)
+        .unwrap();
+    s.record_knock(ROOT_A, "203.0.113.5", "not-imported", 130)
+        .unwrap();
+    s.record_knock(ROOT_B, "203.0.113.6", "bad-version", 120)
+        .unwrap();
     let knocks = s.knocks().unwrap();
     assert_eq!(knocks.len(), 2);
     // Most recent first.
     assert_eq!(knocks[0].claimed_root, ROOT_A);
-    assert_eq!((knocks[0].count, knocks[0].first_at, knocks[0].last_at), (2, 100, 130));
+    assert_eq!(
+        (knocks[0].count, knocks[0].first_at, knocks[0].last_at),
+        (2, 100, 130)
+    );
     assert_eq!(knocks[1].count, 1);
 }
 
@@ -149,15 +161,18 @@ fn knocks_dedupe_count_and_order() {
 fn knock_log_is_capped_but_known_triples_still_count() {
     let s = store();
     for i in 0..1024 {
-        s.record_knock(ROOT_A, &format!("src-{i}"), "not-imported", i).unwrap();
+        s.record_knock(ROOT_A, &format!("src-{i}"), "not-imported", i)
+            .unwrap();
     }
     // A new triple at the cap is dropped...
-    s.record_knock(ROOT_B, "overflow", "not-imported", 5000).unwrap();
+    s.record_knock(ROOT_B, "overflow", "not-imported", 5000)
+        .unwrap();
     let knocks = s.knocks().unwrap();
     assert_eq!(knocks.len(), 1024);
     assert!(knocks.iter().all(|k| k.claimed_root == ROOT_A));
     // ...while an existing one still counts up.
-    s.record_knock(ROOT_A, "src-7", "not-imported", 6000).unwrap();
+    s.record_knock(ROOT_A, "src-7", "not-imported", 6000)
+        .unwrap();
     let bumped = s
         .knocks()
         .unwrap()
@@ -205,7 +220,8 @@ fn commit_pins_an_active_peer_with_keys_under_the_root() {
     s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
     let peer = introduced_peer("claude", 3);
     assert_eq!(
-        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200)
+            .unwrap(),
         IntroCommitOutcome::Committed
     );
     assert_eq!(s.peer_status("claude").unwrap(), Some(PeerStatus::Active));
@@ -216,7 +232,8 @@ fn commit_pins_an_active_peer_with_keys_under_the_root() {
     assert_eq!(pk.agent_id, "claude");
     // Re-introducing identical material is idempotent.
     assert_eq!(
-        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 300).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 300)
+            .unwrap(),
         IntroCommitOutcome::AlreadyActive
     );
 }
@@ -226,7 +243,8 @@ fn commit_without_an_import_writes_nothing() {
     let s = store();
     let peer = introduced_peer("claude", 3);
     assert_eq!(
-        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200)
+            .unwrap(),
         IntroCommitOutcome::NotImported
     );
     assert!(s.peer_status("claude").unwrap().is_none());
@@ -242,13 +260,15 @@ fn a_removal_racing_the_handshake_fails_the_cas() {
     s.add_peer_import(ROOT_A, "dana", "a:1", 160).unwrap();
     let peer = introduced_peer("claude", 3);
     assert_eq!(
-        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200)
+            .unwrap(),
         IntroCommitOutcome::EpochChanged
     );
     assert!(s.peer_status("claude").unwrap().is_none());
     // Under the current epoch it commits.
     assert_eq!(
-        s.commit_introduced_peer(ROOT_A, 2, &peer, &some_keys(), 210).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 2, &peer, &some_keys(), 210)
+            .unwrap(),
         IntroCommitOutcome::Committed
     );
 }
@@ -258,11 +278,13 @@ fn changed_material_suspends_and_stays_suspended() {
     let s = store();
     s.add_peer_import(ROOT_A, "dana", "a:1", 100).unwrap();
     let peer = introduced_peer("claude", 3);
-    s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200).unwrap();
+    s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 200)
+        .unwrap();
     // Same root, different TLS certificate — §8.4: suspend, never re-pin.
     let changed = introduced_peer("claude", 4);
     assert!(matches!(
-        s.commit_introduced_peer(ROOT_A, 1, &changed, &some_keys(), 300).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &changed, &some_keys(), 300)
+            .unwrap(),
         IntroCommitOutcome::Suspended(_)
     ));
     assert!(matches!(
@@ -271,7 +293,8 @@ fn changed_material_suspends_and_stays_suspended() {
     ));
     // Even the ORIGINAL material cannot silently reactivate a suspended peer.
     assert!(matches!(
-        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 400).unwrap(),
+        s.commit_introduced_peer(ROOT_A, 1, &peer, &some_keys(), 400)
+            .unwrap(),
         IntroCommitOutcome::Suspended(_)
     ));
 }
@@ -325,8 +348,14 @@ fn a_renamed_subject_under_the_same_root_suspends_not_forks() {
     s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude", 3), &some_keys(), 200)
         .unwrap();
     assert!(matches!(
-        s.commit_introduced_peer(ROOT_A, 1, &introduced_peer("claude-two", 3), &some_keys(), 300)
-            .unwrap(),
+        s.commit_introduced_peer(
+            ROOT_A,
+            1,
+            &introduced_peer("claude-two", 3),
+            &some_keys(),
+            300
+        )
+        .unwrap(),
         IntroCommitOutcome::Suspended(_)
     ));
     // The EXISTING relationship suspended; no second active row appeared.
@@ -360,7 +389,10 @@ fn remove_relationship_is_one_transaction_and_total() {
     assert!(s.peer_import(ROOT_A).unwrap().is_none());
     assert!(s.peer_status("claude").unwrap().is_none());
     assert!(s
-        .peer_key(&introduced_peer("claude", 3).identity.tls_cert.value, "contract-proposal")
+        .peer_key(
+            &introduced_peer("claude", 3).identity.tls_cert.value,
+            "contract-proposal"
+        )
         .unwrap()
         .is_none());
     assert!(s.auto_approve_for_root(ROOT_A).unwrap().is_none());

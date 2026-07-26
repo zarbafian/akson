@@ -121,7 +121,9 @@ impl DaemonConfig {
         let interface_url = env_nonempty("AKSON_INTERFACE_URL").unwrap_or_else(|| {
             let addr = receive_addr.as_deref().unwrap_or("127.0.0.1:18443");
             // A wildcard bind cannot be advertised; fall back to loopback.
-            let advertised = addr.replace("0.0.0.0", "127.0.0.1").replace("[::]", "[::1]");
+            let advertised = addr
+                .replace("0.0.0.0", "127.0.0.1")
+                .replace("[::]", "[::1]");
             format!("https://{advertised}/a2a")
         });
         let worker_command = env_nonempty("AKSON_WORKER_CMD");
@@ -225,7 +227,9 @@ impl DaemonState {
     fn resolve_performer(&self, performer: &str) -> Result<Option<(String, String)>, Problem> {
         let import = {
             let store = self.store.lock().map_err(|_| internal())?;
-            let Some(import) = store.peer_import_by_label(performer).map_err(|_| internal())?
+            let Some(import) = store
+                .peer_import_by_label(performer)
+                .map_err(|_| internal())?
             else {
                 // Labels are the ONLY send addressing (sec5 review): a bare
                 // agent name would resolve by an attacker-influenced string
@@ -564,9 +568,7 @@ impl DaemonState {
                         )
                         .await
                         .map_err(|_| {
-                            crate::introduce::IntroduceError::Http(
-                                "introduction timed out".into(),
-                            )
+                            crate::introduce::IntroduceError::Http("introduction timed out".into())
                         })?
                     })
                     .map_err(|e| match e {
@@ -1352,10 +1354,15 @@ mod tests {
                     .unwrap();
             }
             store
-                .put_peer_key("req-fp",
+                .put_peer_key(
+                    "req-fp",
                     "contract-proposal",
                     "requester",
-                    "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NOW)
+                    "iss",
+                    &proposal_key().verifying().to_public_bytes(),
+                    "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    NOW,
+                )
                 .unwrap();
             submit_one(&store)
         };

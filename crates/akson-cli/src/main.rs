@@ -150,7 +150,10 @@ fn toml_basic_string(value: &str) -> Result<String, String> {
     if value.chars().any(|c| c.is_control()) {
         return Err("value contains a control character".to_owned());
     }
-    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+    Ok(format!(
+        "\"{}\"",
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
 }
 
 /// Resolve a well-known system tool to an absolute path in a trusted directory,
@@ -314,7 +317,10 @@ fn mcp_install(harness: &str) -> ExitCode {
                 Ok(t) => t,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(e) => {
-                    eprintln!("akson: cannot read {} ({e}); leaving it untouched", config.display());
+                    eprintln!(
+                        "akson: cannot read {} ({e}); leaving it untouched",
+                        config.display()
+                    );
                     return ExitCode::from(2);
                 }
             };
@@ -337,7 +343,9 @@ fn mcp_install(harness: &str) -> ExitCode {
             ) {
                 (Ok(c), Ok(r)) => (c, r),
                 _ => {
-                    eprintln!("akson: the binary path or XDG_RUNTIME_DIR contains a control character");
+                    eprintln!(
+                        "akson: the binary path or XDG_RUNTIME_DIR contains a control character"
+                    );
                     return ExitCode::from(2);
                 }
             };
@@ -417,7 +425,9 @@ fn service_install_system(user: Option<String>) -> ExitCode {
     };
     if target.is_empty()
         || target.len() > 32
-        || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         eprintln!("akson: --user must be a plain system user name");
         return ExitCode::from(2);
@@ -438,7 +448,12 @@ fn service_install_system(user: Option<String>) -> ExitCode {
             .output()
             .ok()
             .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            })
     });
     match resolved_uid {
         Some(0) => {
@@ -458,7 +473,10 @@ fn service_install_system(user: Option<String>) -> ExitCode {
     // also the conventional home for a system daemon. The source is the aksond
     // beside this CLI; root already executed this CLI from that tree under sudo,
     // so trusting its sibling is the same trust the operator just exercised.
-    let src = match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("aksond"))) {
+    let src = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("aksond")))
+    {
         Some(p) if p.is_file() => p,
         _ => {
             eprintln!("akson: could not find aksond next to this CLI — build it: cargo build --release -p aksond");
@@ -661,9 +679,7 @@ fn token() -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
-    println!(
-        "  identity token (public — hand this to whoever you want to work with):\n"
-    );
+    println!("  identity token (public — hand this to whoever you want to work with):\n");
     println!("  {}\n", result["presentation"].as_str().unwrap_or("?"));
     println!(
         "  root key  {}   (full thumbprint; compare over a second channel if unsure)",
@@ -1753,7 +1769,9 @@ fn spawn_demo_daemon(
     if let Some(w) = worker {
         cmd.env("AKSON_WORKER_CMD", w);
     }
-    let child = cmd.spawn().map_err(|e| format!("cannot start aksond: {e}"))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start aksond: {e}"))?;
     let mut daemon = DemoDaemon { child, runtime_dir };
     // Wait for the admin socket to answer — but stop early if the daemon
     // exited (e.g. its receive port was squatted; the bind is fatal, sec6
@@ -1813,8 +1831,14 @@ fn run_demo() -> Result<(), String> {
     println!("\n2. exchanging identity tokens (the out-of-band step, done for you):");
     let bob_token = bob.call(&ControlRequest::Token)?;
     let alice_token = alice.call(&ControlRequest::Token)?;
-    let bob_line = bob_token["presentation"].as_str().unwrap_or_default().to_owned();
-    let alice_line = alice_token["presentation"].as_str().unwrap_or_default().to_owned();
+    let bob_line = bob_token["presentation"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let alice_line = alice_token["presentation"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     println!("   bob's line:   {bob_line}");
     println!("   alice's line: {alice_line}");
 
@@ -1838,7 +1862,10 @@ fn run_demo() -> Result<(), String> {
     let ping = alice.call(&ControlRequest::PeerPing {
         label: "bob".to_owned(),
     })?;
-    println!("   introduced: {}", ping["introduced"].as_str().unwrap_or("?"));
+    println!(
+        "   introduced: {}",
+        ping["introduced"].as_str().unwrap_or("?")
+    );
 
     println!("\n5. alice sends a code-review task to \"bob\" (her label):");
     let spec = TaskSpec {
@@ -1867,7 +1894,13 @@ fn run_demo() -> Result<(), String> {
         task_id: task_id.clone(),
     })?;
     println!("   the risk card says:");
-    println!("     {}", card["sentence"].as_str().unwrap_or("?").replace('\n', "\n     "));
+    println!(
+        "     {}",
+        card["sentence"]
+            .as_str()
+            .unwrap_or("?")
+            .replace('\n', "\n     ")
+    );
     if let Some(label) = card["requester_label"].as_str() {
         println!("     (bob's label for this requester: {label})");
     }

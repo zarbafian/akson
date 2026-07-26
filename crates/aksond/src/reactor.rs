@@ -129,9 +129,7 @@ fn auto_approve_if_allowed(
     if requester.identity.agent_id != contract.requester.agent {
         return false;
     }
-    if store.peer_status_by_root(&root).ok().flatten()
-        != Some(akson_store::PeerStatus::Active)
-    {
+    if store.peer_status_by_root(&root).ok().flatten() != Some(akson_store::PeerStatus::Active) {
         return false;
     }
     let Ok(Some(policy)) = store.auto_approve_for_root(&root) else {

@@ -421,10 +421,15 @@ mod tests {
             })
             .unwrap();
         store
-            .put_peer_key(REQ_TLS,
+            .put_peer_key(
+                REQ_TLS,
                 "contract-proposal",
                 "requester",
-                "iss", &proposal_key().verifying().to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NOW)
+                "iss",
+                &proposal_key().verifying().to_public_bytes(),
+                "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                NOW,
+            )
             .unwrap();
         let sha = {
             use sha2::Digest;

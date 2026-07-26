@@ -39,8 +39,14 @@ fn token_vectors() {
             match case["expect"].as_str().unwrap() {
                 "valid" => {
                     let t = decode_token(input).unwrap_or_else(|e| panic!("{name}: {e}"));
-                    assert_eq!(u32::from(t.version), case["version"].as_u64().unwrap() as u32);
-                    assert_eq!(hex::encode(t.root_key), case["root_key_hex"].as_str().unwrap());
+                    assert_eq!(
+                        u32::from(t.version),
+                        case["version"].as_u64().unwrap() as u32
+                    );
+                    assert_eq!(
+                        hex::encode(t.root_key),
+                        case["root_key_hex"].as_str().unwrap()
+                    );
                 }
                 "error" => {
                     let err = decode_token(input).expect_err(name);
@@ -57,5 +63,8 @@ fn token_vectors() {
             }
         }
     }
-    assert!(cases_run >= 9, "vectors missing: only {cases_run} cases ran");
+    assert!(
+        cases_run >= 9,
+        "vectors missing: only {cases_run} cases ran"
+    );
 }

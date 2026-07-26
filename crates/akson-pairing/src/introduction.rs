@@ -271,10 +271,7 @@ pub fn build_intro_material(
         let signature = key
             .sign_with(*purpose, |sk| sk.sign(&message))
             .map_err(|e| IntroError::Build(e.to_string()))?;
-        proofs.insert(
-            purpose_name(*purpose),
-            base64_url(&signature.to_bytes()),
-        );
+        proofs.insert(purpose_name(*purpose), base64_url(&signature.to_bytes()));
     }
 
     Ok(IntroMaterial {
@@ -540,9 +537,8 @@ mod tests {
             caps.streaming = Some(true);
         }
         card.signatures.clear();
-        card.signatures.push(
-            card_sig::sign_card(&card, &responder.keys[&KeyPurpose::AgentCard]).unwrap(),
-        );
+        card.signatures
+            .push(card_sig::sign_card(&card, &responder.keys[&KeyPurpose::AgentCard]).unwrap());
         responder.card = card;
         let err = verify_introduction(
             &responder.root,

@@ -147,9 +147,8 @@ pub(crate) fn statement_keys(state: &DaemonState) -> BTreeMap<KeyPurpose, Purpos
 /// extension set (design §10.1). A fixed, valid set cannot fail to build.
 pub fn intro_profile() -> ProfileConfig {
     let uris = akson_ext::namespace::required_extension_uris();
-    ProfileConfig::new(uris.into_iter().collect()).unwrap_or_else(|_| {
-        unreachable!("the required extension set is non-empty by construction")
-    })
+    ProfileConfig::new(uris.into_iter().collect())
+        .unwrap_or_else(|_| unreachable!("the required extension set is non-empty by construction"))
 }
 
 /// The transcript for `role`'s proofs on this session. `key_binding_sha256`
@@ -178,9 +177,7 @@ fn transcript(
 }
 
 /// The verified counterparty's verification keys as the store retains them.
-fn binding_keys(
-    bindings: &akson_pairing::key_binding::KeyBindingSet,
-) -> Vec<(String, [u8; 32])> {
+fn binding_keys(bindings: &akson_pairing::key_binding::KeyBindingSet) -> Vec<(String, [u8; 32])> {
     bindings
         .keys
         .iter()
@@ -350,7 +347,11 @@ fn respond_introduction_inner(
                 return (refused(), true);
             }
             if hello.target_root != me.own_root || !plausible {
-                let class = if plausible { "wrong-target" } else { "malformed" };
+                let class = if plausible {
+                    "wrong-target"
+                } else {
+                    "malformed"
+                };
                 let _ = store.record_knock(&claim, source, class, now_unix);
                 return (refused(), true);
             }
@@ -425,7 +426,8 @@ fn respond_introduction_inner(
             exporter,
             &hello.nonce,
         );
-        let now = OffsetDateTime::from_unix_timestamp(now_unix).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+        let now =
+            OffsetDateTime::from_unix_timestamp(now_unix).unwrap_or(OffsetDateTime::UNIX_EPOCH);
         let verified = match verify_introduction(
             &hello.claimed_root,
             &t,
@@ -642,7 +644,9 @@ pub async fn dial_introduction(
     if !ack.ok {
         // An authenticated responder declined to commit — do NOT activate
         // one-sidedly (slice-2 security review).
-        return Err(IntroduceError::Verify("the peer declined the introduction".into()));
+        return Err(IntroduceError::Verify(
+            "the peer declined the introduction".into(),
+        ));
     }
 
     // Commit under the epoch this dial started from; a racing removal refuses.
@@ -654,7 +658,9 @@ pub async fn dial_introduction(
         local_note: String::new(),
     };
     let outcome = {
-        let store = store.lock().map_err(|_| IntroduceError::Store("poisoned".into()))?;
+        let store = store
+            .lock()
+            .map_err(|_| IntroduceError::Store("poisoned".into()))?;
         store
             .commit_introduced_peer(
                 &import.root_thumbprint,

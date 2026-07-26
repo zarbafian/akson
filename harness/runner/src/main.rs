@@ -34,8 +34,7 @@ use akson_store::envelope::Kek;
 use akson_store::{ExternalCheckpoint, Store};
 use akson_transport::tls::bootstrap_server_config;
 use aksond::{
-    dial_introduction, intro_profile, serve_receive, IntroIdentity, ReceiveState,
-    StorePeerResolver,
+    dial_introduction, intro_profile, serve_receive, IntroIdentity, ReceiveState, StorePeerResolver,
 };
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;

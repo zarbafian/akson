@@ -21,8 +21,8 @@ use akson_store::envelope::Kek;
 use akson_store::{ExternalCheckpoint, IntroCommitOutcome, PeerStatus, Store};
 use akson_transport::tls::bootstrap_server_config;
 use aksond::{
-    dial_introduction, intro_profile, serve_receive, IntroIdentity, IntroduceError,
-    ReceiveState, StorePeerResolver,
+    dial_introduction, intro_profile, serve_receive, IntroIdentity, IntroduceError, ReceiveState,
+    StorePeerResolver,
 };
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
@@ -61,7 +61,8 @@ fn signed_card(agent: &str, card_key: &PurposeKey) -> AgentCard {
         "securityRequirements": [{ "schemes": { "mtls": { "list": [] } } }],
     }))
     .unwrap();
-    card.signatures.push(card_sig::sign_card(&card, card_key).unwrap());
+    card.signatures
+        .push(card_sig::sign_card(&card, card_key).unwrap());
     card
 }
 
@@ -142,7 +143,12 @@ async fn mutual_import_introduces_and_pins_both_sides() {
     store_a
         .lock()
         .unwrap()
-        .add_peer_import(&bob.own_root, "bob-codex", &format!("127.0.0.1:{port}"), now_unix)
+        .add_peer_import(
+            &bob.own_root,
+            "bob-codex",
+            &format!("127.0.0.1:{port}"),
+            now_unix,
+        )
         .unwrap();
     let import = store_a
         .lock()
@@ -201,7 +207,12 @@ async fn an_unimported_dialer_is_refused_generically_and_knocks() {
     store_m
         .lock()
         .unwrap()
-        .add_peer_import(&bob.own_root, "target", &format!("127.0.0.1:{port}"), now_unix)
+        .add_peer_import(
+            &bob.own_root,
+            "target",
+            &format!("127.0.0.1:{port}"),
+            now_unix,
+        )
         .unwrap();
     let import = store_m
         .lock()
@@ -279,7 +290,11 @@ fn removal_between_flights_refuses_the_stale_handshake() {
         &serde_json::to_vec(&hello).unwrap(),
         now,
     );
-    assert_eq!((code, close), (200, false), "hello admits, connection stays");
+    assert_eq!(
+        (code, close),
+        (200, false),
+        "hello admits, connection stays"
+    );
 
     // The operator removes AND re-adds between the flights: the import is
     // live again — under a new epoch.
@@ -328,8 +343,17 @@ fn removal_between_flights_refuses_the_stale_handshake() {
         &serde_json::to_vec(&material).unwrap(),
         now + 3,
     );
-    assert_eq!((code, close), (403, true), "stale handshake must not commit");
-    assert!(store_b.lock().unwrap().peer_status("alice").unwrap().is_none());
+    assert_eq!(
+        (code, close),
+        (403, true),
+        "stale handshake must not commit"
+    );
+    assert!(store_b
+        .lock()
+        .unwrap()
+        .peer_status("alice")
+        .unwrap()
+        .is_none());
 
     // The connection is terminal: another hello on it refuses too.
     let (code, _, _, close) = respond_introduction(
@@ -414,10 +438,30 @@ fn refusal_vectors_pin_the_wire_shapes() {
     // one generic shape, byte for byte.
     let triggers: Vec<(&str, &str, &str, Vec<u8>)> = vec![
         ("bad-method", HELLO_PATH, "GET", hello_body(&alice.own_root)),
-        ("bad-media-type", HELLO_PATH, "POST", hello_body(&alice.own_root)),
-        ("not-imported", HELLO_PATH, "POST", hello_body(&mallory.own_root)),
-        ("unknown-path", "/akson/introduce/v1/nope", "POST", hello_body(&alice.own_root)),
-        ("complete-without-hello", COMPLETE_PATH, "POST", b"{}".to_vec()),
+        (
+            "bad-media-type",
+            HELLO_PATH,
+            "POST",
+            hello_body(&alice.own_root),
+        ),
+        (
+            "not-imported",
+            HELLO_PATH,
+            "POST",
+            hello_body(&mallory.own_root),
+        ),
+        (
+            "unknown-path",
+            "/akson/introduce/v1/nope",
+            "POST",
+            hello_body(&alice.own_root),
+        ),
+        (
+            "complete-without-hello",
+            COMPLETE_PATH,
+            "POST",
+            b"{}".to_vec(),
+        ),
     ];
     for (trigger, path, method, body) in triggers {
         let pending = PendingIntro::default();
@@ -440,8 +484,18 @@ fn refusal_vectors_pin_the_wire_shapes() {
             now,
         );
         assert_eq!(
-            (code, ct.as_str(), String::from_utf8(out).unwrap().as_str(), close),
-            (generic_status, generic_ct.as_str(), generic_body.as_str(), true),
+            (
+                code,
+                ct.as_str(),
+                String::from_utf8(out).unwrap().as_str(),
+                close
+            ),
+            (
+                generic_status,
+                generic_ct.as_str(),
+                generic_body.as_str(),
+                true
+            ),
             "trigger {trigger} must produce the exact generic refusal"
         );
     }
@@ -516,7 +570,12 @@ fn refusal_vectors_pin_the_wire_shapes() {
     assert_eq!(code, 200, "an active peer's hello still admits");
     let (code, ct, out, close) = run(COMPLETE_PATH, &pending, &complete(&changed));
     assert_eq!(
-        (code, ct.as_str(), String::from_utf8(out).unwrap().as_str(), close),
+        (
+            code,
+            ct.as_str(),
+            String::from_utf8(out).unwrap().as_str(),
+            close
+        ),
         (susp_status, susp_ct.as_str(), susp_body.as_str(), true),
         "changed material must produce the exact peer-suspended problem"
     );

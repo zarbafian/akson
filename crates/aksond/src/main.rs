@@ -11,8 +11,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use aksond::{
-    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve,
-    socket_dir, worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
+    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve, socket_dir,
+    worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
 };
 
 /// `aksond init` (design §16.4): create the data directory and bootstrap this

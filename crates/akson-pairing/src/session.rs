@@ -129,7 +129,7 @@ mod tests {
     use akson_crypto::jwk::Ed25519PublicJwk;
     use ed25519_dalek::SigningKey;
     use time::OffsetDateTime;
-    
+
     const TLS: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn now() -> OffsetDateTime {

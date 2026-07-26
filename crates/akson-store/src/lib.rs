@@ -725,7 +725,10 @@ impl Store {
 
     /// The pinned peer behind a root — the production lookup (peers key by
     /// root since the cutover; names are display).
-    pub fn get_peer_by_root(&self, root_thumbprint: &str) -> Result<Option<StoredPeer>, StoreError> {
+    pub fn get_peer_by_root(
+        &self,
+        root_thumbprint: &str,
+    ) -> Result<Option<StoredPeer>, StoreError> {
         let sealed: Option<Vec<u8>> = self
             .conn
             .query_row(
@@ -1317,11 +1320,7 @@ impl Store {
     /// (design §8.2 step 7): an introduction that started under the old epoch
     /// can no longer commit, and the freed label may be reused without
     /// inheriting anything. Returns false if no live import held this root.
-    pub fn remove_peer_import(
-        &self,
-        root_thumbprint: &str,
-        now: i64,
-    ) -> Result<bool, StoreError> {
+    pub fn remove_peer_import(&self, root_thumbprint: &str, now: i64) -> Result<bool, StoreError> {
         let n = self.conn.execute(
             "UPDATE peer_imports
              SET tombstoned_at = ?2, epoch = epoch + 1, label = NULL
@@ -1337,11 +1336,7 @@ impl Store {
     /// drop together — a crash leaves the relationship either fully removed or
     /// fully intact, never half-revoked. Returns false if no live import held
     /// this root (nothing is touched then).
-    pub fn remove_relationship(
-        &self,
-        root_thumbprint: &str,
-        now: i64,
-    ) -> Result<bool, StoreError> {
+    pub fn remove_relationship(&self, root_thumbprint: &str, now: i64) -> Result<bool, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         let removed = self.conn.execute(
             "UPDATE peer_imports
@@ -1525,7 +1520,9 @@ impl Store {
                 self.peer_status_by_root(root_thumbprint)?,
                 Some(PeerStatus::Suspended(_))
             ) {
-                return Ok(IntroCommitOutcome::Suspended("previously-suspended".to_owned()));
+                return Ok(IntroCommitOutcome::Suspended(
+                    "previously-suspended".to_owned(),
+                ));
             }
             true
         } else {
@@ -1573,7 +1570,10 @@ impl Store {
     /// The pinned peer behind a root thumbprint, if an introduction committed
     /// one: `(agent_id, status_column)`. The label → root → peer join the CLI
     /// renders and the send path resolves.
-    pub fn peer_by_root(&self, root_thumbprint: &str) -> Result<Option<(String, String)>, StoreError> {
+    pub fn peer_by_root(
+        &self,
+        root_thumbprint: &str,
+    ) -> Result<Option<(String, String)>, StoreError> {
         self.conn
             .query_row(
                 "SELECT agent_id, status FROM peers WHERE root_thumbprint = ?1",
@@ -3590,10 +3590,15 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let proposal = PurposeKey::from_seed(KeyPurpose::ContractProposal, &[5u8; 32]);
         store
-            .put_peer_key("fp-abc",
+            .put_peer_key(
+                "fp-abc",
                 "contract-proposal",
                 "peer-1",
-                "local", &proposal.verifying().to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
+                "local",
+                &proposal.verifying().to_public_bytes(),
+                "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                100,
+            )
             .unwrap();
         // The proposal key is resolvable by TLS fingerprint + purpose.
         let pk = store
@@ -3615,15 +3620,26 @@ mod tests {
     #[test]
     fn auto_approve_policy_round_trips_and_clears() {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
-        assert!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().is_none());
+        assert!(store
+            .auto_approve_for_root(ROOT_FOR_TEST)
+            .unwrap()
+            .is_none());
         let policy = AutoApprovePolicy {
             task_types: vec!["t/design/v1".to_owned(), "t/review/v1".to_owned()],
             max_response_bytes: 8192,
         };
-        store.put_auto_approve("peer-1", ROOT_FOR_TEST, &policy, 100).unwrap();
-        assert_eq!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().unwrap(), policy);
+        store
+            .put_auto_approve("peer-1", ROOT_FOR_TEST, &policy, 100)
+            .unwrap();
+        assert_eq!(
+            store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().unwrap(),
+            policy
+        );
         assert!(store.delete_auto_approve(ROOT_FOR_TEST).unwrap());
-        assert!(store.auto_approve_for_root(ROOT_FOR_TEST).unwrap().is_none());
+        assert!(store
+            .auto_approve_for_root(ROOT_FOR_TEST)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -3659,7 +3675,15 @@ mod tests {
         store.put_peer(&sample_peer("to be removed")).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("old-fp", "contract-proposal", "agent-a", "iss", &key, "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
+            .put_peer_key(
+                "old-fp",
+                "contract-proposal",
+                "agent-a",
+                "iss",
+                &key,
+                "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                100,
+            )
             .unwrap();
         assert!(store
             .peer_key("old-fp", "contract-proposal")
@@ -3856,7 +3880,15 @@ mod tests {
         let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
         let key = [7u8; 32];
         store
-            .put_peer_key("fp-xyz", "contract-proposal", "peer-1", "local", &key, "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
+            .put_peer_key(
+                "fp-xyz",
+                "contract-proposal",
+                "peer-1",
+                "local",
+                &key,
+                "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                100,
+            )
             .unwrap();
         // The same peer's endpoint cert is found from its identity...
         assert_eq!(

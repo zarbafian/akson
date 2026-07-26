@@ -96,7 +96,10 @@ impl PeerResolver for StorePeerResolver {
         // is a bug, not a peer), so a stale credential can never borrow a
         // same-named root's status (PK-cutover review).
         if pk.root_thumbprint.is_empty()
-            || store.peer_status_by_root(&pk.root_thumbprint).ok().flatten()
+            || store
+                .peer_status_by_root(&pk.root_thumbprint)
+                .ok()
+                .flatten()
                 != Some(PeerStatus::Active)
         {
             return None;
@@ -544,8 +547,10 @@ async fn handle<R: PeerResolver>(
         out.headers_mut().insert(CONTENT_TYPE, value);
     }
     if close {
-        out.headers_mut()
-            .insert(hyper::header::CONNECTION, "close".parse().unwrap_or_else(|_| unreachable!()));
+        out.headers_mut().insert(
+            hyper::header::CONNECTION,
+            "close".parse().unwrap_or_else(|_| unreachable!()),
+        );
     }
     Ok(out)
 }
@@ -554,11 +559,7 @@ async fn handle<R: PeerResolver>(
 /// responder's (ADR-0015: rate-limit and service-off refusals must be
 /// indistinguishable from every other pre-verification refusal).
 fn intro_refused() -> (u16, String, Vec<u8>) {
-    problem(
-        403,
-        "introduction-refused",
-        "the introduction was refused",
-    )
+    problem(403, "introduction-refused", "the introduction was refused")
 }
 
 /// A response that also closes the connection.
@@ -568,8 +569,10 @@ fn close_response(code: u16, content_type: &str, body: Vec<u8>) -> Response<Full
     if let Ok(value) = content_type.parse() {
         out.headers_mut().insert(CONTENT_TYPE, value);
     }
-    out.headers_mut()
-        .insert(hyper::header::CONNECTION, "close".parse().unwrap_or_else(|_| unreachable!()));
+    out.headers_mut().insert(
+        hyper::header::CONNECTION,
+        "close".parse().unwrap_or_else(|_| unreachable!()),
+    );
     out
 }
 
@@ -695,10 +698,15 @@ mod tests {
             })
             .unwrap();
         store
-            .put_peer_key(fp,
+            .put_peer_key(
+                fp,
                 "contract-proposal",
                 agent,
-                "iss", &key.to_public_bytes(), fp, NOW)
+                "iss",
+                &key.to_public_bytes(),
+                fp,
+                NOW,
+            )
             .unwrap();
     }
 
@@ -898,10 +906,15 @@ mod tests {
         let vk = proposal_key().verifying();
         // Pin the key ONLY — no peer row, so peer_status is absent.
         store
-            .put_peer_key("fp-1",
+            .put_peer_key(
+                "fp-1",
                 "contract-proposal",
                 "requester",
-                "iss", &vk.to_public_bytes(), "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100)
+                "iss",
+                &vk.to_public_bytes(),
+                "root-fixture-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                100,
+            )
             .unwrap();
 
         assert!(
