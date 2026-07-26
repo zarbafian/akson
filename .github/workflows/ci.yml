@@ -42,6 +42,88 @@ jobs:
         with:
           command: check licenses advisories bans sources
 
+  # A0.1: the release path (.github/workflows/release.yml) only ever runs on a
+  # tag, so nothing would notice it rotting. This job walks the same first steps
+  # on every push and pull request — same pinned toolchain, same `--locked
+  # --release` build, same digests — and fails if the release path and the
+  # workspace have drifted apart.
+  provenance-dry-run:
+    name: provenance dry-run (release path, nothing published)
+    runs-on: ubuntu-latest
+    env:
+      # release.yml deliberately does not set `-D warnings`; the dry-run has to
+      # be the release build, so it clears the workflow-level RUSTFLAGS.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pinned toolchain
+        id: pin
+        run: |
+          set -euo pipefail
+          channel="$(grep -m1 -E '^ *channel *=' rust-toolchain.toml | cut -d'"' -f2)"
+          test -n "$channel" || { echo "::error::no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.pin.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The active toolchain must be the pinned one
+        run: |
+          set -euo pipefail
+          active="$(rustc --version | cut -d' ' -f2)"
+          pinned="${{ steps.pin.outputs.channel }}"
+          echo "rustc $active (rust-toolchain.toml: $pinned)"
+          [ "$active" = "$pinned" ] || { echo "::error::rustc $active is not the pinned $pinned"; exit 1; }
+
+      # The drift that actually bites: a new adapter, or a renamed binary, that
+      # the release workflow never learns to ship.
+      - name: The artifact manifest must account for every workspace binary
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP"
+          cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] as $p | $p.targets[] | select(.kind | index("bin")) | "\($p.name) \(.name)"' \
+            | LC_ALL=C sort > "$t/actual.txt"
+          grep -vE '^[[:space:]]*(#|$)' .github/release-artifacts.txt > "$t/manifest.txt"
+          awk '/^!/ {print substr($1, 2)}' "$t/manifest.txt" | LC_ALL=C sort > "$t/excluded.txt"
+          awk '!/^!/ {print $1, $2}' "$t/manifest.txt" | LC_ALL=C sort > "$t/shipped.txt"
+          awk 'NR == FNR { ex[$1]; next } !($1 in ex)' "$t/excluded.txt" "$t/actual.txt" > "$t/expected.txt"
+          echo "--- shipped (.github/release-artifacts.txt)"; cat "$t/shipped.txt"
+          echo "--- excluded"; cat "$t/excluded.txt"
+          diff -u "$t/shipped.txt" "$t/expected.txt" || {
+            echo "::error::.github/release-artifacts.txt and the workspace's bin targets disagree — list the binary or exclude it with a reason"
+            exit 1
+          }
+
+      # One artifact is enough to prove the command still works; the release
+      # builds all six the same way.
+      - name: Build one artifact exactly as the release does
+        run: cargo build --locked --release --bins -p akson-cli
+
+      - name: Record the digests the release path would publish
+        run: |
+          set -euo pipefail
+          lock="$(sha256sum Cargo.lock | cut -d' ' -f1)"
+          bin="$(sha256sum target/release/akson | cut -d' ' -f1)"
+          echo "Cargo.lock sha256 = $lock"
+          echo "akson (release) sha256 = $bin"
+          {
+            echo "### provenance dry-run"
+            echo
+            echo "| what | value |"
+            echo "|---|---|"
+            echo "| rustc | \`$(rustc --version)\` |"
+            echo "| host target | \`$(rustc -vV | awk '/^host:/{print $2}')\` |"
+            echo "| Cargo.lock sha256 | \`$lock\` |"
+            echo "| akson (release) sha256 | \`$bin\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The build must not have moved the lockfile
+        run: git diff --exit-code -- Cargo.lock
+
   xcheck:
     name: independent vector cross-check
     runs-on: ubuntu-latest

@@ -1,0 +1,20 @@
+# The A0.1 artifact set: one line per shipped binary, `<package> <binary>`.
+#
+# Single source of truth for two workflows:
+#   * release.yml  builds exactly these, and emits one SBOM per line;
+#   * ci.yml's `provenance-dry-run` asserts that this list plus the `!`
+#     exclusions below accounts for *every* bin target in the workspace — so a
+#     new or renamed binary cannot silently fall out of the release.
+#
+# A line starting with `!` names a package whose binaries are deliberately not
+# shipped. Add one only with a reason.
+
+aksond aksond
+akson-cli akson
+akson-mcp akson-mcp
+akson-adapter-openai akson-adapter-openai
+akson-adapter-anthropic akson-adapter-anthropic
+akson-adapter-gemini akson-adapter-gemini
+
+# Test/bench driver for the harness, not a product surface.
+!akson-harness

@@ -1,0 +1,322 @@
+name: release
+
+# A0.1 (design/a0-evidence.md): pinned release artifacts with an SBOM and build
+# provenance. GOVERNANCE.md promises releases that are signed and carry SBOMs
+# and dependency provenance; this workflow is that promise's mechanism.
+#
+# Push a version tag and this builds the six artifacts named in
+# .github/release-artifacts.txt with `--locked --release` on the toolchain
+# rust-toolchain.toml pins, emits a CycloneDX SBOM per artifact, attests build
+# provenance through GitHub's own Sigstore instance (no external service), and
+# uploads binaries + SBOMs + SHA256SUMS + BUILD-INFO.txt as release assets.
+#
+# The consumer's side of this is docs/verifying-a-release.md. Every digest this
+# workflow publishes is re-derivable from the tagged commit; nothing here is a
+# claim a consumer has to take on trust.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  # A manual run exercises the whole path — build, SBOM, attestation — without
+  # publishing anything. Use it before cutting a tag.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so the SBOM generator is itself reproducible. Bumping this changes
+  # what the SBOMs say; do it deliberately.
+  CYCLONEDX_VERSION: "0.5.9"
+  # Note what is *absent*: ci.yml sets `RUSTFLAGS: -D warnings`, and this
+  # workflow deliberately does not. A release build must not be hostage to lint
+  # drift, and the flags a consumer reproduces with must be the empty default
+  # (docs/verifying-a-release.md builds with no RUSTFLAGS at all).
+
+jobs:
+  release:
+    name: build, SBOM, attest, publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+      id-token: write # OIDC token the attestation is signed against
+      attestations: write # write the provenance attestation
+      actions: read # read this commit's ci conclusion
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------- gates
+
+      - name: Read the pinned toolchain
+        id: pin
+        run: |
+          set -euo pipefail
+          channel="$(grep -m1 -E '^ *channel *=' rust-toolchain.toml | cut -d'"' -f2)"
+          test -n "$channel" || { echo "::error::no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.pin.outputs.channel }}
+
+      - name: The active toolchain must be the pinned one
+        run: |
+          set -euo pipefail
+          active="$(rustc --version | cut -d' ' -f2)"
+          pinned="${{ steps.pin.outputs.channel }}"
+          echo "rustc $active (pinned: $pinned)"
+          [ "$active" = "$pinned" ] || { echo "::error::rustc $active is not the pinned $pinned"; exit 1; }
+
+      # A tag may only name the version the workspace actually carries.
+      - name: The tag must match the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(cargo metadata --locked --no-deps --format-version 1 \
+                   | jq -r '.packages[] | select(.name == "aksond") | .version')"
+          echo "tag=$tag workspace=$crate"
+          [ "$tag" = "$crate" ] || { echo "::error::tag $GITHUB_REF_NAME does not match workspace version $crate"; exit 1; }
+
+      # A release may only be cut from a commit ci has already passed.
+      - name: ci must be green for this commit
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=completed" \
+                  --jq '[.workflow_runs[].conclusion] | unique | join(",")')"
+          echo "completed ci conclusions for $GITHUB_SHA: ${runs:-<none>}"
+          if [ -z "$runs" ]; then
+            echo "::error::no completed ci run for $GITHUB_SHA — a release must be cut from a checked commit"; exit 1
+          fi
+          [ "$runs" = "success" ] || { echo "::error::ci is not green for $GITHUB_SHA ($runs)"; exit 1; }
+
+      # A0.4b / milestone M15: the payload media types are still in the
+      # unregistered `vnd.akson-dev` tree, so the release tooling must refuse to
+      # ship a stable release. Prerelease tags (v0.0.1-alpha.1) are allowed and
+      # are marked as prereleases on the release itself.
+      - name: Release gate — provisional media types (A0.4b)
+        run: |
+          set -euo pipefail
+          if grep -q 'MEDIA_TYPES_ARE_PROVISIONAL: bool = true' crates/akson-ext/src/namespace.rs; then
+            echo "media types are provisional (A0.4b): stable releases are blocked"
+            echo "PRERELEASE=1" >> "$GITHUB_ENV"
+            case "$GITHUB_REF_NAME" in
+              v*-*) : ;; # prerelease tag, allowed
+              v*)   echo "::error::$GITHUB_REF_NAME is a stable tag, but the payload media types are still unregistered (A0.4b/M15). Use a prerelease tag."; exit 1 ;;
+            esac
+          fi
+
+      - name: Load the artifact manifest
+        id: artifacts
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/artifacts.tsv"
+          pkgs=""
+          bins=""
+          while read -r pkg bin _rest; do
+            case "$pkg" in ''|'#'*|'!'*) continue ;; esac
+            test -n "$bin" || { echo "::error::manifest line for $pkg has no binary name"; exit 1; }
+            printf '%s\t%s\n' "$pkg" "$bin" >> "$RUNNER_TEMP/artifacts.tsv"
+            pkgs="$pkgs $pkg"
+            bins="$bins $bin"
+          done < .github/release-artifacts.txt
+          test -s "$RUNNER_TEMP/artifacts.tsv" || { echo "::error::empty artifact manifest"; exit 1; }
+          cat "$RUNNER_TEMP/artifacts.tsv"
+          echo "packages=${pkgs# }" >> "$GITHUB_OUTPUT"
+          echo "binaries=${bins# }" >> "$GITHUB_OUTPUT"
+
+      # The digest of the lockfile as committed. Re-asserted after every cargo
+      # invocation below: if any of them moved the lockfile, the artifacts are
+      # not the tagged dependency set and the release is void.
+      - name: Record the committed Cargo.lock digest
+        run: sha256sum Cargo.lock | tee "$RUNNER_TEMP/lock.sha256"
+
+      # ---------------------------------------------------------------- build
+
+      - name: Build the artifact set (--locked --release)
+        run: |
+          set -euo pipefail
+          args=()
+          for p in ${{ steps.artifacts.outputs.packages }}; do args+=(-p "$p"); done
+          set -x
+          cargo build --locked --release --bins "${args[@]}"
+
+      - name: Collect the artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          while IFS=$'\t' read -r pkg bin; do
+            test -f "target/release/$bin" || { echo "::error::$pkg produced no target/release/$bin"; exit 1; }
+            cp "target/release/$bin" "dist/$bin"
+          done < "$RUNNER_TEMP/artifacts.tsv"
+          ls -l dist
+
+      # ----------------------------------------------------------------- SBOM
+
+      - name: Install the pinned SBOM generator
+        run: cargo install cargo-cyclonedx --locked --version "$CYCLONEDX_VERSION"
+
+      # One CycloneDX 1.5 JSON per binary, derived from the committed Cargo.lock:
+      # every crate in the graph the lockfile resolves for the host target, with
+      # the crates.io SHA-256 for each registry crate. In-tree path crates carry
+      # no hash — their bytes are the tagged commit. Licenses are as declared
+      # upstream; deny.toml + the `deny` job in ci.yml are what check them.
+      - name: SBOM per artifact (CycloneDX 1.5)
+        run: |
+          set -euo pipefail
+          cargo cyclonedx --describe binaries --all --format json --spec-version 1.5 --quiet
+          while IFS=$'\t' read -r pkg bin; do
+            src="$(find . -type f -name "${bin}_bin.cdx.json" -print -quit)"
+            test -n "$src" || { echo "::error::cargo-cyclonedx produced no SBOM for $bin ($pkg)"; exit 1; }
+            mv "$src" "dist/${bin}.cdx.json"
+          done < "$RUNNER_TEMP/artifacts.tsv"
+          # Nothing left behind in the tree; the SBOMs live only in dist/.
+          find . -name '*.cdx.json' -not -path './dist/*' -delete
+
+      # Supplementary and human-readable — NOT the SBOM. `cargo tree` output is
+      # what a reproducer can diff by eye when they have no JSON tooling.
+      - name: Dependency tree per artifact (supplementary)
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | awk '/^host:/{print $2}')"
+          while IFS=$'\t' read -r pkg bin; do
+            {
+              echo "# cargo tree --locked -p $pkg --edges normal,build --target $host"
+              echo "# Supplementary dependency tree. The SBOM is ${bin}.cdx.json."
+              cargo tree --locked -p "$pkg" --edges normal,build --target "$host"
+            } > "dist/${bin}.deps.tree.txt"
+          done < "$RUNNER_TEMP/artifacts.tsv"
+
+      - name: The lockfile must not have moved
+        run: |
+          set -euo pipefail
+          sha256sum -c "$RUNNER_TEMP/lock.sha256"
+          git diff --exit-code -- Cargo.lock
+
+      # ------------------------------------------------------- build info sums
+
+      - name: Write BUILD-INFO.txt
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | awk '/^host:/{print $2}')"
+          lock="$(cut -d' ' -f1 < "$RUNNER_TEMP/lock.sha256")"
+          {
+            echo "akson build info"
+            echo
+            echo "ref:            $GITHUB_REF_NAME"
+            echo "commit:         $GITHUB_SHA"
+            echo "repository:     $GITHUB_REPOSITORY"
+            echo "workflow run:   $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "host target:    $host"
+            echo "rustc:          $(rustc --version)"
+            echo "cargo:          $(cargo --version)"
+            echo "RUSTFLAGS:      (unset)"
+            echo "build command:  cargo build --locked --release --bins ${{ steps.artifacts.outputs.packages }}"
+            echo "Cargo.lock:     sha256 $lock"
+            echo
+            echo "SBOM:           cargo-cyclonedx $CYCLONEDX_VERSION, CycloneDX 1.5 JSON, one per binary"
+            echo "SBOM scope:     the dependency graph the committed Cargo.lock resolves for the"
+            echo "                host target above, each crates.io crate carrying its registry"
+            echo "                SHA-256. In-tree path crates carry no hash: their bytes are this"
+            echo "                commit. Licenses are as declared by upstream crate metadata —"
+            echo "                deny.toml and ci.yml's cargo-deny job are what check them."
+            echo "                It is a build-time dependency inventory, not a scan of the"
+            echo "                linked binary and not an audited bill of materials."
+            echo "deps tree:      *.deps.tree.txt is supplementary cargo-tree output, not an SBOM."
+            echo
+            echo "Verify all of this: docs/verifying-a-release.md"
+          } > dist/BUILD-INFO.txt
+          cat dist/BUILD-INFO.txt
+
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f -printf '%P\n' | grep -v '^SHA256SUMS$' | LC_ALL=C sort \
+            | xargs sha256sum > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+
+      # ------------------------------------------------------------ provenance
+
+      # GitHub-native provenance: a SLSA v1 predicate signed through GitHub's
+      # own Sigstore instance, naming this workflow, this commit and this run as
+      # the builder. Every file in dist/ — binaries, SBOMs, SHA256SUMS,
+      # BUILD-INFO.txt — becomes a verifiable subject, so
+      # `gh attestation verify <file> --repo ...` works on any of them.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      # ---------------------------------------------------------------- publish
+
+      # Always available, tag or not: a workflow_dispatch run leaves the whole
+      # asset set (and its attestation) behind without publishing a release.
+      - name: Upload the asset set as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: akson-release-${{ github.ref_name }}
+          path: dist/
+
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          {
+            echo "## Verifying these assets"
+            echo
+            echo "Exact commands: [docs/verifying-a-release.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/verifying-a-release.md)."
+            echo
+            echo '```'
+            echo "sha256sum --check --ignore-missing SHA256SUMS"
+            echo "gh attestation verify aksond --repo $GITHUB_REPOSITORY \\"
+            echo "  --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml"
+            echo '```'
+            echo
+            echo "## What ships"
+            echo
+            echo "Six binaries built with \`cargo build --locked --release\` on the toolchain"
+            echo "\`rust-toolchain.toml\` pins, one CycloneDX 1.5 SBOM per binary, a supplementary"
+            echo "\`cargo tree\` dependency listing per binary, \`SHA256SUMS\`, and"
+            echo "\`BUILD-INFO.txt\` (toolchain, host target, \`Cargo.lock\` digest, build command)."
+            echo
+            echo "The SBOM is the dependency graph \`Cargo.lock\` resolves, with each crates.io"
+            echo "crate's registry SHA-256 — a build-time inventory, not a scan of the linked"
+            echo "binary and not an audited bill of materials."
+            echo
+            if [ "${PRERELEASE:-}" = "1" ]; then
+              echo "## Prerelease"
+              echo
+              echo "The payload media types are still in the unregistered \`vnd.akson-dev\` tree"
+              echo "(A0.4b / M15), so this is a prerelease: the wire types may change."
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # A draft: the maintainer publishes after checking the asset set. The
+      # attestation is already public at this point — it is bound to the
+      # artifacts, not to the release object.
+      - name: Create the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            ${PRERELEASE:+--prerelease} \
+            --title "akson $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/*
