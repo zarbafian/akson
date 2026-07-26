@@ -50,6 +50,16 @@ pub const PREDICATE_AUTHORIZATION_V1: &str = "https://akson.invalid/attestation/
 /// Akson's execution predicate type (materials, processor/runner/sandbox identity,
 /// outputs, resource use, terminal state — §14.2).
 pub const PREDICATE_EXECUTION_V1: &str = "https://akson.invalid/attestation/execution/v1";
+/// Akson's federation-capability predicate type (ADR-0016): what this endpoint
+/// observes, and what a peer asserts, about one federation relationship — each
+/// dimension labelled with which of the two it is.
+///
+/// A *predicate type*, not a new evidence format: the carrier is the same in-toto
+/// Statement in the same DSSE envelope under the same `evidence` key, because a
+/// consumer's fail-closed capability matrix should verify federation evidence with
+/// exactly the code it already uses for result evidence.
+pub const PREDICATE_FEDERATION_CAPABILITY_V1: &str =
+    "https://akson.invalid/attestation/federation-capability/v1";
 
 /// One in-toto subject: a name and its digest set (SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

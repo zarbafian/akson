@@ -129,19 +129,36 @@ is not here; it is `stage_consent` on admin, above.
 
 | `op` | Args | Surface | Result (on `ok`) |
 |---|---|---|---|
-| `coord_whoami` | — | **coord** | `{protocol:"akson_byom_exchange_v1", protocol_version, issuer, agent, root_thumbprint, interface_url, endpoint_fingerprint, features[], unimplemented[]}` — narrower than `who_am_i` on purpose: no `data_dir`, no `receive_addr` |
+| `coord_whoami` | — | **coord** | `{protocol:"akson_byom_exchange_v1", protocol_version, issuer, agent, root_thumbprint, interface_url, endpoint_fingerprint, features[], unimplemented[], partial[]}` — narrower than `who_am_i` on purpose: no `data_dir`, no `receive_addr`. `features` is all eight ops and `unimplemented` is empty; `partial` carries `{op, missing, detail}` for a part of an op that is not built (today: `dispatch`'s outbound carrier) |
 | `peer_show` | `label` | **coord** | `{label, root_thumbprint, verified, status, identity{issuer, agent_id, endpoint_id, tls_certificate_sha256, agent_card_thumbprint}, card_claims{security_projection_digest, full_card_digest, key_purposes[]}, endpoint_hint}` — the one peer asked for; `{verified:false, status:"imported"}` before an introduction; never the operator's private note. Unknown or malformed label ⇒ the same `404 unknown-peer` |
 | `stage` | `task_type`, `performer` (a local **label**, may be empty), `payload_base64` | **coord** | `{stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status:"staged", staged_at, consent:null, already_staged}` — **inert and idempotent**: the bytes are persisted (sealed) with a reference derived from their content digest; nothing starts, no authority is minted, no socket opens. The same bytes return the same reference with `already_staged:true` and write no second record |
 | `stage_show` | `stage_ref` | **coord** | the same record plus `consent` — `null`, or `{consent_receipt, staged_digest, max_uses, uses, minted_at}` once the operator has consented |
-| `events_read` | `cursor?`, `limit?` (default 64, max 256) | **coord** | `{events:[{cursor, kind, stage_ref, at, detail}], next_cursor, has_more}` — the durable feed (`staged`, `consent_recorded`). Cursors are **opaque**: each event carries the cursor that resumes after it, and a cursor that did not come from a reply is refused `400 bad-cursor` |
-| `dispatch` | `stage_ref`, `consent_receipt`, `execution_key` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
-| `task_status` | `task_id` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
-| `capability_evidence` | `label` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
+| `events_read` | `cursor?`, `limit?` (default 64, max 256) | **coord** | `{events:[{cursor, kind, stage_ref, at, detail}], next_cursor, has_more}` — the durable feed (`staged`, `consent_recorded`, `dispatched`). Cursors are **opaque**: each event carries the cursor that resumes after it, and a cursor that did not come from a reply is refused `400 bad-cursor` |
+| `dispatch` | `stage_ref`, `consent_receipt`, `execution_key` | **coord** | `{dispatch_receipt, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, consent_receipt, execution_key, consent_spent:true, status:"dispatched", dispatched_at, replayed, egress{state, detail}}` — **one-shot**: the receipt is spent and the dispatch committed in one transaction. See the paragraph below |
+| `task_status` | `task_id` | **coord** | `{task_id, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status, dispatch_receipt, consent_receipt, execution_key, dispatched_at, verification{state, result_manifest_digest, outcome_state, detail}}` — scoped to dispatches **this surface** committed, addressed by the dispatch receipt or the staged reference. Anything else — including an inbound task in the operator's inbox — is the same `404 unknown-task` |
+| `capability_evidence` | `label` | **coord** | `{label, root_thumbprint, predicate_type, statement_digest, signer{purpose, thumbprint}, statement, evidence}` — a **DSSE-signed in-toto Statement v1** under `…/attestation/federation-capability/v1`, signed with this endpoint's `evidence` key: the same carrier result evidence uses, so a consumer verifies it with the code it already has. Every predicate dimension declares itself `locally_observed` or `peer_asserted`; a dimension this endpoint cannot answer reports `not_retained` rather than a default. Unknown or malformed label ⇒ the same `404 unknown-peer`, and nothing is signed |
 
-> The three `501`s are deliberate: an op that is registered but unbuilt says so, and
-> `coord_whoami` lists them under `unimplemented`. "Not built yet" (`501`), "you may
-> not" (`403 forbidden-surface`), and "no such op" (`400 malformed-request`) are three
-> distinguishable answers, and none of them is silence.
+**`dispatch` is the one op with an effect, so read its three arguments as three jobs.**
+`stage_ref` says which bytes; `consent_receipt` is the operator's authority for exactly
+those bytes and is spendable once; `execution_key` names **one attempt**. Re-sending the
+same key is a *retry* — the same `dispatch_receipt` comes back with `replayed:true` and
+nothing is spent again. A *different* key against a spent receipt is a *replay*, refused
+`409 consent-spent`. No live receipt for the stage is `409 consent-required`; a key
+already committed to other arguments is `409 execution-key-conflict`. The spend and its
+record commit in one store transaction, guarded by a `uses < max_uses` compare-and-set
+and a `UNIQUE` constraint on the receipt in the dispatch ledger, so the refusal survives
+a daemon restart.
+
+> **What `dispatch` does not do, stated plainly.** It commits the disclosure decision
+> and puts **no bytes on the wire**: `egress.state` is `not_implemented` and
+> `coord_whoami` lists it under `partial`. ADR-0016 leaves the per-phase outbound
+> carrier table open, and akson's contract schema cannot hold an opaque coordination
+> payload without terms — an objective, a deliverable, a deadline — that the risk card
+> the operator consented to never mentioned; inventing them would make the consent bind
+> less than it claims. So the carrier waits for the ADR that decides it. A `501` would
+> be the wrong answer here in the other direction: something irreversible *did* happen,
+> and a driver must know its receipt is gone. `task_status`'s `verification` is null for
+> the same reason — no result can be delivered against a dispatch that never went out.
 
 Golden vectors for every coordination op — request wire, reply field set, the staged
 digest derivation and its idempotency, the cursor encoding, and every refusal body —

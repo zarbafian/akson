@@ -486,6 +486,36 @@ CREATE TABLE coord_events (
 ) STRICT;
 "#;
 
+/// Version 22 (C4 slice 2, `dispatch` — ADR-0016 §2): the dispatch ledger, which
+/// is what makes a spent consent receipt *durably* unusable rather than
+/// unusable-until-restart.
+///
+/// Two constraints carry the one-shot property, and they are in the schema on
+/// purpose — not in daemon code, and not in memory:
+///
+/// - `receipt_id` is **UNIQUE**: one consent receipt can appear in at most one
+///   dispatch row, ever. Even if the `uses < max_uses` compare-and-set were
+///   somehow bypassed, the second insert is a constraint error, so a second
+///   dispatch cannot commit.
+/// - `execution_key` is the **PRIMARY KEY**: a retry under the same key finds the
+///   existing row and returns the same dispatch receipt, spending nothing more.
+///   That is the difference between "retry" (safe, idempotent) and "replay"
+///   (refused): the key is the caller's declared identity for one attempt.
+///
+/// Nothing here is sealed: a dispatch row holds only ids and digests the driver
+/// already knows. The bytes it refers to stay in `coord_staged`, sealed.
+const V22: &str = r#"
+CREATE TABLE coord_dispatches (
+    execution_key    TEXT PRIMARY KEY,
+    stage_ref        TEXT NOT NULL,
+    staged_digest    TEXT NOT NULL,
+    receipt_id       TEXT NOT NULL UNIQUE,
+    dispatch_receipt TEXT NOT NULL UNIQUE,
+    dispatched_at    INTEGER NOT NULL
+) STRICT;
+CREATE INDEX coord_dispatches_by_stage ON coord_dispatches (stage_ref);
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -510,6 +540,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (19, V19),
     (20, V20),
     (21, V21),
+    (22, V22),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

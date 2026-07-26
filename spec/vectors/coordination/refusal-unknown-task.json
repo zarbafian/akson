@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-unknown-task",
+  "description": "`task_status` for anything this surface did not dispatch. The same `404` for a made-up id, a malformed one, and — the point — an inbound proposal sitting in the operator's own task inbox. `task_status` is not `task_show`: it reads the dispatch ledger only, so it can never become a way for a coordination driver to discover that inbound work exists.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:unknown-task",
+      "title": "no task dispatched from this surface has that reference",
+      "status": 404
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:unknown-task\",\"title\":\"no task dispatched from this surface has that reference\",\"status\":404}",
+    "status": 404
+  }
+}

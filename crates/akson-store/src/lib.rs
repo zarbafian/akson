@@ -478,6 +478,125 @@ pub struct CoordEvent {
     pub at: i64,
 }
 
+/// A committed dispatch, as anyone may *read* it (ADR-0016 §2). Facts only: it
+/// authorizes nothing, so it is freely cloneable. The thing that authorizes is
+/// [`ConsentBurn`], and it is minted at most once per receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchRecord {
+    pub execution_key: String,
+    pub stage_ref: String,
+    pub staged_digest: String,
+    /// The consent receipt this dispatch spent.
+    pub receipt_id: String,
+    pub dispatch_receipt: String,
+    pub dispatched_at: i64,
+}
+
+/// Proof that **one** consent receipt was durably spent — the authority to
+/// disclose the staged bytes exactly once (ADR-0016 §3).
+///
+/// Read the negatives, because they are the design:
+///
+/// - **No public constructor.** The only way to obtain one is
+///   [`Store::dispatch_staged`] returning [`DispatchOutcome::Dispatched`], and it
+///   returns one only on the transaction that flipped `uses 0 → 1` and inserted
+///   the dispatch row. A burn cannot exist without that commit having happened.
+/// - **No `Clone`, no `Copy`.** One burn, one egress. A caller that wants to
+///   disclose twice would have to produce a second burn, and the durable
+///   compare-and-set plus the `receipt_id UNIQUE` constraint refuse that.
+/// - **No `Serialize`/`Deserialize`.** It cannot arrive over a wire, be replayed
+///   from a log, or be reconstructed from a reply. It is not data; it is the
+///   receipt of an act.
+/// - **Consumed by value.** Everything downstream takes `ConsentBurn`, not
+///   `&ConsentBurn`, so using it moves it and the compiler ends its life. This is
+///   the fix for "a permit that was merely borrowed, so one permit sent twice":
+///   borrowing authority lets one grant be spent N times, and the type system
+///   should be the thing that says no.
+///
+/// The fields are private; read them through the accessors.
+pub struct ConsentBurn {
+    receipt_id: String,
+    stage_ref: String,
+    staged_digest: String,
+    execution_key: String,
+    dispatch_receipt: String,
+    dispatched_at: i64,
+}
+
+impl ConsentBurn {
+    /// The receipt that was spent.
+    pub fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+    /// The staged reference this burn authorizes — and no other.
+    pub fn stage_ref(&self) -> &str {
+        &self.stage_ref
+    }
+    /// The exact digest the operator consented to.
+    pub fn staged_digest(&self) -> &str {
+        &self.staged_digest
+    }
+    /// The caller's declared identity for this one attempt.
+    pub fn execution_key(&self) -> &str {
+        &self.execution_key
+    }
+    /// The receipt naming this dispatch.
+    pub fn dispatch_receipt(&self) -> &str {
+        &self.dispatch_receipt
+    }
+    /// When the burn committed (trusted time).
+    pub fn dispatched_at(&self) -> i64 {
+        self.dispatched_at
+    }
+
+    /// Spends the burn, yielding the facts of the dispatch it authorized.
+    ///
+    /// Takes `self` **by value**: this is where a one-shot authority becomes an
+    /// ordinary record. Call it at the point of effect, once.
+    pub fn into_record(self) -> DispatchRecord {
+        DispatchRecord {
+            execution_key: self.execution_key,
+            stage_ref: self.stage_ref,
+            staged_digest: self.staged_digest,
+            receipt_id: self.receipt_id,
+            dispatch_receipt: self.dispatch_receipt,
+            dispatched_at: self.dispatched_at,
+        }
+    }
+}
+
+/// Deliberately opaque: a burn must not be printable into a log where it would
+/// read as a re-usable token. Only the dispatch receipt is shown.
+impl std::fmt::Debug for ConsentBurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsentBurn")
+            .field("dispatch_receipt", &self.dispatch_receipt)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How [`Store::dispatch_staged`] resolved (ADR-0016 §2). Exactly one variant
+/// carries authority; the rest are refusals or replays.
+#[derive(Debug)]
+pub enum DispatchOutcome {
+    /// This call spent the receipt. The [`ConsentBurn`] is the one-shot authority
+    /// to disclose, and it exists nowhere else.
+    Dispatched(ConsentBurn),
+    /// The same `execution_key` already dispatched, with the same receipt and
+    /// stage: a **retry**. The committed record stands and nothing was spent
+    /// again — so this variant carries facts, never authority.
+    AlreadyDispatched(DispatchRecord),
+    /// The receipt exists for this stage but is spent, and this is a *different*
+    /// execution key: a **replay**. Refused.
+    ConsentSpent,
+    /// No unspent receipt with that id binds this staged reference — it was never
+    /// minted, belongs to another stage, or the stage does not exist.
+    ConsentUnknown,
+    /// This `execution_key` is already committed to a different (stage, receipt).
+    /// Refused rather than resolved: an execution key names one attempt.
+    ExecutionKeyConflict(DispatchRecord),
+}
+
 /// One endpoint's encrypted state database.
 pub struct Store {
     conn: Connection,
@@ -2925,6 +3044,131 @@ impl Store {
         unconsumed_row(&self.conn, stage_ref)
     }
 
+    /// Spends a consent receipt and commits the dispatch it authorizes — **one
+    /// transaction**, so the receipt is consumed atomically with the record of
+    /// what consumed it (ADR-0016 §2, design note "durable-before-effect").
+    ///
+    /// The one-shot property is enforced three times over, each independently
+    /// sufficient, because this is the operation the whole surface exists to bound:
+    ///
+    /// 1. a compare-and-set — `UPDATE … SET uses = uses + 1 WHERE receipt_id = ?
+    ///    AND stage_ref = ? AND uses < max_uses` — which affects one row only for
+    ///    the caller that wins;
+    /// 2. `coord_dispatches.receipt_id UNIQUE`, so a second row for the same
+    ///    receipt cannot commit even if the CAS were wrong;
+    /// 3. the returned [`ConsentBurn`], which is not cloneable and is consumed by
+    ///    value, so one spend cannot be *used* twice in code.
+    ///
+    /// Retry versus replay is decided by `execution_key`: the same key returns
+    /// [`DispatchOutcome::AlreadyDispatched`] with the committed record and spends
+    /// nothing; a different key against a spent receipt is
+    /// [`DispatchOutcome::ConsentSpent`].
+    ///
+    /// `dispatch_receipt` is the caller's opaque id for this dispatch; `event` is
+    /// the `dispatched` feed entry, appended in the same transaction so the driver
+    /// can never observe a dispatch the feed does not have.
+    pub fn dispatch_staged(
+        &self,
+        stage_ref: &str,
+        receipt_id: &str,
+        execution_key: &str,
+        dispatch_receipt: &str,
+        event: &serde_json::Value,
+        now: i64,
+    ) -> Result<DispatchOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        // A retry (or a key collision) is decided before anything is spent.
+        if let Some(existing) = dispatch_row_by(&tx, "execution_key", execution_key)? {
+            tx.commit()?;
+            return Ok(
+                if existing.stage_ref == stage_ref && existing.receipt_id == receipt_id {
+                    DispatchOutcome::AlreadyDispatched(existing)
+                } else {
+                    DispatchOutcome::ExecutionKeyConflict(existing)
+                },
+            );
+        }
+
+        // The compare-and-set. One statement: reading `uses` and then writing it
+        // would leave a window where two callers both read 0.
+        let spent = tx.execute(
+            "UPDATE coord_consents SET uses = uses + 1
+             WHERE receipt_id = ?1 AND stage_ref = ?2 AND uses < max_uses",
+            params![receipt_id, stage_ref],
+        )?;
+        if spent != 1 {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM coord_consents
+                               WHERE receipt_id = ?1 AND stage_ref = ?2)",
+                params![receipt_id, stage_ref],
+                |r| r.get(0),
+            )?;
+            tx.commit()?;
+            return Ok(if exists {
+                DispatchOutcome::ConsentSpent
+            } else {
+                DispatchOutcome::ConsentUnknown
+            });
+        }
+
+        // The digest comes from the RECEIPT, not from the stage row: what the
+        // dispatch is entitled to disclose is what the operator consented to, and
+        // if those two ever disagreed the receipt's copy is the authoritative one.
+        let staged_digest: String = tx.query_row(
+            "SELECT staged_digest FROM coord_consents WHERE receipt_id = ?1",
+            [receipt_id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO coord_dispatches
+                 (execution_key, stage_ref, staged_digest, receipt_id,
+                  dispatch_receipt, dispatched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                execution_key,
+                stage_ref,
+                staged_digest.as_str(),
+                receipt_id,
+                dispatch_receipt,
+                now
+            ],
+        )?;
+        // A receipt is minted only against an existing stage row, so this always
+        // matches one row; it is an UPDATE rather than an assertion because the
+        // status is a projection of the ledger, not the authority itself.
+        tx.execute(
+            "UPDATE coord_staged SET status = 'dispatched' WHERE stage_ref = ?1",
+            [stage_ref],
+        )?;
+        self.append_event_in(&tx, COORD_EVENT_DISPATCHED, Some(stage_ref), event, now)?;
+        audit::append(&tx, now, "coord.dispatched", stage_ref)?;
+        tx.commit()?;
+
+        Ok(DispatchOutcome::Dispatched(ConsentBurn {
+            receipt_id: receipt_id.to_owned(),
+            stage_ref: stage_ref.to_owned(),
+            staged_digest,
+            execution_key: execution_key.to_owned(),
+            dispatch_receipt: dispatch_receipt.to_owned(),
+            dispatched_at: now,
+        }))
+    }
+
+    /// The dispatch a coordination driver may ask about, addressed by its dispatch
+    /// receipt or by the staged reference it dispatched (ADR-0016 §2).
+    ///
+    /// Deliberately narrow: this is the *only* task lookup on the coordination
+    /// surface, and it can reach nothing but rows this surface itself wrote. An
+    /// inbound task id — a peer's proposal in the operator's inbox — resolves to
+    /// `None` here, because it is not in this table. `task_show` is admin's.
+    pub fn coord_dispatch(&self, task_id: &str) -> Result<Option<DispatchRecord>, StoreError> {
+        if let Some(row) = dispatch_row_by(&self.conn, "dispatch_receipt", task_id)? {
+            return Ok(Some(row));
+        }
+        dispatch_row_by(&self.conn, "stage_ref", task_id)
+    }
+
     /// Appends one coordination event (design §16.4, ADR-0016). `detail` is
     /// sealed at rest; only the kind, the reference, and the sequence stay
     /// plaintext, because those are what a cursor addresses.
@@ -3010,10 +3254,15 @@ impl Store {
 pub const COORD_EVENT_STAGED: &str = "staged";
 /// The `consent_recorded` event kind.
 pub const COORD_EVENT_CONSENT: &str = "consent_recorded";
+/// The `dispatched` event kind — appended in the same transaction that spends the
+/// receipt, so the feed cannot lag the act.
+pub const COORD_EVENT_DISPATCHED: &str = "dispatched";
 /// A staged contract awaiting the operator's consent.
 pub const COORD_STATUS_STAGED: &str = "staged";
 /// A staged contract with a live consent receipt.
 pub const COORD_STATUS_CONSENTED: &str = "consented";
+/// A staged contract whose consent has been spent by a committed dispatch.
+pub const COORD_STATUS_DISPATCHED: &str = "dispatched";
 
 fn staged_row(conn: &Connection, stage_ref: &str) -> Result<Option<StagedContract>, StoreError> {
     Ok(conn
@@ -3032,6 +3281,36 @@ fn staged_row(conn: &Connection, stage_ref: &str) -> Result<Option<StagedContrac
                     byte_length: r.get(5)?,
                     status: r.get(6)?,
                     staged_at: r.get(7)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// One dispatch row, looked up by a column that is unique or a primary key.
+/// `column` is a fixed identifier chosen by this module (never caller input), so
+/// the format is a name, not a value — the value stays bound.
+fn dispatch_row_by(
+    conn: &Connection,
+    column: &'static str,
+    value: &str,
+) -> Result<Option<DispatchRecord>, StoreError> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT execution_key, stage_ref, staged_digest, receipt_id,
+                        dispatch_receipt, dispatched_at
+                 FROM coord_dispatches WHERE {column} = ?1"
+            ),
+            [value],
+            |r| {
+                Ok(DispatchRecord {
+                    execution_key: r.get(0)?,
+                    stage_ref: r.get(1)?,
+                    staged_digest: r.get(2)?,
+                    receipt_id: r.get(3)?,
+                    dispatch_receipt: r.get(4)?,
+                    dispatched_at: r.get(5)?,
                 })
             },
         )
@@ -4343,6 +4622,220 @@ mod tests {
         let events = store.read_coord_events(0, 10).unwrap();
         assert_eq!(events.len(), 2, "staged + consent_recorded, nothing else");
         assert_eq!(events[1].kind, COORD_EVENT_CONSENT);
+    }
+
+    /// Stages bytes and mints one consent receipt against them, returning the
+    /// staged reference — the state a `dispatch` starts from.
+    fn consented(store: &Store, digest: &str, stage_ref: &'static str) -> &'static str {
+        store
+            .stage_contract(&staged(b"outbound bytes", digest, stage_ref), 1000)
+            .unwrap();
+        store
+            .mint_consent_receipt(
+                stage_ref,
+                "rcpt-1",
+                b"{\"one_shot\":true}",
+                &serde_json::json!({"stage_ref": stage_ref}),
+                2000,
+            )
+            .unwrap()
+            .expect("mint");
+        stage_ref
+    }
+
+    fn burn(outcome: DispatchOutcome) -> ConsentBurn {
+        match outcome {
+            DispatchOutcome::Dispatched(burn) => burn,
+            other => panic!("expected a burn, got {other:?}"),
+        }
+    }
+
+    /// The property the whole surface exists for: **one receipt, one dispatch.**
+    /// A second dispatch under a different execution key is refused by the durable
+    /// row, not by anything held in memory.
+    #[test]
+    fn one_consent_receipt_dispatches_exactly_once() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let digest = "dd".repeat(32);
+        let stage_ref = consented(&store, &digest, "stage-1111111111111111111111111111111a");
+        let event = serde_json::json!({"stage_ref": stage_ref});
+
+        let first = burn(
+            store
+                .dispatch_staged(stage_ref, "rcpt-1", "exec-1", "dispatch-1", &event, 3000)
+                .unwrap(),
+        );
+        assert_eq!(first.staged_digest(), digest);
+        assert_eq!(first.receipt_id(), "rcpt-1");
+        assert_eq!(first.dispatch_receipt(), "dispatch-1");
+        // The receipt is spent: no live consent remains for this stage.
+        assert!(store.unconsumed_consent(stage_ref).unwrap().is_none());
+        assert_eq!(
+            store.staged_contract(stage_ref).unwrap().unwrap().status,
+            COORD_STATUS_DISPATCHED
+        );
+
+        // A DIFFERENT execution key on the spent receipt: refused, and it is the
+        // durable `uses` column that refuses it.
+        assert!(matches!(
+            store
+                .dispatch_staged(stage_ref, "rcpt-1", "exec-2", "dispatch-2", &event, 4000)
+                .unwrap(),
+            DispatchOutcome::ConsentSpent
+        ));
+        // Exactly one dispatch row and one `dispatched` event exist.
+        let events = store.read_coord_events(0, 10).unwrap();
+        assert_eq!(events.len(), 3, "staged + consent_recorded + dispatched");
+        assert_eq!(events[2].kind, COORD_EVENT_DISPATCHED);
+    }
+
+    /// A spent receipt stays spent across a **reopen** — the point of putting the
+    /// state in the database rather than in a flag on a live object.
+    #[test]
+    fn a_spent_receipt_is_still_spent_after_the_store_is_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let digest = "ee".repeat(32);
+        let stage_ref = "stage-2222222222222222222222222222222b";
+        let event = serde_json::json!({"stage_ref": stage_ref});
+        {
+            let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+            consented(&store, &digest, stage_ref);
+            let _ = burn(
+                store
+                    .dispatch_staged(stage_ref, "rcpt-1", "exec-1", "dispatch-1", &event, 3000)
+                    .unwrap(),
+            );
+        }
+        let store = Store::open(&path, &kek(), checkpoint(0)).unwrap();
+        assert!(matches!(
+            store
+                .dispatch_staged(stage_ref, "rcpt-1", "exec-9", "dispatch-9", &event, 5000)
+                .unwrap(),
+            DispatchOutcome::ConsentSpent
+        ));
+        // The retry path still resolves, from the durable row alone.
+        match store
+            .dispatch_staged(
+                stage_ref,
+                "rcpt-1",
+                "exec-1",
+                "dispatch-ignored",
+                &event,
+                6000,
+            )
+            .unwrap()
+        {
+            DispatchOutcome::AlreadyDispatched(record) => {
+                assert_eq!(record.dispatch_receipt, "dispatch-1");
+                assert_eq!(record.dispatched_at, 3000);
+            }
+            other => panic!("expected the committed record, got {other:?}"),
+        }
+    }
+
+    /// Retry (same execution key) is idempotent; a key already committed to other
+    /// arguments is a conflict, not a second dispatch.
+    #[test]
+    fn the_execution_key_separates_retry_from_replay() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let a = "stage-3333333333333333333333333333333c";
+        let b = "stage-4444444444444444444444444444444d";
+        let event = serde_json::json!({});
+        consented(&store, &"11".repeat(32), a);
+        store
+            .stage_contract(&staged(b"other", &"22".repeat(32), b), 1000)
+            .unwrap();
+        store
+            .mint_consent_receipt(b, "rcpt-b", b"{}", &event, 2000)
+            .unwrap()
+            .expect("mint b");
+
+        let first = burn(
+            store
+                .dispatch_staged(a, "rcpt-1", "exec-1", "dispatch-1", &event, 3000)
+                .unwrap(),
+        )
+        .into_record();
+        // Same key, same arguments: the same receipt, nothing spent again.
+        match store
+            .dispatch_staged(a, "rcpt-1", "exec-1", "dispatch-other", &event, 4000)
+            .unwrap()
+        {
+            DispatchOutcome::AlreadyDispatched(again) => assert_eq!(again, first),
+            other => panic!("a retry must replay the record, got {other:?}"),
+        }
+        // Same key, DIFFERENT stage and receipt: refused. `b`'s receipt survives.
+        assert!(matches!(
+            store
+                .dispatch_staged(b, "rcpt-b", "exec-1", "dispatch-b", &event, 5000)
+                .unwrap(),
+            DispatchOutcome::ExecutionKeyConflict(_)
+        ));
+        assert!(store.unconsumed_consent(b).unwrap().is_some());
+        // One `dispatched` event across all four calls.
+        let dispatched = store
+            .read_coord_events(0, 50)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == COORD_EVENT_DISPATCHED)
+            .count();
+        assert_eq!(dispatched, 1);
+    }
+
+    /// A receipt that was never minted, or that belongs to another stage, cannot
+    /// dispatch — and the refusal spends nothing.
+    #[test]
+    fn a_receipt_that_does_not_bind_this_stage_cannot_dispatch() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let a = "stage-5555555555555555555555555555555e";
+        let b = "stage-6666666666666666666666666666666f";
+        let event = serde_json::json!({});
+        consented(&store, &"33".repeat(32), a);
+        store
+            .stage_contract(&staged(b"other", &"44".repeat(32), b), 1000)
+            .unwrap();
+
+        for (stage, receipt) in [(a, "rcpt-nope"), (b, "rcpt-1")] {
+            assert!(matches!(
+                store
+                    .dispatch_staged(stage, receipt, "exec-x", "dispatch-x", &event, 3000)
+                    .unwrap(),
+                DispatchOutcome::ConsentUnknown
+            ));
+        }
+        // `a`'s consent is untouched by either refusal.
+        assert!(store.unconsumed_consent(a).unwrap().is_some());
+        assert!(store.coord_dispatch("dispatch-x").unwrap().is_none());
+    }
+
+    /// The coordination surface's only task lookup reaches its own dispatches and
+    /// nothing else.
+    #[test]
+    fn coord_dispatch_is_addressable_only_by_what_this_surface_wrote() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let stage_ref = consented(
+            &store,
+            &"55".repeat(32),
+            "stage-77777777777777777777777777777771",
+        );
+        let event = serde_json::json!({});
+        burn(
+            store
+                .dispatch_staged(stage_ref, "rcpt-1", "exec-1", "dispatch-1", &event, 3000)
+                .unwrap(),
+        );
+        // Addressable by the dispatch receipt and by the staged reference.
+        for id in ["dispatch-1", stage_ref] {
+            assert_eq!(
+                store.coord_dispatch(id).unwrap().map(|d| d.execution_key),
+                Some("exec-1".to_owned())
+            );
+        }
+        // And by nothing else — an id shaped like an inbound task resolves to None.
+        assert!(store.coord_dispatch("task-1").unwrap().is_none());
+        assert!(store.coord_dispatch("rcpt-1").unwrap().is_none());
+        assert!(store.coord_dispatch("exec-1").unwrap().is_none());
     }
 
     #[test]

@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-execution-key-conflict",
+  "description": "An `execution_key` already committed to a different (stage_ref, consent_receipt). Refused rather than resolved either way: the key names ONE attempt, so reusing it for other arguments is a driver bug, and guessing which of the two the caller meant is how a retry silently becomes a second dispatch.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:execution-key-conflict",
+      "title": "that execution_key already names a different dispatch",
+      "status": 409
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:execution-key-conflict\",\"title\":\"that execution_key already names a different dispatch\",\"status\":409}",
+    "status": 409
+  }
+}

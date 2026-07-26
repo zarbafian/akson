@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-consent-spent",
+  "description": "The one-shot refusal (ADR-0016 threat table, \"replays a spent receipt\"). A consent receipt that already dispatched cannot dispatch again under a different execution key. The refusal is `409`, not `403`: the caller was allowed to ask, and the authority is simply gone. It comes from the durable `uses` column plus a UNIQUE constraint on the dispatch ledger, so a daemon restart does not forgive it.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:consent-spent",
+      "title": "that consent receipt has already been dispatched; consent is one-shot",
+      "status": 409
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:consent-spent\",\"title\":\"that consent receipt has already been dispatched; consent is one-shot\",\"status\":409}",
+    "status": 409
+  }
+}

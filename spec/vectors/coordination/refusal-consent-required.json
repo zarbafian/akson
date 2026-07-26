@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-consent-required",
+  "description": "`dispatch` without live consent (ADR-0016 §3). The same `409` whether the receipt was never minted, is malformed, or belongs to a different staged digest — a driver may hold a receipt it was given, and it learns nothing about receipts it does not hold. Minting one is admin's alone, so this is the wall a compromised driver hits: it can burn consent it was handed, never create it.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:consent-required",
+      "title": "no live consent receipt binds that staged digest",
+      "status": 409
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:consent-required\",\"title\":\"no live consent receipt binds that staged digest\",\"status\":409}",
+    "status": 409
+  }
+}

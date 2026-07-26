@@ -113,5 +113,23 @@ and no second record.
   admission (question 1). Consent-receipt shape, coordination-event durability,
   and the `RestoreLineage` re-staging hint remain open and are decided as the
   ops that need them land.
+- **`dispatch`, as implemented, consumes and commits — it does not yet transmit.**
+  The one-shot property is real and durable: the receipt's `uses 0 → 1`
+  compare-and-set, the dispatch row that records it, the stage's advance to
+  `dispatched`, and the `dispatched` event all commit in one transaction, and the
+  dispatch ledger holds the receipt under a `UNIQUE` constraint so a second
+  dispatch cannot commit even if that CAS were wrong. What is *not* decided is the
+  outbound carrier: this ADR's §4 fixes what `stage` accepts (payload, recipient
+  label, `task_type`) and therefore what the operator's risk card and consent
+  digest cover, and akson's closed contract schema cannot carry that payload
+  without contract terms — an objective, a deliverable, a deadline — the consent
+  never mentioned. Synthesising them would make the receipt authorize more than
+  the operator read, so the carrier waits for the per-phase carrier table (design
+  note D5) and the in-tree schema version it names. Until then `coord_whoami`
+  reports `dispatch` under `partial`, every dispatch reply carries
+  `egress.state: "not_implemented"`, and `task_status` reports a null
+  `verification` — because a result cannot be delivered against a dispatch that
+  never left. A `501` would be the wrong refusal: consent *is* spent, and the
+  driver has to know that.
 - A second driver identity would need a second UID; if that becomes common,
   revisit — but do it deliberately, not by widening this one to a group.

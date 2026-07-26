@@ -42,7 +42,7 @@ fn vectors() -> Vec<(String, Value)> {
         cases.push((name, case));
     }
     cases.sort_by(|a, b| a.0.cmp(&b.0));
-    assert!(cases.len() >= 22, "the coordination family is incomplete");
+    assert!(cases.len() >= 24, "the coordination family is incomplete");
     cases
 }
 
@@ -246,40 +246,95 @@ fn refusal_vectors() {
         too_large["expected"]["body"].as_str().unwrap()
     );
 
-    // The three registered-but-unbuilt ops, driven through the real dispatch.
+    // The dispatch/status refusals, each produced by the REAL dispatch reaching the
+    // real durable state — not by hand-building a `Problem` that happens to match.
     let (state, dir) = temp_state("refusals");
-    for (stem, request) in [
+    let (first_ref, first_receipt) = consented(&state, "first bytes");
+    let (second_ref, second_receipt) = consented(&state, "second bytes");
+
+    // `consent-required`: a receipt that was never minted.
+    let refusals = [
         (
-            "refusal-not-implemented-dispatch",
-            ControlRequest::Dispatch {
-                stage_ref: "stage-0".to_owned(),
-                consent_receipt: "consent-0".to_owned(),
-                execution_key: "exec-0001".to_owned(),
-            },
+            "refusal-consent-required",
+            state
+                .dispatch(&dispatch_req(&first_ref, "consent-invented", "exec-0001"))
+                .unwrap_err(),
         ),
         (
-            "refusal-not-implemented-task-status",
-            ControlRequest::TaskStatus {
-                task_id: "task-7f3a".to_owned(),
-            },
+            "refusal-unknown-task",
+            state
+                .dispatch(&ControlRequest::TaskStatus {
+                    task_id: "task-7f3a".to_owned(),
+                })
+                .unwrap_err(),
         ),
-        (
-            "refusal-not-implemented-capability-evidence",
-            ControlRequest::CapabilityEvidence {
-                label: "partner".to_owned(),
-            },
-        ),
-    ] {
+    ];
+    for (stem, problem) in refusals {
         let vector = case(&cases, stem);
-        let problem = state.dispatch(&request).unwrap_err();
         assert_eq!(
             body(&problem),
             vector["expected"]["body"].as_str().unwrap(),
             "{stem}"
         );
-        assert_eq!(problem.status, 501, "{stem}");
+        assert_eq!(
+            problem.status,
+            vector["expected"]["status"].as_u64().unwrap() as u16,
+            "{stem}"
+        );
     }
+
+    // `consent-spent`: dispatch once, then again under a different key.
+    state
+        .dispatch(&dispatch_req(&first_ref, &first_receipt, "exec-0001"))
+        .unwrap();
+    let spent = state
+        .dispatch(&dispatch_req(&first_ref, &first_receipt, "exec-0002"))
+        .unwrap_err();
+    let vector = case(&cases, "refusal-consent-spent");
+    assert_eq!(body(&spent), vector["expected"]["body"].as_str().unwrap());
+    assert_eq!(spent.status, 409);
+
+    // `execution-key-conflict`: a committed key reused for other arguments.
+    let conflict = state
+        .dispatch(&dispatch_req(&second_ref, &second_receipt, "exec-0001"))
+        .unwrap_err();
+    let vector = case(&cases, "refusal-execution-key-conflict");
+    assert_eq!(
+        body(&conflict),
+        vector["expected"]["body"].as_str().unwrap()
+    );
+    assert_eq!(conflict.status, 409);
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Stages bytes over the coordination surface and has admin mint their consent —
+/// the split ADR-0016 §3 requires — returning `(stage_ref, consent_receipt)`.
+fn consented(state: &DaemonState, payload: &str) -> (String, String) {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let staged = state
+        .dispatch(&ControlRequest::Stage {
+            task_type: "https://byom.example/task/exchange/v1".to_owned(),
+            performer: String::new(),
+            payload_base64: STANDARD.encode(payload),
+        })
+        .unwrap();
+    let stage_ref = staged["stage_ref"].as_str().unwrap().to_owned();
+    let consent = state
+        .dispatch(&ControlRequest::StageConsent {
+            stage_ref: stage_ref.clone(),
+        })
+        .unwrap();
+    let receipt = consent["consent_receipt"].as_str().unwrap().to_owned();
+    (stage_ref, receipt)
+}
+
+fn dispatch_req(stage_ref: &str, receipt: &str, key: &str) -> ControlRequest {
+    ControlRequest::Dispatch {
+        stage_ref: stage_ref.to_owned(),
+        consent_receipt: receipt.to_owned(),
+        execution_key: key.to_owned(),
+    }
 }
 
 /// Every op's frozen request wire — the `{"op": …}` tag plus that op's arguments.
@@ -341,7 +396,7 @@ fn request_wire_vectors() {
             },
         ),
         (
-            "request-dispatch",
+            "dispatch-reply",
             ControlRequest::Dispatch {
                 stage_ref: staged_ref.clone(),
                 consent_receipt: receipt,
@@ -349,13 +404,13 @@ fn request_wire_vectors() {
             },
         ),
         (
-            "request-task-status",
+            "task-status-reply",
             ControlRequest::TaskStatus {
-                task_id: "task-7f3a".to_owned(),
+                task_id: "dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f".to_owned(),
             },
         ),
         (
-            "request-capability-evidence",
+            "capability-evidence-reply",
             ControlRequest::CapabilityEvidence {
                 label: "partner".to_owned(),
             },
@@ -548,6 +603,117 @@ fn reply_vectors() {
     // `next_cursor` is the last event's cursor: resume after what you have seen.
     assert_eq!(feed["next_cursor"], events[1]["cursor"]);
     assert_eq!(feed["has_more"], false);
+
+    // --- dispatch: the receipt is spent, and the retry replays it ---
+    let vector = case(&cases, "dispatch-reply");
+    let receipt = consent["consent_receipt"].as_str().unwrap().to_owned();
+    let dispatched = state
+        .dispatch(&dispatch_req(&stage_ref, &receipt, "exec-0001"))
+        .unwrap();
+    assert_eq!(keys(&dispatched), expected_keys(vector, "result_keys"));
+    for field in [
+        "stage_ref",
+        "staged_digest",
+        "payload_sha256",
+        "byte_length",
+        "task_type",
+        "performer",
+        "consent_spent",
+        "status",
+        "replayed",
+        "egress",
+    ] {
+        assert_eq!(
+            dispatched[field], vector["input"]["result"][field],
+            "dispatch: {field}"
+        );
+    }
+    assert_eq!(dispatched["consent_receipt"], receipt);
+    assert_eq!(dispatched["execution_key"], "exec-0001");
+
+    let retry_vector = case(&cases, "dispatch-reply-retry");
+    let retried = state
+        .dispatch(&dispatch_req(&stage_ref, &receipt, "exec-0001"))
+        .unwrap();
+    assert_eq!(keys(&retried), expected_keys(retry_vector, "result_keys"));
+    assert_eq!(retried["replayed"], true);
+    // The frozen claim of the retry vector: same receipt, same timestamp.
+    assert_eq!(
+        retry_vector["expected"]["same_dispatch_receipt_as"],
+        "coordination/dispatch-reply"
+    );
+    assert_eq!(retried["dispatch_receipt"], dispatched["dispatch_receipt"]);
+    assert_eq!(retried["dispatched_at"], dispatched["dispatched_at"]);
+
+    // --- task_status: addressable by the dispatch receipt or the staged ref ---
+    let vector = case(&cases, "task-status-reply");
+    let dispatch_receipt = dispatched["dispatch_receipt"].as_str().unwrap().to_owned();
+    for id in [dispatch_receipt.as_str(), stage_ref.as_str()] {
+        let status = state
+            .dispatch(&ControlRequest::TaskStatus {
+                task_id: id.to_owned(),
+            })
+            .unwrap();
+        assert_eq!(keys(&status), expected_keys(vector, "result_keys"));
+        assert_eq!(
+            keys(&status["verification"]),
+            expected_keys(vector, "verification_keys")
+        );
+        assert_eq!(status["task_id"], id);
+        assert_eq!(status["status"], "dispatched");
+        assert_eq!(
+            status["verification"],
+            vector["input"]["result"]["verification"]
+        );
+    }
+
+    // --- capability_evidence: the field sets and every dimension's declared source ---
+    let vector = case(&cases, "capability-evidence-reply");
+    let evidence = state
+        .dispatch(&ControlRequest::CapabilityEvidence {
+            label: "partner".to_owned(),
+        })
+        .unwrap();
+    assert_eq!(keys(&evidence), expected_keys(vector, "result_keys"));
+    assert_eq!(
+        keys(&evidence["statement"]),
+        expected_keys(vector, "statement_keys")
+    );
+    assert_eq!(
+        evidence["predicate_type"],
+        vector["input"]["result"]["predicate_type"]
+    );
+    assert_eq!(evidence["signer"]["purpose"], "evidence");
+    let dims = evidence["statement"]["predicate"]["dimensions"]
+        .as_array()
+        .unwrap();
+    let names: Vec<String> = dims
+        .iter()
+        .map(|d| d["dimension"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, expected_keys(vector, "dimension_names"));
+    let allowed = expected_keys(vector, "dimension_sources");
+    for d in dims {
+        assert_eq!(keys(d), expected_keys(vector, "dimension_keys"));
+        assert!(
+            allowed.contains(&d["source"].as_str().unwrap().to_owned()),
+            "{} declares an unknown source",
+            d["dimension"]
+        );
+    }
+    // The envelope is the in-toto/DSSE carrier, verifiable under the evidence key.
+    let envelope: akson_ext::dsse::Envelope =
+        serde_json::from_value(evidence["evidence"].clone()).unwrap();
+    assert_eq!(envelope.payload_type, akson_evidence::INTOTO_PAYLOAD_TYPE);
+    let key = state
+        .identity()
+        .purpose_key(KeyPurpose::Evidence)
+        .verifying();
+    let statement = akson_evidence::Statement::verify(&envelope, &key).unwrap();
+    assert_eq!(
+        statement.predicate_type,
+        akson_evidence::PREDICATE_FEDERATION_CAPABILITY_V1
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

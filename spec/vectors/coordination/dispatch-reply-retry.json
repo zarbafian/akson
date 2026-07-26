@@ -1,0 +1,53 @@
+{
+  "name": "coordination/dispatch-reply-retry",
+  "description": "The same `execution_key` again — a retry, not a replay. The committed dispatch receipt and its timestamp come back unchanged, `replayed` is true, and nothing is spent a second time. This is what lets a driver that lost its reply ask again safely, while a *different* execution key on the same receipt is refused (refusal-consent-spent).",
+  "input": {
+    "request": {
+      "op": "dispatch",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+      "execution_key": "exec-0001"
+    },
+    "result": {
+      "dispatch_receipt": "dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+      "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+      "byte_length": 16,
+      "task_type": "https://byom.example/task/exchange/v1",
+      "performer": "partner",
+      "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+      "execution_key": "exec-0001",
+      "consent_spent": true,
+      "status": "dispatched",
+      "dispatched_at": 1753574520,
+      "replayed": true,
+      "egress": {
+        "state": "not_implemented",
+        "detail": "the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine"
+      }
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"dispatch\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"execution_key\":\"exec-0001\"}",
+    "same_dispatch_receipt_as": "coordination/dispatch-reply",
+    "result_keys": [
+      "byte_length",
+      "consent_receipt",
+      "consent_spent",
+      "dispatch_receipt",
+      "dispatched_at",
+      "egress",
+      "execution_key",
+      "payload_sha256",
+      "performer",
+      "replayed",
+      "stage_ref",
+      "staged_digest",
+      "status",
+      "task_type"
+    ],
+    "canonical": "{\"byte_length\":16,\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"consent_spent\":true,\"dispatch_receipt\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"dispatched_at\":1753574520,\"egress\":{\"detail\":\"the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine\",\"state\":\"not_implemented\"},\"execution_key\":\"exec-0001\",\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"replayed\":true,\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"dispatched\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "canonical_sha256": "58418c6604cb5d6045113e135e2b7b53038bdfe11fc7896505296fb99da05025"
+  }
+}

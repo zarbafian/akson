@@ -18,7 +18,7 @@ mod slots;
 
 pub use intoto::{
     DigestSet, Statement, StatementError, Subject, INTOTO_PAYLOAD_TYPE, PREDICATE_AUTHORIZATION_V1,
-    PREDICATE_EXECUTION_V1, STATEMENT_TYPE_V1,
+    PREDICATE_EXECUTION_V1, PREDICATE_FEDERATION_CAPABILITY_V1, STATEMENT_TYPE_V1,
 };
 pub use outcome::{fixed_receipt, Outcome, OutcomeError, OutcomeState, Receipt};
 pub use result_manifest::{
