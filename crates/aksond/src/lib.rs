@@ -27,6 +27,7 @@ mod confinement;
 mod control;
 mod control_dispatch;
 mod coord;
+mod coord_egress;
 mod decision;
 mod delivery;
 mod introduce;
@@ -44,6 +45,7 @@ mod send;
 mod socket;
 mod worker_run;
 
+pub use a2a_client::{parse_endpoint, post_a2a};
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
 pub use broker::{
     dispatch_processor_call, run_processor_call, CallResponse, CallTransport, HttpsTransport,

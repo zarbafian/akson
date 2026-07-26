@@ -1,6 +1,6 @@
 {
   "name": "coordination/task-status-reply",
-  "description": "`task_status` for a task this surface dispatched (ADR-0016 §2). Addressable by the dispatch receipt or by the staged reference — and by nothing else. `verification` is deliberately null-valued with a stated reason: no result can be delivered against a dispatch whose bytes never went out, and reporting an optimistic state would be the kind of lie a fail-closed capability matrix cannot detect.",
+  "description": "`task_status` for a task this surface dispatched (ADR-0016 §2). Addressable by the dispatch receipt or by the staged reference — and by nothing else. `egress` is where the bytes got to; `verification.state` is `acknowledged` exactly when the pinned recipient echoed this staged digest and `unacknowledged` otherwise. `result_manifest_digest` and `outcome_state` are PERMANENTLY null rather than pending: a coordination dispatch is not a contract, so no result manifest and no requester outcome will ever exist for it, and reporting them as awaited would be the kind of lie a fail-closed capability matrix cannot detect.",
   "input": {
     "request": {
       "op": "task_status",
@@ -20,10 +20,16 @@
       "execution_key": "exec-0001",
       "dispatched_at": 1753574520,
       "verification": {
-        "state": "awaiting_delivery",
+        "state": "acknowledged",
         "result_manifest_digest": null,
         "outcome_state": null,
-        "detail": "the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine"
+        "detail": "the pinned recipient acknowledged this staged digest; a coordination dispatch carries no contract, so no result manifest or outcome is verifiable against it"
+      },
+      "egress": {
+        "state": "sent",
+        "at": 1753574521,
+        "detail": "acknowledged by fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+        "retryable": false
       }
     }
   },
@@ -40,6 +46,7 @@
       "consent_receipt",
       "dispatch_receipt",
       "dispatched_at",
+      "egress",
       "execution_key",
       "payload_sha256",
       "performer",
@@ -50,7 +57,17 @@
       "task_type",
       "verification"
     ],
-    "canonical": "{\"byte_length\":16,\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"dispatch_receipt\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"dispatched_at\":1753574520,\"execution_key\":\"exec-0001\",\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"dispatched\",\"task_id\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"task_type\":\"https://byom.example/task/exchange/v1\",\"verification\":{\"detail\":\"the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine\",\"outcome_state\":null,\"result_manifest_digest\":null,\"state\":\"awaiting_delivery\"}}",
-    "canonical_sha256": "c5e694460cfe670c8f67e1179c1447cdd310276815c3fb2ae6fb00a4619d50c3"
+    "canonical": "{\"byte_length\":16,\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"dispatch_receipt\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"dispatched_at\":1753574520,\"egress\":{\"at\":1753574521,\"detail\":\"acknowledged by fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"retryable\":false,\"state\":\"sent\"},\"execution_key\":\"exec-0001\",\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"dispatched\",\"task_id\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"task_type\":\"https://byom.example/task/exchange/v1\",\"verification\":{\"detail\":\"the pinned recipient acknowledged this staged digest; a coordination dispatch carries no contract, so no result manifest or outcome is verifiable against it\",\"outcome_state\":null,\"result_manifest_digest\":null,\"state\":\"acknowledged\"}}",
+    "canonical_sha256": "a28c2b5a355ff1b944a960370700f906881490edf1faf09d637257c54d63f858",
+    "verification_states": [
+      "acknowledged",
+      "unacknowledged"
+    ],
+    "egress_keys": [
+      "at",
+      "detail",
+      "retryable",
+      "state"
+    ]
   }
 }

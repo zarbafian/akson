@@ -129,13 +129,13 @@ is not here; it is `stage_consent` on admin, above.
 
 | `op` | Args | Surface | Result (on `ok`) |
 |---|---|---|---|
-| `coord_whoami` | — | **coord** | `{protocol:"akson_byom_exchange_v1", protocol_version, issuer, agent, root_thumbprint, interface_url, endpoint_fingerprint, features[], unimplemented[], partial[]}` — narrower than `who_am_i` on purpose: no `data_dir`, no `receive_addr`. `features` is all eight ops and `unimplemented` is empty; `partial` carries `{op, missing, detail}` for a part of an op that is not built (today: `dispatch`'s outbound carrier) |
+| `coord_whoami` | — | **coord** | `{protocol:"akson_byom_exchange_v1", protocol_version, issuer, agent, root_thumbprint, interface_url, endpoint_fingerprint, features[], unimplemented[], partial[]}` — narrower than `who_am_i` on purpose: no `data_dir`, no `receive_addr`. `features` is all eight ops; `unimplemented` and `partial` are both **empty** since `dispatch` gained its outbound carrier. Both fields stay present — a driver parses them, and "the list is empty" is an answer while "the field is gone" is a parse change. `partial` carries `{op, missing, detail}` when a part of an op is not built |
 | `peer_show` | `label` | **coord** | `{label, root_thumbprint, verified, status, identity{issuer, agent_id, endpoint_id, tls_certificate_sha256, agent_card_thumbprint}, card_claims{security_projection_digest, full_card_digest, key_purposes[]}, endpoint_hint}` — the one peer asked for; `{verified:false, status:"imported"}` before an introduction; never the operator's private note. Unknown or malformed label ⇒ the same `404 unknown-peer` |
 | `stage` | `task_type`, `performer` (a local **label**, may be empty), `payload_base64` | **coord** | `{stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status:"staged", staged_at, consent:null, already_staged}` — **inert and idempotent**: the bytes are persisted (sealed) with a reference derived from their content digest; nothing starts, no authority is minted, no socket opens. The same bytes return the same reference with `already_staged:true` and write no second record |
 | `stage_show` | `stage_ref` | **coord** | the same record plus `consent` — `null`, or `{consent_receipt, staged_digest, max_uses, uses, minted_at}` once the operator has consented |
-| `events_read` | `cursor?`, `limit?` (default 64, max 256) | **coord** | `{events:[{cursor, kind, stage_ref, at, detail}], next_cursor, has_more}` — the durable feed (`staged`, `consent_recorded`, `dispatched`). Cursors are **opaque**: each event carries the cursor that resumes after it, and a cursor that did not come from a reply is refused `400 bad-cursor` |
-| `dispatch` | `stage_ref`, `consent_receipt`, `execution_key` | **coord** | `{dispatch_receipt, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, consent_receipt, execution_key, consent_spent:true, status:"dispatched", dispatched_at, replayed, egress{state, detail}}` — **one-shot**: the receipt is spent and the dispatch committed in one transaction. See the paragraph below |
-| `task_status` | `task_id` | **coord** | `{task_id, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status, dispatch_receipt, consent_receipt, execution_key, dispatched_at, verification{state, result_manifest_digest, outcome_state, detail}}` — scoped to dispatches **this surface** committed, addressed by the dispatch receipt or the staged reference. Anything else — including an inbound task in the operator's inbox — is the same `404 unknown-task` |
+| `events_read` | `cursor?`, `limit?` (default 64, max 256) | **coord** | `{events:[{cursor, kind, stage_ref, at, detail}], next_cursor, has_more}` — the durable feed. Outbound kinds: `staged`, `consent_recorded`, `dispatched`, `egress_recorded` (one per carriage *attempt*, which is not a dispatch). Inbound kinds, on the receiving endpoint: `dispatch_received` (a verified arrival — digests, sender root, byte length; never the payload) and `dispatch_refused` (with the reason that caught it). Cursors are **opaque**: each event carries the cursor that resumes after it, and a cursor that did not come from a reply is refused `400 bad-cursor` |
+| `dispatch` | `stage_ref`, `consent_receipt`, `execution_key` | **coord** | `{dispatch_receipt, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, consent_receipt, execution_key, consent_spent:true, status:"dispatched", dispatched_at, replayed, egress{state, at, detail, retryable}}` — **one-shot**: the receipt is spent and the dispatch committed in one transaction, and the staged bytes are then carried to the pinned recipient. See the two paragraphs below |
+| `task_status` | `task_id` | **coord** | `{task_id, stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status, dispatch_receipt, consent_receipt, execution_key, dispatched_at, egress{…}, verification{state, result_manifest_digest, outcome_state, detail}}` — `verification.state` is `acknowledged` exactly when the pinned recipient echoed this staged digest, `unacknowledged` otherwise; `result_manifest_digest` and `outcome_state` are **permanently** null, because a coordination dispatch is not a contract and no result manifest or requester outcome will ever exist for it. Scoped to dispatches **this surface** committed, addressed by the dispatch receipt or the staged reference. Anything else — including an inbound task in the operator's inbox — is the same `404 unknown-task` |
 | `capability_evidence` | `label` | **coord** | `{label, root_thumbprint, predicate_type, statement_digest, signer{purpose, thumbprint}, statement, evidence}` — a **DSSE-signed in-toto Statement v1** under `…/attestation/federation-capability/v1`, signed with this endpoint's `evidence` key: the same carrier result evidence uses, so a consumer verifies it with the code it already has. Every predicate dimension declares itself `locally_observed` or `peer_asserted`; a dimension this endpoint cannot answer reports `not_retained` rather than a default. Unknown or malformed label ⇒ the same `404 unknown-peer`, and nothing is signed |
 
 **`dispatch` is the one op with an effect, so read its three arguments as three jobs.**
@@ -149,20 +149,53 @@ record commit in one store transaction, guarded by a `uses < max_uses` compare-a
 and a `UNIQUE` constraint on the receipt in the dispatch ledger, so the refusal survives
 a daemon restart.
 
-> **What `dispatch` does not do, stated plainly.** It commits the disclosure decision
-> and puts **no bytes on the wire**: `egress.state` is `not_implemented` and
-> `coord_whoami` lists it under `partial`. ADR-0016 leaves the per-phase outbound
-> carrier table open, and akson's contract schema cannot hold an opaque coordination
-> payload without terms — an objective, a deliverable, a deadline — that the risk card
-> the operator consented to never mentioned; inventing them would make the consent bind
-> less than it claims. So the carrier waits for the ADR that decides it. A `501` would
-> be the wrong answer here in the other direction: something irreversible *did* happen,
-> and a driver must know its receipt is gone. `task_status`'s `verification` is null for
-> the same reason — no result can be delivered against a dispatch that never went out.
+**The carrier: a coordination dispatch is not a contract, and gets its own envelope.**
+`stage` fixes what the operator's risk card and consent digest cover — a payload, a
+recipient label, a `task_type` — and akson's closed contract schema cannot hold that
+without contract terms (an objective, a deliverable, a deadline) the operator never saw;
+synthesising them would make the receipt authorize more than was read. So the bytes ride
+a dedicated object, `spec/ext/coord-dispatch.v1.schema.json`, carried as a Part of media
+type `application/vnd.akson-dev.coord-dispatch.v1+json` beside the raw payload Part, over
+the same pinned mutual-TLS A2A POST every other peer-to-peer byte uses. Its members are
+`{schema_version, protocol, task_type, recipient_label, recipient_root, sender_root,
+payload_sha256, staged_digest, consent_receipt}` and `additionalProperties` is **false**,
+so a contract term cannot be smuggled in later. The envelope is *not signed*: its
+authenticity is the channel's, and there is no key purpose for a coordination dispatch —
+borrowing `contract-proposal` to sign a non-contract would break one-key-one-role. The
+consequence is stated rather than hidden: a coordination dispatch is authenticated, not
+non-repudiable.
+
+The receiver checks four things and admits nothing on a `422 coordination-refused`
+otherwise (one generic refusal; the reason is recorded locally, never returned):
+`sender_root` equals the root the mTLS handshake authenticated; `recipient_root` equals
+its own root; SHA-256 over the payload bytes it actually read equals `payload_sha256`;
+and the ADR-0016 §4 derivation over `{payload_sha256, recipient_label, task_type}`
+reproduces `staged_digest` — which is why `recipient_label` is on the wire at all.
+**Arrival is still not execution:** an admitted disclosure creates no Task, no contract
+head, no work order, and nothing to approve. It is acknowledged, one `dispatch_received`
+event is recorded, and the payload is *not retained* — retaining it would need an inbound
+coordination op that ADR-0016's registry deliberately does not have.
+
+**Where the bytes are is a durable column, not an inference.** `egress.state` is
+`pending` (committed, no acknowledgement — the state a crash between the commit and the
+send leaves, and the schema default so it is true by construction), `sent` (the pinned
+recipient echoed this exact staged digest — **terminal**), or `failed` (attempted and
+refused). A dispatch whose carriage did not complete is recoverable: retrying under the
+**same** `execution_key` re-attempts it and spends nothing, because the execution key
+already owns the one dispatch row; a *different* key on that receipt stays
+`409 consent-spent` throughout. That is at-least-once carriage of exactly one consented
+disclosure, deduplicated at the recipient by the dispatch receipt, which is the A2A
+Message id. Routing is resolved **before** the spend: a staging whose recipient is
+unnamed, un-introduced, suspended, or has no usable https endpoint is refused
+`409 unroutable-recipient` with the consent receipt still live, because burning a
+one-shot consent on a disclosure that provably cannot leave is the worst failure this
+surface has available to it.
 
 Golden vectors for every coordination op — request wire, reply field set, the staged
-digest derivation and its idempotency, the cursor encoding, and every refusal body —
-live in `spec/vectors/coordination/`, re-derived independently by `xcheck/`.
+digest derivation and its idempotency, the dispatch envelope's wire shape, the cursor
+encoding, and every refusal body — live in `spec/vectors/coordination/`, re-derived
+independently by `xcheck/`. The two-process interop scenario
+`harness/interop/scenario-coord-dispatch.sh` runs the whole chain across a real socket.
 
 > The confined worker does **not** speak this protocol directly for a model call — a
 > `processor_use` grant hands it one already-connected fd (`AKSON_BROKER_FD`) and the

@@ -490,6 +490,28 @@ pub struct DispatchRecord {
     pub receipt_id: String,
     pub dispatch_receipt: String,
     pub dispatched_at: i64,
+    /// Where the bytes are: [`COORD_EGRESS_PENDING`], [`COORD_EGRESS_SENT`], or
+    /// [`COORD_EGRESS_FAILED`]. A fresh row is `pending` by schema default, so a
+    /// dispatch that commits and then crashes before its send reads as
+    /// "not known to have left" without anything having had to run.
+    pub egress_state: String,
+    /// Why the carriage is in that state, in one line. Empty while `pending`.
+    pub egress_detail: String,
+    /// When the carriage reached its current state (trusted time), or `None`
+    /// while it is still `pending`.
+    pub egress_at: Option<i64>,
+}
+
+impl DispatchRecord {
+    /// Whether carriage of this committed dispatch may be (re-)attempted. `sent`
+    /// is terminal; `pending` and `failed` are not.
+    ///
+    /// Re-attempting spends nothing: reaching this record at all means the
+    /// caller presented the `execution_key` that already owns it, which the V22
+    /// primary key resolves as a retry before any compare-and-set runs.
+    pub fn egress_may_be_attempted(&self) -> bool {
+        self.egress_state != COORD_EGRESS_SENT
+    }
 }
 
 /// Proof that **one** consent receipt was durably spent — the authority to
@@ -553,6 +575,10 @@ impl ConsentBurn {
     ///
     /// Takes `self` **by value**: this is where a one-shot authority becomes an
     /// ordinary record. Call it at the point of effect, once.
+    ///
+    /// The record it yields is `pending`, matching the row this burn's
+    /// transaction inserted: the receipt is spent, and nothing has been carried
+    /// yet. Only [`Store::record_egress`] moves that.
     pub fn into_record(self) -> DispatchRecord {
         DispatchRecord {
             execution_key: self.execution_key,
@@ -561,6 +587,9 @@ impl ConsentBurn {
             receipt_id: self.receipt_id,
             dispatch_receipt: self.dispatch_receipt,
             dispatched_at: self.dispatched_at,
+            egress_state: COORD_EGRESS_PENDING.to_owned(),
+            egress_detail: String::new(),
+            egress_at: None,
         }
     }
 }
@@ -3155,6 +3184,74 @@ impl Store {
         }))
     }
 
+    /// Records where a committed dispatch's bytes got to (ADR-0016 §2, slice 3).
+    ///
+    /// This is the **only** way `egress_state` moves, and it moves in one
+    /// direction: `sent` is terminal. The `WHERE … AND egress_state != 'sent'`
+    /// guard is the whole of that rule, in the statement rather than in a caller
+    /// that has to remember — a late failure report arriving after a successful
+    /// carriage must not be able to mark a delivered disclosure undelivered.
+    ///
+    /// It spends nothing and grants nothing: the receipt was already spent by
+    /// [`dispatch_staged`](Self::dispatch_staged), and this only annotates the
+    /// row that spending produced. One `egress_recorded` event is appended in
+    /// the same transaction, so the driver's feed cannot lag the column.
+    ///
+    /// Returns the row as it now stands, or `None` if no dispatch has that
+    /// execution key.
+    pub fn record_egress(
+        &self,
+        execution_key: &str,
+        state: &str,
+        detail: &str,
+        event: &serde_json::Value,
+        now: i64,
+    ) -> Result<Option<DispatchRecord>, StoreError> {
+        if !matches!(
+            state,
+            COORD_EGRESS_PENDING | COORD_EGRESS_SENT | COORD_EGRESS_FAILED
+        ) {
+            return Err(StoreError::Corrupt(format!("unknown egress state {state}")));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE coord_dispatches
+                SET egress_state = ?2, egress_detail = ?3, egress_at = ?4
+              WHERE execution_key = ?1 AND egress_state != 'sent'",
+            params![execution_key, state, detail, now],
+        )?;
+        if changed == 1 {
+            self.append_event_in(&tx, COORD_EVENT_EGRESS, None, event, now)?;
+            audit::append(
+                &tx,
+                now,
+                "coord.egress",
+                &format!("{execution_key}:{state}"),
+            )?;
+        }
+        tx.commit()?;
+        dispatch_row_by(&self.conn, "execution_key", execution_key)
+    }
+
+    /// Every committed dispatch whose bytes are not known to have left — the
+    /// crash-recovery worklist (ADR-0016 §2, slice 3). Oldest first.
+    ///
+    /// A daemon that died between `dispatch_staged` committing and the carrier
+    /// running leaves rows here. They are not retried automatically: the driver
+    /// re-presents the same `execution_key`, which is a retry by construction.
+    /// This is what makes "recoverable" a fact an operator can read rather than
+    /// a hope.
+    pub fn unsent_dispatches(&self, limit: usize) -> Result<Vec<DispatchRecord>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT execution_key, stage_ref, staged_digest, receipt_id,
+                    dispatch_receipt, dispatched_at, egress_state, egress_detail, egress_at
+             FROM coord_dispatches WHERE egress_state != 'sent'
+             ORDER BY dispatched_at, execution_key LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], dispatch_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// The dispatch a coordination driver may ask about, addressed by its dispatch
     /// receipt or by the staged reference it dispatched (ADR-0016 §2).
     ///
@@ -3257,6 +3354,18 @@ pub const COORD_EVENT_CONSENT: &str = "consent_recorded";
 /// The `dispatched` event kind — appended in the same transaction that spends the
 /// receipt, so the feed cannot lag the act.
 pub const COORD_EVENT_DISPATCHED: &str = "dispatched";
+/// The `egress_recorded` event kind — appended when a dispatch's carriage
+/// resolves, in the same transaction that moves the column.
+pub const COORD_EVENT_EGRESS: &str = "egress_recorded";
+
+/// The dispatch committed; its bytes are **not known** to have left. The default
+/// for a fresh row, and what a crash between commit and send leaves behind.
+pub const COORD_EGRESS_PENDING: &str = "pending";
+/// The pinned recipient acknowledged the exact staged digest. Terminal.
+pub const COORD_EGRESS_SENT: &str = "sent";
+/// Carriage was attempted and definitively refused. Re-attemptable under the
+/// same execution key; the consent stays spent either way.
+pub const COORD_EGRESS_FAILED: &str = "failed";
 /// A staged contract awaiting the operator's consent.
 pub const COORD_STATUS_STAGED: &str = "staged";
 /// A staged contract with a live consent receipt.
@@ -3299,22 +3408,28 @@ fn dispatch_row_by(
         .query_row(
             &format!(
                 "SELECT execution_key, stage_ref, staged_digest, receipt_id,
-                        dispatch_receipt, dispatched_at
+                        dispatch_receipt, dispatched_at, egress_state, egress_detail, egress_at
                  FROM coord_dispatches WHERE {column} = ?1"
             ),
             [value],
-            |r| {
-                Ok(DispatchRecord {
-                    execution_key: r.get(0)?,
-                    stage_ref: r.get(1)?,
-                    staged_digest: r.get(2)?,
-                    receipt_id: r.get(3)?,
-                    dispatch_receipt: r.get(4)?,
-                    dispatched_at: r.get(5)?,
-                })
-            },
+            dispatch_from_row,
         )
         .optional()?)
+}
+
+/// One `coord_dispatches` row, in the column order every query above selects.
+fn dispatch_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DispatchRecord> {
+    Ok(DispatchRecord {
+        execution_key: r.get(0)?,
+        stage_ref: r.get(1)?,
+        staged_digest: r.get(2)?,
+        receipt_id: r.get(3)?,
+        dispatch_receipt: r.get(4)?,
+        dispatched_at: r.get(5)?,
+        egress_state: r.get(6)?,
+        egress_detail: r.get(7)?,
+        egress_at: r.get(8)?,
+    })
 }
 
 fn unconsumed_row(
@@ -4687,6 +4802,113 @@ mod tests {
         let events = store.read_coord_events(0, 10).unwrap();
         assert_eq!(events.len(), 3, "staged + consent_recorded + dispatched");
         assert_eq!(events[2].kind, COORD_EVENT_DISPATCHED);
+    }
+
+    /// **A delivered disclosure cannot be un-delivered.** `sent` is terminal, and
+    /// the guard is one `WHERE … AND egress_state != 'sent'` clause — the kind of
+    /// thing that gets "simplified" away because nothing obviously breaks. The
+    /// adversary here is an ordinary race: a slow first attempt lands, a retry's
+    /// error report arrives afterwards and tries to overwrite `sent` with
+    /// `failed`. If it succeeded, an operator reading the ledger would believe a
+    /// disclosure that DID leave never did — and `unsent_dispatches` would hand
+    /// it back for another carriage.
+    #[test]
+    fn a_recorded_send_cannot_be_overwritten_by_a_late_failure() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let digest = "ab".repeat(32);
+        let stage_ref = consented(&store, &digest, "stage-4444444444444444444444444444444d");
+        let event = serde_json::json!({"stage_ref": stage_ref});
+        let _ = burn(
+            store
+                .dispatch_staged(stage_ref, "rcpt-1", "exec-1", "dispatch-1", &event, 3000)
+                .unwrap(),
+        );
+
+        // Fresh rows are `pending` by schema default: committed, nothing claimed
+        // to have left. That is what a crash between commit and send leaves.
+        let row = store.coord_dispatch("dispatch-1").unwrap().unwrap();
+        assert_eq!(row.egress_state, COORD_EGRESS_PENDING);
+        assert_eq!(row.egress_at, None);
+        assert!(row.egress_may_be_attempted());
+        assert_eq!(store.unsent_dispatches(10).unwrap().len(), 1);
+
+        let sent = store
+            .record_egress(
+                "exec-1",
+                COORD_EGRESS_SENT,
+                "acknowledged by peer",
+                &event,
+                4000,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.egress_state, COORD_EGRESS_SENT);
+        assert_eq!(sent.egress_at, Some(4000));
+        assert!(!sent.egress_may_be_attempted());
+        assert!(store.unsent_dispatches(10).unwrap().is_empty());
+
+        // The late failure. It must change nothing — not the state, not the
+        // detail, not the timestamp — and must append no event, because nothing
+        // happened.
+        let events_before = store.read_coord_events(0, 50).unwrap().len();
+        let after = store
+            .record_egress(
+                "exec-1",
+                COORD_EGRESS_FAILED,
+                "a late error report",
+                &event,
+                5000,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.egress_state, COORD_EGRESS_SENT, "sent is terminal");
+        assert_eq!(after.egress_detail, "acknowledged by peer");
+        assert_eq!(after.egress_at, Some(4000));
+        assert_eq!(
+            store.read_coord_events(0, 50).unwrap().len(),
+            events_before,
+            "a refused transition appends no egress event"
+        );
+        assert!(store.unsent_dispatches(10).unwrap().is_empty());
+
+        // A `pending` row, by contrast, moves freely until it reaches `sent`.
+        let other = "stage-5555555555555555555555555555555e";
+        store
+            .stage_contract(&staged(b"more bytes", &"cd".repeat(32), other), 1000)
+            .unwrap();
+        store
+            .mint_consent_receipt(other, "rcpt-2", b"{}", &event, 2000)
+            .unwrap()
+            .expect("mint");
+        let _ = burn(
+            store
+                .dispatch_staged(other, "rcpt-2", "exec-2", "dispatch-2", &event, 6000)
+                .unwrap(),
+        );
+        let failed = store
+            .record_egress("exec-2", COORD_EGRESS_FAILED, "unreachable", &event, 7000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.egress_state, COORD_EGRESS_FAILED);
+        assert!(
+            failed.egress_may_be_attempted(),
+            "a failure is re-attemptable"
+        );
+        let recovered = store
+            .record_egress("exec-2", COORD_EGRESS_SENT, "acknowledged", &event, 8000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.egress_state, COORD_EGRESS_SENT);
+
+        // An unknown execution key annotates nothing and invents nothing.
+        assert!(store
+            .record_egress("exec-nobody", COORD_EGRESS_SENT, "x", &event, 9000)
+            .unwrap()
+            .is_none());
+        // And an unknown state is a corruption error, not a silently stored value.
+        assert!(store
+            .record_egress("exec-2", "delivered-probably", "x", &event, 9000)
+            .is_err());
     }
 
     /// A spent receipt stays spent across a **reopen** — the point of putting the

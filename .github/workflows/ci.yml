@@ -167,6 +167,8 @@ jobs:
         run: cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh
+      - name: interop — coordination dispatch over mTLS (two processes)
+        run: bash harness/interop/scenario-coord-dispatch.sh
 
   proof:
     name: machine-checked protocol models

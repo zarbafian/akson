@@ -1,6 +1,6 @@
 {
   "name": "coordination/coord-whoami",
-  "description": "The driver's handshake (ADR-0016 §2). The identity fields are instance values (the Rust test compares only the deterministic ones: protocol, version, features, unimplemented, partial, and the key set); the frozen facts are the request wire, the reply's field set, and that the surface reports what it does NOT do rather than leaving it absent. All eight registry ops now answer, so `unimplemented` is empty — but `dispatch` is only partly built (it spends consent and puts no bytes on the wire), and `partial` says so, because a driver must be able to read that before it burns a receipt. Deliberately narrower than admin's who_am_i: no data_dir, no receive_addr.",
+  "description": "The driver's handshake (ADR-0016 §2). The identity fields are instance values (the Rust test compares only the deterministic ones: protocol, version, features, unimplemented, partial, and the key set); the frozen facts are the request wire, the reply's field set, and that the surface reports what it does NOT do rather than leaving it absent. All eight registry ops answer and `dispatch` now has an outbound carrier, so BOTH `unimplemented` and `partial` are empty — and both fields are still present, because a driver parses them and \"the list is empty\" is an answer while \"the field is gone\" is a parse change. Deliberately narrower than admin's who_am_i: no data_dir, no receive_addr.",
   "input": {
     "request": {
       "op": "coord_whoami"
@@ -24,13 +24,7 @@
         "capability_evidence"
       ],
       "unimplemented": [],
-      "partial": [
-        {
-          "op": "dispatch",
-          "missing": "outbound_carrier",
-          "detail": "the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine"
-        }
-      ]
+      "partial": []
     }
   },
   "expected": {
@@ -47,7 +41,7 @@
       "root_thumbprint",
       "unimplemented"
     ],
-    "canonical": "{\"agent\":\"akson-local\",\"endpoint_fingerprint\":\"sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f\",\"features\":[\"coord_whoami\",\"peer_show\",\"stage\",\"stage_show\",\"dispatch\",\"task_status\",\"events_read\",\"capability_evidence\"],\"interface_url\":\"https://127.0.0.1:18443/a2a\",\"issuer\":\"local\",\"partial\":[{\"detail\":\"the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine\",\"missing\":\"outbound_carrier\",\"op\":\"dispatch\"}],\"protocol\":\"akson_byom_exchange_v1\",\"protocol_version\":1,\"root_thumbprint\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"unimplemented\":[]}",
-    "canonical_sha256": "ff2c03d9ed4397b0a852032aa578e7ec60223c5c4d2ecc9477a697e1d30e8054"
+    "canonical": "{\"agent\":\"akson-local\",\"endpoint_fingerprint\":\"sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f\",\"features\":[\"coord_whoami\",\"peer_show\",\"stage\",\"stage_show\",\"dispatch\",\"task_status\",\"events_read\",\"capability_evidence\"],\"interface_url\":\"https://127.0.0.1:18443/a2a\",\"issuer\":\"local\",\"partial\":[],\"protocol\":\"akson_byom_exchange_v1\",\"protocol_version\":1,\"root_thumbprint\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"unimplemented\":[]}",
+    "canonical_sha256": "7af14263191d4aaea1ad373bc18c2216903b2525417d0b66757e41755b0daabd"
   }
 }

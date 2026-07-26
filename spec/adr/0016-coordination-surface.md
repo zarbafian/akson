@@ -87,6 +87,80 @@ authority, touches no workspace, invokes no tool, opens no socket — the §6.3
 Idempotency is on the content digest: the same bytes yield the same reference
 and no second record.
 
+### 5. A coordination dispatch is not a contract, and gets its own envelope
+
+*(Decided in C4 slice 3; supersedes the "the carrier waits" consequence below,
+which is retained as the record of why.)*
+
+§4 fixes what the operator's risk card and consent digest cover: a payload, a
+recipient label, a `task_type`. Akson's closed contract schema cannot carry that
+without contract terms — an objective, a deliverable, a deadline — the operator
+never saw, and synthesising them would make the consent receipt authorize more
+than was read. That is the one thing this surface exists to prevent, so the
+contract schema is **not** reused and no terms are invented.
+
+Instead, one new in-tree object through the front door design note D5 names:
+`spec/ext/coord-dispatch.v1.schema.json`, carried as an A2A Part of media type
+`application/vnd.akson-dev.coord-dispatch.v1+json` beside the raw payload Part,
+over the same pinned mutual-TLS `SendMessage` POST every other peer-to-peer byte
+in akson already uses. Its members, and why each is there:
+
+| Member | Why |
+|---|---|
+| `task_type` | consented to; the byom-owned type, uninterpreted |
+| `recipient_label` | consented to (the card names it), **and** one of the three preimages of `staged_digest` — without it the receiver could check the bytes but not the digest consent binds |
+| `payload_sha256` | the payload, by the digest the receiver recomputes |
+| `staged_digest` | the exact value the consent receipt binds |
+| `consent_receipt` | the identity of the authorization; the id only, never the sealed body, and it confers nothing on the receiver |
+| `recipient_root` | so a misrouted disclosure is refused even over a good channel |
+| `sender_root` | so a claimed sender can never differ from the pinned one |
+| `schema_version`, `protocol` | so a receiver refuses rather than guesses |
+
+`additionalProperties` is **false**: a contract term cannot be added later
+without changing this ADR and the vectors.
+
+**The envelope is not signed.** Its authenticity is the channel's — mutual TLS
+pinned to the peer record on both sides — and its integrity is the digest chain
+above. Signing it would need a purpose key, and there is no key purpose for a
+coordination dispatch; borrowing `contract-proposal` to sign a non-contract is
+the one-key-one-role violation this codebase refuses elsewhere, and adding an
+eighth paired purpose is a larger change than this decision earns. **The
+residual is named rather than hidden: a coordination dispatch is authenticated,
+not non-repudiable — a recipient cannot prove to a third party who sent it.** A
+future ADR that needs that adds the purpose; nothing here forecloses it.
+
+The receiver checks four things and answers one generic `422` otherwise (the
+reason is recorded locally, never returned): `sender_root` equals the
+transport-authenticated root, `recipient_root` equals its own, the payload bytes
+hash to `payload_sha256`, and the §4 derivation reproduces `staged_digest`.
+**Arrival is still not execution**: an admitted disclosure creates no Task, no
+contract head, no work order, and nothing to approve. It is acknowledged, one
+`dispatch_received` event is recorded, and the payload is **not retained** —
+retaining it would require an inbound coordination op §2's registry deliberately
+does not have. That remains open, and is the natural next decision.
+
+### 6. Where the bytes are is a durable column
+
+`coord_dispatches` gains `egress_state` (V23): `pending` — committed, no
+acknowledgement, the schema **default**, so a crash between the commit and the
+send is honest by construction rather than by remembering to write something;
+`sent` — the pinned recipient echoed this exact staged digest, **terminal**;
+`failed` — attempted and refused.
+
+Recovery is the driver's retry, not a background sweeper: re-presenting the
+**same** `execution_key` re-attempts carriage and spends nothing (the V22 primary
+key resolves it as a retry before any compare-and-set runs), while a *different*
+key on that receipt stays `409 consent-spent`. So one consent yields exactly one
+dispatch record and at-least-once carriage of it, deduplicated at the recipient
+by the dispatch receipt, which is the A2A Message id. `Store::unsent_dispatches`
+makes the worklist readable rather than implied.
+
+**Routing is resolved before the spend.** A staging whose recipient is unnamed,
+un-introduced, suspended, or has no usable https endpoint is refused
+`409 unroutable-recipient` with the consent receipt still live. Burning a
+one-shot consent on a disclosure that provably cannot leave would be the worst
+failure available to this surface, so it is closed structurally by ordering.
+
 ## Threat cases
 
 | Threat | Outcome |
@@ -99,6 +173,11 @@ and no second record.
 | a foreign local user connects to `coord.sock` | UID mismatch, refused before the request is read |
 | `AKSON_COORD_UID` is unset but a driver exists | the socket was never created; there is nothing to connect to |
 | the operator wants to inspect the surface | admin dominates coord, so `akson` diagnostics work without a second identity |
+| …dispatches the consented digest but swaps the payload bytes | the receiver recomputes SHA-256 over what it actually read and the §4 derivation over the envelope's own members; neither matches ⇒ `422`, nothing admitted (§5) |
+| …aims a consented disclosure at a different peer | the sender's TLS handshake is pinned to the recipient's certificate, so an impostor never receives the bytes; and a peer that *is* pinned refuses an envelope whose `recipient_root` is not its own (§5) |
+| the daemon crashes between the commit and the send | the row is `pending` by schema default: consent spent, record present, nothing claimed to have left. A retry under the same `execution_key` resumes carriage and spends nothing; a different key stays `409 consent-spent` (§6) |
+| …dispatches a staging with no reachable recipient | refused `409 unroutable-recipient` **before** the spend, so the receipt stays live (§6) |
+| an admitted disclosure tries to become work at the recipient | it cannot: no Task, no contract head, no work order, nothing in the approval inbox — arrival is not execution (§5) |
 
 ## Consequences
 
@@ -113,23 +192,31 @@ and no second record.
   admission (question 1). Consent-receipt shape, coordination-event durability,
   and the `RestoreLineage` re-staging hint remain open and are decided as the
   ops that need them land.
-- **`dispatch`, as implemented, consumes and commits — it does not yet transmit.**
-  The one-shot property is real and durable: the receipt's `uses 0 → 1`
-  compare-and-set, the dispatch row that records it, the stage's advance to
-  `dispatched`, and the `dispatched` event all commit in one transaction, and the
-  dispatch ledger holds the receipt under a `UNIQUE` constraint so a second
-  dispatch cannot commit even if that CAS were wrong. What is *not* decided is the
-  outbound carrier: this ADR's §4 fixes what `stage` accepts (payload, recipient
-  label, `task_type`) and therefore what the operator's risk card and consent
-  digest cover, and akson's closed contract schema cannot carry that payload
-  without contract terms — an objective, a deliverable, a deadline — the consent
-  never mentioned. Synthesising them would make the receipt authorize more than
-  the operator read, so the carrier waits for the per-phase carrier table (design
-  note D5) and the in-tree schema version it names. Until then `coord_whoami`
-  reports `dispatch` under `partial`, every dispatch reply carries
-  `egress.state: "not_implemented"`, and `task_status` reports a null
-  `verification` — because a result cannot be delivered against a dispatch that
-  never left. A `501` would be the wrong refusal: consent *is* spent, and the
-  driver has to know that.
+- **`dispatch` consumes, commits, and now transmits.** The one-shot property is
+  real and durable: the receipt's `uses 0 → 1` compare-and-set, the dispatch row
+  that records it, the stage's advance to `dispatched`, and the `dispatched`
+  event all commit in one transaction, and the dispatch ledger holds the receipt
+  under a `UNIQUE` constraint so a second dispatch cannot commit even if that CAS
+  were wrong. §5 above decides the carrier slice 2 left open, and §6 the egress
+  state it needs. `coord_whoami`'s `partial` list is now empty (the field stays —
+  a driver parses it), `egress.state` reports the durable column, and
+  `task_status.verification` says `acknowledged`/`unacknowledged` with the
+  contract-shaped fields permanently null.
+
+  *Kept because it is the reasoning §5 rests on:* slice 2 shipped
+  `egress.state: "not_implemented"` and a null `verification` rather than a
+  `501`, because a `501` would have implied nothing happened when in fact the
+  consent was spent — and the driver had to know that. The carrier was left open
+  precisely because akson's closed contract schema cannot carry a coordination
+  payload without terms the operator never read; §5 resolves that by not using
+  the contract schema at all.
+- **What is still open, named rather than implied.** (a) The receiving side
+  verifies and acknowledges but does **not retain** an inbound coordination
+  payload: §2's registry has no op to read one back, and storage without a reader
+  is an unbounded liability, so the inbound half waits for the decision that
+  gives it a shape. (b) The envelope is channel-authenticated, not signed, so a
+  coordination dispatch is not non-repudiable (§5). (c) `stage` is unchanged, so
+  an unrouted staging is still accepted and consentable — it simply cannot be
+  dispatched, and that is caught before the spend (§6).
 - A second driver identity would need a second UID; if that becomes common,
   revisit — but do it deliberately, not by widening this one to a group.

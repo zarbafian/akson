@@ -30,10 +30,11 @@
 //!   `Deserialize`, consumed by value at the point of effect. A borrowed permit is
 //!   how one grant gets spent twice; this one cannot be borrowed.
 //!
-//! What is **not** here, named rather than implied: [`EGRESS_NOT_DECIDED`].
-//! `dispatch` commits the disclosure decision but puts no bytes on the wire,
-//! because ADR-0016 leaves the per-phase outbound carrier open. `coord_whoami`
-//! reports it under `partial`, and every dispatch reply repeats it.
+//! The bytes now actually leave: [`crate::coord_egress`] carries them to the
+//! pinned recipient over the same mutual TLS every other peer-to-peer byte in
+//! akson rides, in a coordination envelope that is deliberately **not** a
+//! contract. Where they got to is a durable column, not an inference — see
+//! [`egress_json`] and `akson_store::COORD_EGRESS_PENDING`.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
@@ -45,11 +46,12 @@ use akson_crypto::purpose::KeyPurpose;
 use akson_evidence::{Statement, Subject, PREDICATE_FEDERATION_CAPABILITY_V1};
 use akson_store::{
     ConsentBurn, DispatchOutcome, DispatchRecord, NewStagedContract, Recovery, StagedContract,
-    Store, COORD_STATUS_DISPATCHED,
+    Store, COORD_EGRESS_FAILED, COORD_EGRESS_SENT, COORD_STATUS_DISPATCHED,
 };
 
 use crate::bootstrap::{valid_label, DaemonState};
 use crate::control::Problem;
+use crate::coord_egress::{self, resolve_route, Carriage, CoordRoute};
 use crate::socket::ControlRequest;
 
 /// The coordination protocol this surface speaks (ADR-0016).
@@ -74,16 +76,17 @@ const IMPLEMENTED: [&str; 8] = [
 /// empty" is an answer while "the field is gone" is a parse change.
 const UNIMPLEMENTED: [&str; 0] = [];
 
-/// The one thing this build does not do, stated where a driver reads it.
-///
-/// `dispatch` spends the operator's consent and commits the dispatch. It does not
-/// put the staged bytes on the wire, and that is a design gap, not an oversight:
-/// ADR-0016 leaves the per-phase carrier table open, and akson's contract schema
-/// cannot hold an opaque byom payload without terms — an objective, a deliverable,
-/// a deadline — that the risk card the operator read never mentioned. Inventing
-/// them would make the consent bind less than it claims. So the carrier waits for
-/// the ADR that decides it, and until then the surface says so out loud.
-pub const EGRESS_NOT_DECIDED: &str = "the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine";
+/// The coordination ops that answer but do not do the whole of their job. Empty
+/// now that `dispatch` has a carrier — kept for the same reason as
+/// [`UNIMPLEMENTED`], and the honest place for the next partial op.
+const PARTIAL: [serde_json::Value; 0] = [];
+
+/// What `egress.detail` says while a dispatch is committed but its carriage is
+/// not known to have completed. This is a real state, not a placeholder: it is
+/// what a crash between the commit and the send leaves behind, and it is the
+/// default of the durable column rather than something code has to remember to
+/// write.
+pub const EGRESS_PENDING_DETAIL: &str = "the consent receipt is spent and the dispatch is committed, but this endpoint has no acknowledgement that the bytes left; retry under the same execution_key to resume carriage";
 
 /// Ceiling on a caller-chosen opaque id (`stage_ref`, `consent_receipt`,
 /// `execution_key`, `task_id`). These become durable primary keys, so their length
@@ -160,14 +163,12 @@ fn coord_whoami(state: &DaemonState) -> serde_json::Value {
         "endpoint_fingerprint": format!("sha256:{}", state.endpoint_cert().fingerprint.value),
         "features": IMPLEMENTED,
         "unimplemented": UNIMPLEMENTED,
-        // Not "everything works": `dispatch` is real about consent and silent
-        // about the wire, and a driver has to be able to read that difference
-        // before it spends a receipt.
-        "partial": [{
-            "op": "dispatch",
-            "missing": "outbound_carrier",
-            "detail": EGRESS_NOT_DECIDED,
-        }],
+        // Empty since the carrier landed: `dispatch` now spends consent AND puts
+        // the bytes on the wire, so there is no longer a part of it a driver
+        // must know about before burning a receipt. The field stays (a driver
+        // parses it; "the list is empty" is an answer, "the field is gone" is a
+        // parse change), and it is the honest place for the next such gap.
+        "partial": PARTIAL,
     })
 }
 
@@ -594,8 +595,9 @@ fn risk_card(
     Ok((sentence, sections))
 }
 
-/// `dispatch` — one-shot: spend the operator's consent receipt and commit the
-/// dispatch of exactly the digest it binds (ADR-0016 §2).
+/// `dispatch` — one-shot: spend the operator's consent receipt, commit the
+/// dispatch of exactly the digest it binds, and carry those bytes to the pinned
+/// recipient (ADR-0016 §2).
 ///
 /// The three arguments are three different jobs:
 ///
@@ -603,12 +605,30 @@ fn risk_card(
 /// - `consent_receipt` is the operator's authority for those bytes, and it is
 ///   spendable once;
 /// - `execution_key` is the driver's name for *one attempt*. Re-sending the same
-///   key is a **retry**: it returns the same dispatch receipt and spends nothing.
-///   A different key against a spent receipt is a **replay**: refused.
+///   key is a **retry**: it returns the same dispatch receipt, spends nothing,
+///   and re-attempts carriage if the bytes are not known to have left. A
+///   different key against a spent receipt is a **replay**: refused.
 ///
-/// The store does the spending in one transaction ([`Store::dispatch_staged`]) and
-/// hands back a [`ConsentBurn`] only to the caller that won it. [`disclose`] then
-/// consumes that burn by value.
+/// The order is the whole recovery story, so read it as four steps:
+///
+/// 1. **Route first, under the lock, before anything is spent.** A staging whose
+///    recipient is unnamed, un-introduced, suspended, or unreachable-by-shape is
+///    refused with the receipt still live — burning an operator's one-shot
+///    consent on a disclosure that provably cannot leave would be the worst
+///    possible failure of this surface.
+/// 2. **Spend and commit**, in the one [`Store::dispatch_staged`] transaction,
+///    which yields a [`ConsentBurn`] only to the caller that won it. The row it
+///    writes is `egress_state = 'pending'` by schema default, so a crash here
+///    leaves the truth behind without anything having had to run.
+/// 3. **Carry**, with the store lock released (the network must never be held
+///    behind the database).
+/// 4. **Record** what carriage did, monotonically — `sent` is terminal.
+///
+/// Crash between 2 and 4 ⇒ the row stays `pending`, the receipt stays spent, and
+/// the driver's retry under the same `execution_key` resumes at step 3 without
+/// spending anything. That is at-least-once *carriage* of exactly one consented
+/// disclosure; the recipient deduplicates on the dispatch receipt, which is the
+/// A2A Message id.
 fn dispatch(
     state: &DaemonState,
     stage_ref: &str,
@@ -629,40 +649,64 @@ fn dispatch(
         return Err(consent_required());
     }
 
-    let store = state.store();
-    let store = store.lock().map_err(|_| internal())?;
-    let staged = store
-        .staged_contract(stage_ref)
-        .map_err(|_| internal())?
-        .ok_or_else(unknown_stage)?;
-    let now = trusted_now(&store)?;
-    let dispatch_receipt = format!("dispatch-{}", random_hex());
-    let event = serde_json::json!({
-        "stage_ref": staged.stage_ref,
-        "staged_digest": staged.staged_digest,
-        "payload_sha256": staged.payload_sha256,
-        "task_type": staged.task_type,
-        "performer": staged.performer,
-        "byte_length": staged.byte_length,
-        "consent_receipt": consent_receipt,
-        "execution_key": execution_key,
-        "dispatch_receipt": dispatch_receipt,
-    });
-    match store
-        .dispatch_staged(
-            stage_ref,
-            consent_receipt,
-            execution_key,
-            &dispatch_receipt,
-            &event,
-            now,
-        )
-        .map_err(|_| internal())?
-    {
-        DispatchOutcome::Dispatched(burn) => Ok(disclose(&staged, burn)),
-        // A retry replays facts. There is no burn here, so it cannot disclose
-        // again even if the code below wanted to.
-        DispatchOutcome::AlreadyDispatched(record) => Ok(dispatched_json(&staged, &record, true)),
+    // --- 1 & 2: route, then spend. Both under one lock; neither touches the
+    // network.
+    let (staged, route, payload, outcome) = {
+        let store = state.store();
+        let store = store.lock().map_err(|_| internal())?;
+        let staged = store
+            .staged_contract(stage_ref)
+            .map_err(|_| internal())?
+            .ok_or_else(unknown_stage)?;
+        // BEFORE the spend. Every refusal below leaves the receipt live.
+        let route = resolve_route(&store, &staged)?;
+        let payload = store
+            .staged_payload(stage_ref)
+            .map_err(|_| internal())?
+            .ok_or_else(internal)?;
+        let now = trusted_now(&store)?;
+        let dispatch_receipt = format!("dispatch-{}", random_hex());
+        let event = serde_json::json!({
+            "stage_ref": staged.stage_ref,
+            "staged_digest": staged.staged_digest,
+            "payload_sha256": staged.payload_sha256,
+            "task_type": staged.task_type,
+            "performer": staged.performer,
+            "recipient_root": route.root,
+            "byte_length": staged.byte_length,
+            "consent_receipt": consent_receipt,
+            "execution_key": execution_key,
+            "dispatch_receipt": dispatch_receipt,
+        });
+        let outcome = store
+            .dispatch_staged(
+                stage_ref,
+                consent_receipt,
+                execution_key,
+                &dispatch_receipt,
+                &event,
+                now,
+            )
+            .map_err(|_| internal())?;
+        (staged, route, payload, outcome)
+    };
+
+    match outcome {
+        // The one path that spent something. `disclose` consumes the burn by
+        // value at the point of effect.
+        DispatchOutcome::Dispatched(burn) => disclose(state, &staged, &route, &payload, burn)
+            .map(|r| dispatched_json(&staged, &r, false)),
+        // A retry. No burn exists here, so nothing can be spent again — but if
+        // the bytes are not known to have left, this is exactly the call that
+        // resumes their carriage.
+        DispatchOutcome::AlreadyDispatched(record) => {
+            let record = if record.egress_may_be_attempted() {
+                re_disclose(state, &staged, &route, &payload, record)?
+            } else {
+                record
+            };
+            Ok(dispatched_json(&staged, &record, true))
+        }
         DispatchOutcome::ConsentSpent => Err(Problem::new(
             409,
             "consent-spent",
@@ -677,21 +721,97 @@ fn dispatch(
     }
 }
 
-/// Where the staged bytes leave this machine — and in this build, do not.
+/// Where the staged bytes leave this machine.
 ///
 /// It takes the [`ConsentBurn`] **by value** because this is the point of effect:
-/// the burn is the only proof that one receipt was spent, it cannot be cloned, and
-/// after this call it does not exist. When the carrier lands (see
-/// [`EGRESS_NOT_DECIDED`]) the egress goes *here*, before `into_record`, and the
-/// signature already guarantees it can run at most once per spend.
-///
-/// The order is deliberate: the spend committed first. If a crash or a rejected
-/// POST loses the disclosure, the receipt is still spent and the operator is asked
-/// again — at-most-once, which is the fail-closed direction for an outward
-/// disclosure.
-fn disclose(staged: &StagedContract, burn: ConsentBurn) -> serde_json::Value {
+/// the burn is the only proof that one receipt was spent, it cannot be cloned,
+/// and after this call it does not exist. What the burn gates is precisely the
+/// *first* carriage of a dispatch; re-carriage of an already-committed row goes
+/// through [`re_disclose`], which spends nothing because reaching it at all means
+/// the caller presented the execution key that already owns the row.
+fn disclose(
+    state: &DaemonState,
+    staged: &StagedContract,
+    route: &CoordRoute,
+    payload: &[u8],
+    burn: ConsentBurn,
+) -> Result<DispatchRecord, Problem> {
     let record = burn.into_record();
-    dispatched_json(staged, &record, false)
+    carry_and_record(state, staged, route, payload, record)
+}
+
+/// Re-carries a dispatch that already committed but is not known to have landed
+/// — the crash-recovery path, reached only by a retry under the same
+/// `execution_key`. Spends nothing, mints nothing, and cannot create a second
+/// dispatch row: the V22 primary key resolved this as a retry before any
+/// compare-and-set ran.
+fn re_disclose(
+    state: &DaemonState,
+    staged: &StagedContract,
+    route: &CoordRoute,
+    payload: &[u8],
+    record: DispatchRecord,
+) -> Result<DispatchRecord, Problem> {
+    carry_and_record(state, staged, route, payload, record)
+}
+
+/// Builds the envelope, puts it on the wire, and records where it got to.
+/// The store lock is **not** held across the network I/O.
+fn carry_and_record(
+    state: &DaemonState,
+    staged: &StagedContract,
+    route: &CoordRoute,
+    payload: &[u8],
+    record: DispatchRecord,
+) -> Result<DispatchRecord, Problem> {
+    let envelope = coord_egress::envelope(
+        staged,
+        route,
+        &state.config().local_performer.root,
+        &record.receipt_id,
+    )?;
+    let body = coord_egress::message_body(
+        &envelope,
+        payload,
+        &record.dispatch_receipt,
+        &record.stage_ref,
+    )?;
+
+    let endpoint_key = state.identity().purpose_key(KeyPurpose::TlsEndpoint);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| internal())?;
+    let carriage = runtime.block_on(coord_egress::carry(
+        &endpoint_key,
+        state.endpoint_cert(),
+        route,
+        &body,
+        &staged.staged_digest,
+    ));
+    let (egress_state, detail) = match carriage {
+        Carriage::Acknowledged { detail } => (COORD_EGRESS_SENT, detail),
+        Carriage::Failed { detail } => (COORD_EGRESS_FAILED, detail),
+    };
+
+    let store = state.store();
+    let store = store.lock().map_err(|_| internal())?;
+    let now = trusted_now(&store)?;
+    let event = serde_json::json!({
+        "stage_ref": record.stage_ref,
+        "staged_digest": record.staged_digest,
+        "execution_key": record.execution_key,
+        "dispatch_receipt": record.dispatch_receipt,
+        "recipient_root": route.root,
+        "egress_state": egress_state,
+        "detail": detail,
+    });
+    store
+        .record_egress(&record.execution_key, egress_state, &detail, &event, now)
+        .map_err(|_| internal())?
+        // The row was just read or written under this same execution key; its
+        // disappearance is corruption, not a 404.
+        .ok_or_else(internal)
 }
 
 /// The one JSON shape a dispatch has, whether it was just committed or replayed by
@@ -716,7 +836,22 @@ fn dispatched_json(
         "status": COORD_STATUS_DISPATCHED,
         "dispatched_at": record.dispatched_at,
         "replayed": replayed,
-        "egress": { "state": "not_implemented", "detail": EGRESS_NOT_DECIDED },
+        "egress": egress_json(record),
+    })
+}
+
+/// Where a dispatch's bytes are, as the driver reads it. `state` is the durable
+/// column, never an inference from anything this process remembers.
+fn egress_json(record: &DispatchRecord) -> serde_json::Value {
+    serde_json::json!({
+        "state": record.egress_state,
+        "at": record.egress_at,
+        "detail": if record.egress_detail.is_empty() {
+            EGRESS_PENDING_DETAIL.to_owned()
+        } else {
+            record.egress_detail.clone()
+        },
+        "retryable": record.egress_may_be_attempted(),
     })
 }
 
@@ -760,16 +895,39 @@ fn task_status(state: &DaemonState, task_id: &str) -> Result<serde_json::Value, 
         "consent_receipt": record.receipt_id,
         "execution_key": record.execution_key,
         "dispatched_at": record.dispatched_at,
-        // Honest rather than optimistic: no result can be delivered against a
-        // dispatch whose bytes never went out, so the fields a verifier would read
-        // are null and the reason is named.
-        "verification": {
-            "state": "awaiting_delivery",
-            "result_manifest_digest": serde_json::Value::Null,
-            "outcome_state": serde_json::Value::Null,
-            "detail": EGRESS_NOT_DECIDED,
-        },
+        "egress": egress_json(&record),
+        "verification": verification_json(&record),
     }))
+}
+
+/// What can and cannot be verified about a dispatched coordination payload.
+///
+/// Two truths that must not be blurred into one optimistic answer:
+///
+/// - `state` is about **carriage**, and it is read off the durable egress
+///   column: `acknowledged` means the pinned recipient echoed this exact staged
+///   digest, `unacknowledged` means this endpoint has no such evidence — whether
+///   because the send failed or because a crash left it unresolved.
+/// - `result_manifest_digest` and `outcome_state` are **always null**, and that
+///   is permanent rather than pending. They are contract-shaped fields, and a
+///   coordination dispatch is not a contract: there is no deliverable to return,
+///   so no result manifest and no requester outcome will ever exist for it.
+///   Reporting them as "awaiting" would be a lie a fail-closed capability matrix
+///   could not detect.
+fn verification_json(record: &DispatchRecord) -> serde_json::Value {
+    let acknowledged = record.egress_state == COORD_EGRESS_SENT;
+    serde_json::json!({
+        "state": if acknowledged { "acknowledged" } else { "unacknowledged" },
+        "result_manifest_digest": serde_json::Value::Null,
+        "outcome_state": serde_json::Value::Null,
+        "detail": if acknowledged {
+            "the pinned recipient acknowledged this staged digest; a coordination dispatch carries no contract, so no result manifest or outcome is verifiable against it".to_owned()
+        } else if record.egress_state == COORD_EGRESS_FAILED {
+            format!("carriage failed and no recipient acknowledged this staged digest: {}", record.egress_detail)
+        } else {
+            EGRESS_PENDING_DETAIL.to_owned()
+        },
+    })
 }
 
 /// `capability_evidence` — `FederationCapabilityEvidence` for one named peer
@@ -1117,6 +1275,14 @@ mod tests {
     use super::*;
     use crate::control::{authorize, ControlOp, Surface};
 
+    /// The label every routable fixture below stages to.
+    const RECIPIENT: &str = "partner";
+    /// The recipient fixture's root. Pinned, introduced, and ACTIVE — but at an
+    /// address nothing listens on, so carriage deterministically fails without
+    /// any network. These unit tests are about the *decision*; the two-endpoint
+    /// tests in `tests/coord_egress_e2e.rs` are about the wire.
+    const RECIPIENT_ROOT: &str = "root-recipient-fixture";
+
     fn state(label: &str) -> (DaemonState, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "akson-coord-{label}-{}-{:?}",
@@ -1130,10 +1296,51 @@ mod tests {
         config.receive_addr = None;
         config.interface_url = "https://127.0.0.1:18443/a2a".to_owned();
         let state = DaemonState::bootstrap(&config).unwrap();
+        seed_recipient(&state);
         (state, dir)
     }
 
+    /// Pins `partner` as an introduced, ACTIVE peer with a dialable-shaped
+    /// endpoint. Port 1 is never listening, so `carry` fails on connect.
+    fn seed_recipient(state: &DaemonState) {
+        use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+        let store = state.store();
+        let store = store.lock().unwrap();
+        store
+            .add_peer_import(RECIPIENT_ROOT, RECIPIENT, "127.0.0.1:1", 1_753_574_000)
+            .unwrap();
+        store
+            .put_peer(&akson_store::StoredPeer {
+                identity: PeerIdentity {
+                    issuer: Some("orgA".to_owned()),
+                    agent_id: "alice".to_owned(),
+                    workload_id: None,
+                    endpoint_id: "https://127.0.0.1:1/a2a".to_owned(),
+                    tls_cert: Fingerprint::cert_sha256(b"der-fixture"),
+                    agent_card_key: Fingerprint {
+                        kind: FingerprintKind::Jwk7638,
+                        value: RECIPIENT_ROOT.to_owned(),
+                    },
+                    key_bindings: vec![],
+                    security_projection_digest: Fingerprint::json_sha256(b"{\"p\":1}"),
+                    full_card_digest: Fingerprint::json_sha256(b"{\"c\":1}"),
+                },
+                local_note: String::new(),
+            })
+            .unwrap();
+    }
+
     fn stage_req(payload: &str) -> ControlRequest {
+        ControlRequest::Stage {
+            task_type: "https://byom.example/task/exchange/v1".to_owned(),
+            performer: RECIPIENT.to_owned(),
+            payload_base64: STANDARD.encode(payload),
+        }
+    }
+
+    /// A staging with no named recipient — the shape that must never spend
+    /// consent, because there is nowhere for its bytes to go.
+    fn unrouted_stage_req(payload: &str) -> ControlRequest {
         ControlRequest::Stage {
             task_type: "https://byom.example/task/exchange/v1".to_owned(),
             performer: String::new(),
@@ -1247,7 +1454,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handshake_names_all_eight_ops_and_the_one_part_that_is_missing() {
+    fn the_handshake_names_all_eight_ops_and_claims_no_missing_part() {
         let (state, dir) = state("handshake");
         let who = dispatch_coord(&state, &ControlRequest::CoordWhoAmI).unwrap();
         assert_eq!(who["protocol"], COORD_PROTOCOL);
@@ -1266,10 +1473,11 @@ mod tests {
             ])
         );
         assert_eq!(who["unimplemented"], serde_json::json!([]));
-        // The missing piece is a *part* of dispatch, and it is named, not hidden.
-        assert_eq!(who["partial"][0]["op"], "dispatch");
-        assert_eq!(who["partial"][0]["missing"], "outbound_carrier");
-        assert_eq!(who["partial"][0]["detail"], EGRESS_NOT_DECIDED);
+        // Both lists are present and empty: `dispatch` has a carrier, so nothing
+        // is advertised as partial — and the field did not vanish, because a
+        // driver parses it.
+        assert_eq!(who["partial"], serde_json::json!([]));
+        assert!(who.get("partial").is_some());
         // Narrower than admin's who_am_i: no local layout crosses this surface.
         assert!(who.get("data_dir").is_none());
         assert!(who.get("receive_addr").is_none());
@@ -1317,9 +1525,11 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("dispatch-"));
-        // Honest about the wire: the decision committed, the bytes did not move.
-        assert_eq!(first["egress"]["state"], "not_implemented");
-        assert_eq!(first["egress"]["detail"], EGRESS_NOT_DECIDED);
+        // Honest about the wire: nothing is listening at the pinned endpoint, so
+        // carriage failed and the reply says so — the disclosure decision still
+        // committed, and the receipt is still spent.
+        assert_eq!(first["egress"]["state"], COORD_EGRESS_FAILED);
+        assert_eq!(first["egress"]["retryable"], true);
 
         // A DIFFERENT execution key on the same receipt: refused, one-shot.
         let replay =
@@ -1403,6 +1613,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A staging with no named recipient can be consented to — the operator's
+    /// card says so in as many words — but it cannot be dispatched, and the
+    /// refusal comes **before** the spend. Burning a one-shot consent on a
+    /// disclosure that provably cannot leave would be this surface's worst
+    /// possible failure.
+    #[test]
+    fn an_unroutable_stage_is_refused_before_the_receipt_is_spent() {
+        let (state, dir) = state("unroutable");
+        let staged = dispatch_coord(&state, &unrouted_stage_req("outbound bytes")).unwrap();
+        let stage_ref = staged["stage_ref"].as_str().unwrap().to_owned();
+        let consent = dispatch_coord(
+            &state,
+            &ControlRequest::StageConsent {
+                stage_ref: stage_ref.clone(),
+            },
+        )
+        .unwrap();
+        let receipt = consent["consent_receipt"].as_str().unwrap().to_owned();
+
+        let refused =
+            dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert_eq!(refused.type_, "urn:akson:error:unroutable-recipient");
+
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(
+            store.unconsumed_consent(&stage_ref).unwrap().is_some(),
+            "the receipt must still be live"
+        );
+        assert!(store.coord_dispatch(&stage_ref).unwrap().is_none());
+        assert_eq!(
+            store.staged_contract(&stage_ref).unwrap().unwrap().status,
+            "consented"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A receipt minted for one stage cannot dispatch another one's bytes.
     #[test]
     fn a_receipt_does_not_travel_between_staged_digests() {
@@ -1426,8 +1675,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `task_status` reports what this surface dispatched, addressed either way, and
-    /// is honest that no verification can exist for bytes that never left.
+    /// `task_status` reports what this surface dispatched, addressed either way,
+    /// and is honest about what a coordination dispatch can never have: no
+    /// recipient acknowledged this one (nothing is listening), and no result
+    /// manifest will ever exist for it, because it is not a contract.
     #[test]
     fn task_status_reports_a_dispatch_this_surface_committed() {
         let (state, dir) = state("status");
@@ -1450,9 +1701,14 @@ mod tests {
             assert_eq!(status["consent_receipt"], receipt);
             assert_eq!(status["execution_key"], "exec-1");
             assert_eq!(status["status"], "dispatched");
-            assert_eq!(status["verification"]["state"], "awaiting_delivery");
+            assert_eq!(status["egress"]["state"], COORD_EGRESS_FAILED);
+            assert_eq!(status["verification"]["state"], "unacknowledged");
             assert_eq!(
                 status["verification"]["result_manifest_digest"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                status["verification"]["outcome_state"],
                 serde_json::Value::Null
             );
         }
@@ -1468,17 +1724,17 @@ mod tests {
             let store = state.store();
             let store = store.lock().unwrap();
             store
-                .add_peer_import("root-thumb-fixture", "partner", "127.0.0.1:18444", 1000)
+                .add_peer_import("root-thumb-fixture", "other", "127.0.0.1:18444", 1000)
                 .unwrap();
         }
         let evidence = dispatch_coord(
             &state,
             &ControlRequest::CapabilityEvidence {
-                label: "partner".to_owned(),
+                label: "other".to_owned(),
             },
         )
         .unwrap();
-        assert_eq!(evidence["label"], "partner");
+        assert_eq!(evidence["label"], "other");
         assert_eq!(evidence["root_thumbprint"], "root-thumb-fixture");
         assert_eq!(
             evidence["predicate_type"],
@@ -1565,7 +1821,7 @@ mod tests {
             let store = state.store();
             let store = store.lock().unwrap();
             store
-                .add_peer_import("root-note-fixture", "partner", "127.0.0.1:18444", 1000)
+                .add_peer_import("root-note-fixture", "other", "127.0.0.1:18444", 1000)
                 .unwrap();
             store
                 .put_peer(&akson_store::StoredPeer {
@@ -1590,7 +1846,7 @@ mod tests {
         let evidence = dispatch_coord(
             &state,
             &ControlRequest::CapabilityEvidence {
-                label: "partner".to_owned(),
+                label: "other".to_owned(),
             },
         )
         .unwrap();
@@ -1636,13 +1892,13 @@ mod tests {
             let store = state.store();
             let store = store.lock().unwrap();
             store
-                .add_peer_import("root-thumb-fixture", "partner", "127.0.0.1:18444", 1000)
+                .add_peer_import("root-thumb-fixture", "other", "127.0.0.1:18444", 1000)
                 .unwrap();
         }
         let shown = dispatch_coord(
             &state,
             &ControlRequest::PeerShow {
-                label: "partner".to_owned(),
+                label: "other".to_owned(),
             },
         )
         .unwrap();

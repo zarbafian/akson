@@ -26,6 +26,9 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::control::Problem;
+use crate::coord_egress::{
+    acknowledgement, coord_dispatch_envelope, verify as verify_coord, ReceivedDispatch,
+};
 use crate::outcome::{finalize_result, DeliveredOutput};
 use crate::receive::{dispatch_proposal, DispatchOutcome};
 
@@ -133,6 +136,13 @@ pub fn handle_receive(
         ));
     }
 
+    // A coordination dispatch (ADR-0016 §2) is neither a proposal nor a result:
+    // it carries no contract, starts no task, and creates no obligation. It goes
+    // through the SAME ingress gates and the same §9.2 idempotency as a
+    // proposal — a narrower payload must not get a laxer front door, and the
+    // idempotency is what makes a sender's crash-recovery retry safe to re-send.
+    let coord = coord_dispatch_envelope(&message.parts);
+
     // Ingress gates + idempotency peek (§9.2).
     let ingress = Ingress {
         peer: req.peer,
@@ -155,6 +165,17 @@ pub fn handle_receive(
             "a covered value changed for this Message id",
         )),
         Admit::Accept(covered) => {
+            if let Some(envelope) = coord {
+                return handle_coord_dispatch(
+                    store,
+                    config,
+                    req,
+                    &covered,
+                    &envelope,
+                    &message.parts,
+                    trusted_now_unix,
+                );
+            }
             let dispatched = dispatch_proposal(
                 store,
                 &covered,
@@ -179,6 +200,102 @@ pub fn handle_receive(
         }
     }
 }
+
+/// Handles an inbound coordination dispatch (ADR-0016 §2): verify it against the
+/// transport-authenticated sender and this endpoint's own identity, then
+/// acknowledge it.
+///
+/// **What this does not do is the security content.** Arrival is not execution
+/// (§6.3): no Task is created, no contract head advances, no work order is
+/// issued, no worker starts, and nothing enters the operator's approval inbox.
+/// The payload is verified and **not retained** — retaining it would need an
+/// inbound coordination op to read it back, and ADR-0016's registry deliberately
+/// has none. What is durable is the *fact* of a verified arrival: one
+/// `dispatch_received` coordination event with the digests, the sender's root,
+/// and the byte length, which the recipient's own driver reads with `events_read`.
+///
+/// Every refusal is the same generic 422 with no reason on the wire. A sender
+/// that tampered with the envelope learns that it was not admitted, not which of
+/// the four checks caught it.
+#[allow(clippy::too_many_arguments)]
+fn handle_coord_dispatch(
+    store: &Store,
+    config: &ReceiveConfig,
+    req: &HttpRequest,
+    covered: &akson_store::delivery::CoveredValues,
+    envelope: &serde_json::Value,
+    parts: &[Part],
+    trusted_now_unix: i64,
+) -> Result<HttpResponse, StoreError> {
+    // `req.peer` is the ROOT the mTLS layer resolved from the pinned peer
+    // record. Nothing in the envelope can change it.
+    let received = match verify_coord(envelope, parts, req.peer, &config.local_performer.root) {
+        Ok(received) => received,
+        Err(reject) => {
+            // Recorded locally with the reason, so an operator can tell a
+            // tampered disclosure from a lost one; answered generically.
+            let _ = store.append_coord_event(
+                COORD_EVENT_REFUSED,
+                None,
+                &serde_json::json!({
+                    "sender_root": req.peer,
+                    "reason": reject.reason(),
+                }),
+                trusted_now_unix,
+            );
+            return Ok(problem(
+                422,
+                "coordination-refused",
+                "the coordination envelope was not admitted",
+            ));
+        }
+    };
+
+    let response = serde_json::to_vec(&acknowledgement(
+        &received,
+        &config.local_performer.root,
+        trusted_now_unix,
+    ))
+    .unwrap_or_default();
+
+    // Durable BEFORE the response (§9.2): the arrival event and the idempotency
+    // record commit first, so a sender that retries after our reply is lost gets
+    // the same acknowledgement rather than a second admission.
+    store.append_coord_event(
+        COORD_EVENT_RECEIVED,
+        None,
+        &coord_received_detail(&received),
+        trusted_now_unix,
+    )?;
+    store.receive_request(
+        covered,
+        req.body,
+        &response,
+        None,
+        "coordination",
+        trusted_now_unix,
+    )?;
+    Ok(a2a_ok(response))
+}
+
+/// The `dispatch_received` event body: the facts of a verified arrival, and no
+/// payload bytes. The recipient's operator learns what arrived and from whom
+/// without the disclosure itself entering the event feed.
+fn coord_received_detail(received: &ReceivedDispatch) -> serde_json::Value {
+    serde_json::json!({
+        "staged_digest": received.staged_digest,
+        "payload_sha256": received.payload_sha256,
+        "task_type": received.task_type,
+        "sender_root": received.sender_root,
+        "consent_receipt": received.consent_receipt,
+        "byte_length": received.byte_length,
+    })
+}
+
+/// The recipient-side event kinds. `dispatch_received` is a verified arrival;
+/// `dispatch_refused` is one that failed a check, kept locally with its reason.
+const COORD_EVENT_RECEIVED: &str = "dispatch_received";
+const COORD_EVENT_REFUSED: &str = "dispatch_refused";
 
 /// Handles a delivered result (design §14.5): verify it under the sender's
 /// task-result key and sign this endpoint's requester outcome. Requires the

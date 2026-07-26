@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://akson.cc/ext/coord-dispatch/v1/schema.json",
+  "title": "Akson coordination dispatch envelope v1 (ADR-0016 §2)",
+  "description": "The carrier for ONE staged coordination payload the operator consented to disclose. It is deliberately NOT a contract: it has no objective, no deliverable, no deadline, and no capability request, because the risk card the operator read named none of those. Every member is either something the operator consented to (the payload by its digest, the recipient, the task type, the staged digest, the consent receipt) or something the receiver needs to verify that fact (the two roots, the protocol, the schema version). Nothing else may be added without a new consent shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol",
+    "task_type",
+    "recipient_label",
+    "recipient_root",
+    "sender_root",
+    "payload_sha256",
+    "staged_digest",
+    "consent_receipt"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "protocol": {
+      "const": "akson_byom_exchange_v1",
+      "description": "The coordination protocol this envelope belongs to. A receiver that does not speak it refuses rather than guessing."
+    },
+    "task_type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[\\x21-\\x7e]{1,512}$",
+      "description": "The byom-owned task type URI, exactly as staged. Akson does not interpret it."
+    },
+    "recipient_label": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+      "description": "The sender's local label for the recipient, exactly as staged. It is here because it is one of the three preimages of `staged_digest` (ADR-0016 §4): without it the receiver could verify the payload digest but not the digest the operator's consent actually binds."
+    },
+    "recipient_root": {
+      "$ref": "#/$defs/root",
+      "description": "The pinned root thumbprint this disclosure is addressed to. The receiver refuses an envelope whose recipient_root is not its own — a misrouted disclosure must not be admitted just because the channel authenticated."
+    },
+    "sender_root": {
+      "$ref": "#/$defs/root",
+      "description": "The sender's own root. The receiver refuses unless it equals the root the mutual-TLS handshake authenticated, so a claimed sender can never differ from the pinned one."
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "SHA-256 of the payload bytes carried alongside this envelope. The receiver recomputes it over what it actually received."
+    },
+    "staged_digest": {
+      "$ref": "#/$defs/sha256hex",
+      "description": "The ADR-0016 §4 staged digest: SHA-256 over the RFC 8785 canonical JSON of {payload_sha256, performer, task_type}. This is the exact value the operator's consent receipt binds, and the receiver recomputes it from the three members above."
+    },
+    "consent_receipt": {
+      "$ref": "#/$defs/opaqueId",
+      "description": "The identity of the one-shot consent receipt that authorized this disclosure. The id only — the receipt body is sealed and never leaves the daemon. It is here so the disclosure names its own authorization; it is not a bearer token and confers nothing on the receiver."
+    }
+  },
+  "$defs": {
+    "sha256hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "root": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$" },
+    "opaqueId": { "type": "string", "pattern": "^[\\x21-\\x7e]{1,128}$" }
+  }
+}

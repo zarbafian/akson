@@ -1,0 +1,17 @@
+{
+  "name": "coordination/refusal-unroutable-recipient",
+  "description": "The refusal that must happen BEFORE the spend (ADR-0016 §6). A staging whose recipient is unnamed, no longer an imported peer, never introduced, suspended, or pinned to something that is not a usable https endpoint cannot be disclosed to anyone — so `dispatch` refuses with the operator's one-shot consent receipt still LIVE. Burning consent on a disclosure that provably cannot leave would be the worst failure available to this surface, and the ordering is what closes it. `409`, not `404`: the staging exists and the consent may exist; what does not exist is a peer to disclose to. `detail` names which of the five cases it was, and is safe to name because the caller staged it.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:unroutable-recipient",
+      "title": "the staged recipient cannot receive a disclosure",
+      "status": 409,
+      "detail": "this staging named no recipient, so there is nowhere to disclose it"
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:unroutable-recipient\",\"title\":\"the staged recipient cannot receive a disclosure\",\"status\":409,\"detail\":\"this staging named no recipient, so there is nowhere to disclose it\"}",
+    "status": 409,
+    "consent_receipt_still_live": true
+  }
+}

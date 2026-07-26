@@ -516,6 +516,32 @@ CREATE TABLE coord_dispatches (
 CREATE INDEX coord_dispatches_by_stage ON coord_dispatches (stage_ref);
 "#;
 
+/// Version 23 (C4 slice 3, the outbound carrier — ADR-0016 §2): where a
+/// committed dispatch *is* in its carriage.
+///
+/// V22 could not tell a sent dispatch from an unsent one, which was tolerable
+/// only while nothing was ever sent. With a carrier the distinction is the
+/// whole recovery story, so it is a column and not an inference:
+///
+/// - `pending` — the row committed (the receipt is spent), and the bytes are
+///   **not known** to have left. This is the state a crash between commit and
+///   send leaves behind, and it is the DEFAULT, so a row that never reaches
+///   the update is honest by construction rather than by remembering to write
+///   something.
+/// - `sent` — the pinned recipient acknowledged the exact staged digest.
+/// - `failed` — carriage was attempted and definitively refused.
+///
+/// `pending` and `failed` are re-attemptable under the SAME `execution_key`
+/// (which spends nothing — the V22 primary key already makes that a retry, not
+/// a replay); `sent` is terminal, and `record_egress` refuses to move a row out
+/// of it, so a late-arriving failure cannot un-send a delivered disclosure.
+const V23: &str = r#"
+ALTER TABLE coord_dispatches ADD COLUMN egress_state  TEXT    NOT NULL DEFAULT 'pending';
+ALTER TABLE coord_dispatches ADD COLUMN egress_detail TEXT    NOT NULL DEFAULT '';
+ALTER TABLE coord_dispatches ADD COLUMN egress_at     INTEGER;
+CREATE INDEX coord_dispatches_by_egress ON coord_dispatches (egress_state);
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -541,6 +567,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (20, V20),
     (21, V21),
     (22, V22),
+    (23, V23),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

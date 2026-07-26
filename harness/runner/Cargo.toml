@@ -25,6 +25,7 @@ tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
+base64 = { workspace = true }
 
 # The clean-worker end-to-end demo (tests/clean_worker_e2e.rs) composes the M8
 # authority + M9 sandbox/worker pipeline. Test-only, never shipped.

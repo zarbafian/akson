@@ -17,6 +17,13 @@
 //! - `introduce --state <db> --seed <n> --token <token-file> [--agent NAME]`
 //!   Imports the token in the file and dials the introduction. Prints
 //!   `INTRODUCED with <agent>` and exits 0 on success.
+//! - `coord-dispatch --state <db> --seed <n> --token <token-file>
+//!    [--label <l>] [--agent NAME] --payload <text>`
+//!   Introduces (as above), then runs the real coordination surface end to end
+//!   over the introduced relationship: `stage` on coord, `stage consent` on
+//!   admin, `dispatch` — which carries the staged bytes to the peer in a
+//!   coordination envelope over pinned mutual TLS (ADR-0016 §2). Prints
+//!   `DISPATCHED <state> …` and exits 0 only when the peer acknowledged.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -25,7 +32,7 @@ use std::time::Duration;
 
 use akson_contract::Identity;
 use akson_crypto::cert::self_signed_endpoint;
-use akson_crypto::keypair::{PurposeKey, PurposeVerifyingKey};
+use akson_crypto::keypair::PurposeVerifyingKey;
 use akson_crypto::purpose::KeyPurpose;
 use akson_crypto::token::{decode_token, encode_token, split_presentation};
 use akson_proto::card_sig;
@@ -34,8 +41,11 @@ use akson_store::envelope::Kek;
 use akson_store::{ExternalCheckpoint, Store};
 use akson_transport::tls::bootstrap_server_config;
 use aksond::{
-    dial_introduction, intro_profile, serve_receive, IntroIdentity, ReceiveState, StorePeerResolver,
+    dial_introduction, intro_profile, serve_receive, ControlRequest, DaemonConfig, DaemonState,
+    IdentityKeys, IntroIdentity, ReceiveState, StorePeerResolver,
 };
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -50,19 +60,27 @@ fn checkpoint() -> ExternalCheckpoint {
     }
 }
 
+/// This seed's key material, derived exactly as the live daemon derives its own:
+/// ONE master seed, every purpose key a domain-separated derivation from it
+/// (`IdentityKeys`). That matters beyond tidiness — `DaemonState::from_parts`
+/// computes an endpoint's root from its `agent-card` key, so a harness endpoint
+/// that derived its keys any other way would introduce under one root and
+/// dispatch under another.
+fn identity_keys(seed: u8) -> IdentityKeys {
+    IdentityKeys::from_master([seed; 32])
+}
+
 /// One endpoint's introduction identity, deterministic from `seed`: statement
 /// keys, a profile-valid signed card, and its TLS material — the same shape
 /// `IntroIdentity::from_state` assembles in the live daemon.
-fn identity(agent: &str, seed: u8) -> Result<IntroIdentity, Err> {
+fn identity(agent: &str, seed: u8, interface_url: &str) -> Result<IntroIdentity, Err> {
+    let master = identity_keys(seed);
     let mut keys = BTreeMap::new();
     for purpose in KeyPurpose::PAIRED {
         if purpose == KeyPurpose::TlsEndpoint {
             continue;
         }
-        keys.insert(
-            purpose,
-            PurposeKey::from_seed(purpose, &[seed ^ (purpose as u8); 32]),
-        );
+        keys.insert(purpose, master.purpose_key(purpose));
     }
     let card_key = &keys[&KeyPurpose::AgentCard];
     let own_root = card_key.verifying().to_jwk().thumbprint();
@@ -74,7 +92,11 @@ fn identity(agent: &str, seed: u8) -> Result<IntroIdentity, Err> {
     let mut card: AgentCard = serde_json::from_value(serde_json::json!({
         "name": agent, "description": "harness endpoint", "version": "1.0.0",
         "supportedInterfaces": [{
-            "url": format!("https://{agent}.invalid/a2a"),
+            // The card's interface URL is what an introduction pins as the
+            // peer's `endpoint_id`, and therefore what a coordination dispatch
+            // later routes to. A placeholder here would introduce fine and then
+            // be unroutable, so it carries the endpoint's real address.
+            "url": interface_url,
             "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0",
         }],
         "capabilities": {
@@ -86,7 +108,7 @@ fn identity(agent: &str, seed: u8) -> Result<IntroIdentity, Err> {
     }))?;
     card.signatures.push(card_sig::sign_card(&card, card_key)?);
 
-    let tls_key = PurposeKey::from_seed(KeyPurpose::TlsEndpoint, &[seed; 32]);
+    let tls_key = master.purpose_key(KeyPurpose::TlsEndpoint);
     let cert = self_signed_endpoint(&tls_key, "endpoint", Duration::from_secs(86_400))?;
     Ok(IntroIdentity {
         keys,
@@ -102,12 +124,10 @@ fn identity(agent: &str, seed: u8) -> Result<IntroIdentity, Err> {
 
 /// This seed's token in presentation form, with `hint` when given.
 fn presentation(seed: u8, hint: Option<&str>) -> String {
-    let root = PurposeKey::from_seed(
-        KeyPurpose::AgentCard,
-        &[seed ^ (KeyPurpose::AgentCard as u8); 32],
-    )
-    .verifying()
-    .to_public_bytes();
+    let root = identity_keys(seed)
+        .purpose_key(KeyPurpose::AgentCard)
+        .verifying()
+        .to_public_bytes();
     let token = encode_token(&root);
     match hint {
         Some(h) => format!("{token}@{h}"),
@@ -169,7 +189,6 @@ async fn run_serve(args: Args) -> Result<(), Err> {
     let advertise = args.get("--advertise").unwrap_or(host.as_str()).to_owned();
     let port: u16 = args.get("--port").unwrap_or("0").parse()?;
 
-    let me = identity(&agent, seed)?;
     let store = Arc::new(Mutex::new(Store::open(
         args.require("--state")?.as_ref(),
         &Kek::from_bytes([seed; 32]),
@@ -186,9 +205,13 @@ async fn run_serve(args: Args) -> Result<(), Err> {
         println!("IMPORTED {label} ({thumb})");
     }
 
-    // Bind first so the written token carries the real, reachable port.
+    // Bind first so the written token — and the signed card's interface URL,
+    // which is what the peer pins as this endpoint's address — carry the real,
+    // reachable port.
     let listener = TcpListener::bind((host.as_str(), port)).await?;
     let bound = listener.local_addr()?;
+    let interface_url = format!("https://{advertise}:{}/a2a", bound.port());
+    let me = identity(&agent, seed, &interface_url)?;
     let line = presentation(seed, Some(&format!("{advertise}:{}", bound.port())));
     std::fs::write(args.require("--token-out")?, format!("{line}\n"))?;
 
@@ -203,7 +226,7 @@ async fn run_serve(args: Args) -> Result<(), Err> {
                 root: me.own_root.clone(),
             },
             std::collections::BTreeSet::new(),
-            format!("https://{advertise}:{}/a2a", bound.port()),
+            interface_url,
         )
         .with_introduction(Arc::new(me)),
     );
@@ -215,30 +238,166 @@ async fn run_serve(args: Args) -> Result<(), Err> {
     Ok(())
 }
 
-async fn run_introduce(args: Args) -> Result<(), Err> {
-    let seed = args.seed()?;
-    let agent = args.get("--agent").unwrap_or("dialer").to_owned();
-    let me = identity(&agent, seed)?;
+/// Imports the peer token and dials the introduction as `me`, leaving the
+/// relationship pinned on both sides. Returns the peer's label.
+///
+/// `me` is passed in rather than derived here, and that is load-bearing: a
+/// self-signed endpoint certificate embeds timestamps, so building the identity
+/// twice in one process yields two different fingerprints — the peer would pin
+/// one and then refuse the other at the next connection.
+async fn introduce(args: &Args, me: &IntroIdentity, seed: u8) -> Result<String, Err> {
     let store = Arc::new(Mutex::new(Store::open(
         args.require("--state")?.as_ref(),
         &Kek::from_bytes([seed; 32]),
         checkpoint(),
     )?));
 
-    let label = args.get("--label").unwrap_or("peer");
+    let label = args.get("--label").unwrap_or("peer").to_owned();
     {
         let guard = store.lock().map_err(|_| "store poisoned")?;
-        import_token_file(&guard, args.require("--token")?, label)?;
+        import_token_file(&guard, args.require("--token")?, &label)?;
     }
     let import = store
         .lock()
         .map_err(|_| "store poisoned")?
-        .peer_import_by_label(label)?
+        .peer_import_by_label(&label)?
         .ok_or("the import vanished")?;
 
     let now = time::OffsetDateTime::now_utc();
-    let (peer, outcome) = dial_introduction(&me, store, &import, now).await?;
+    let (peer, outcome) = dial_introduction(me, store, &import, now).await?;
     println!("INTRODUCED with {} ({outcome:?})", peer.agent_id);
+    Ok(label)
+}
+
+async fn run_introduce(args: Args) -> Result<(), Err> {
+    let seed = args.seed()?;
+    let agent = args.get("--agent").unwrap_or("dialer").to_owned();
+    let advertise = args.get("--advertise").unwrap_or("dialer.invalid");
+    let me = identity(&agent, seed, &format!("https://{advertise}/a2a"))?;
+    introduce(&args, &me, seed).await?;
+    Ok(())
+}
+
+/// The coordination surface end to end across two processes (ADR-0016 §2):
+/// introduce, `stage` on coord, `stage consent` on admin, then `dispatch` —
+/// which builds the coordination envelope and carries the staged bytes to the
+/// introduced peer over pinned mutual TLS.
+///
+/// Every step runs the **real** `DaemonState::dispatch`, over the very store the
+/// introduction just committed to, with the same endpoint certificate the peer
+/// pinned. Nothing about the carriage is simulated; the only thing the harness
+/// supplies is the operator's consent, on the admin surface where it belongs.
+async fn run_coord_dispatch(args: Args) -> Result<(), Err> {
+    let seed = args.seed()?;
+    let agent = args.get("--agent").unwrap_or("dialer").to_owned();
+    let payload = args
+        .get("--payload")
+        .unwrap_or("coordination payload")
+        .to_owned();
+    let advertise = args
+        .get("--advertise")
+        .unwrap_or("dialer.invalid")
+        .to_owned();
+    // ONE identity for the whole process: the certificate the peer pins during
+    // the introduction is the certificate the dispatch then presents.
+    let me = identity(&agent, seed, &format!("https://{advertise}/a2a"))?;
+    let label = introduce(&args, &me, seed).await?;
+
+    // Re-open the store the introduction committed to (the dial's handle is
+    // gone), and build the daemon state over it with that same identity.
+    let store = Store::open(
+        args.require("--state")?.as_ref(),
+        &Kek::from_bytes([seed; 32]),
+        checkpoint(),
+    )?;
+    let config = DaemonConfig {
+        data_dir: std::path::PathBuf::from("/nonexistent-harness-data-dir"),
+        local_performer: Identity {
+            issuer: "local".to_owned(),
+            agent: agent.clone(),
+            root: me.own_root.clone(),
+        },
+        interface_url: format!("https://{advertise}/a2a"),
+        receive_addr: None,
+        worker_command: None,
+        worker_exec: None,
+        on_task: None,
+    };
+    let state = DaemonState::from_parts(store, identity_keys(seed), me.cert.clone(), config);
+
+    // `dispatch` owns its own runtime for the outbound POST (exactly as the
+    // daemon's blocking control sockets call it), so it must not run on this
+    // async worker.
+    tokio::task::spawn_blocking(move || coord_steps(&state, &label, &payload))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| -> Err { e.into() })
+}
+
+/// stage → consent → dispatch → replay-refused, on the surfaces that own each
+/// step. Blocking, because `dispatch` drives the outbound carriage itself.
+fn coord_steps(state: &DaemonState, label: &str, payload: &str) -> Result<(), String> {
+    // `Problem` is an RFC 9457 body, not a std error; carry it as text (which is
+    // also what makes this closure's error `Send`, so it can cross back off the
+    // blocking pool).
+    let call = |req| {
+        state.dispatch(&req).map_err(|p: aksond::Problem| {
+            format!("{}: {} {}", p.status, p.type_, p.detail.unwrap_or(p.title))
+        })
+    };
+
+    // 1. stage — inert, on the coordination surface.
+    let staged = call(ControlRequest::Stage {
+        task_type: "https://byom.example/task/exchange/v1".to_owned(),
+        performer: label.to_owned(),
+        payload_base64: STANDARD.encode(payload),
+    })?;
+    let stage_ref = staged["stage_ref"]
+        .as_str()
+        .ok_or_else(|| "stage returned no reference".to_owned())?
+        .to_owned();
+    println!("STAGED {stage_ref} (digest {})", staged["staged_digest"]);
+
+    // 2. consent — the operator's one-shot yes, on ADMIN. A coordination
+    //    connection cannot reach this op at all; the harness stands in for the
+    //    human who read the risk card.
+    let consent = call(ControlRequest::StageConsent {
+        stage_ref: stage_ref.clone(),
+    })?;
+    let receipt = consent["consent_receipt"]
+        .as_str()
+        .ok_or_else(|| "consent returned no receipt".to_owned())?
+        .to_owned();
+    println!("CONSENTED {receipt}");
+
+    // 3. dispatch — spend the receipt, commit, and carry the bytes.
+    let dispatched = call(ControlRequest::Dispatch {
+        stage_ref: stage_ref.clone(),
+        consent_receipt: receipt.clone(),
+        execution_key: "exec-interop-1".to_owned(),
+    })?;
+    let egress = dispatched["egress"]["state"].as_str().unwrap_or("");
+    println!(
+        "DISPATCHED {egress} receipt={} detail={}",
+        dispatched["dispatch_receipt"], dispatched["egress"]["detail"]
+    );
+    if egress != "sent" {
+        return Err(format!(
+            "the coordination payload did not reach the peer: {egress}"
+        ));
+    }
+
+    // The one-shot property, across a real relationship: a DIFFERENT execution
+    // key on the spent receipt must be refused.
+    match state.dispatch(&ControlRequest::Dispatch {
+        stage_ref,
+        consent_receipt: receipt,
+        execution_key: "exec-interop-2".to_owned(),
+    }) {
+        Err(p) if p.status == 409 => println!("REPLAY REFUSED {}", p.type_),
+        Err(p) => return Err(format!("unexpected refusal {p:?}")),
+        Ok(_) => return Err("a spent consent receipt dispatched twice".to_owned()),
+    }
     Ok(())
 }
 
@@ -246,7 +405,9 @@ async fn run_introduce(args: Args) -> Result<(), Err> {
 async fn main() -> Result<(), Err> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() {
-        return Err("usage: akson-harness <token|serve|introduce> [--flag value]...".into());
+        return Err(
+            "usage: akson-harness <token|serve|introduce|coord-dispatch> [--flag value]...".into(),
+        );
     }
     let cmd = argv.remove(0);
     let args = Args(argv);
@@ -254,8 +415,10 @@ async fn main() -> Result<(), Err> {
         "token" => run_token(args),
         "serve" => run_serve(args).await,
         "introduce" => run_introduce(args).await,
-        other => {
-            Err(format!("unknown subcommand {other:?}; expected token|serve|introduce").into())
-        }
+        "coord-dispatch" => run_coord_dispatch(args).await,
+        other => Err(format!(
+            "unknown subcommand {other:?}; expected token|serve|introduce|coord-dispatch"
+        )
+        .into()),
     }
 }

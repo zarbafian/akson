@@ -37,10 +37,15 @@ pub enum SchemaId {
     EvidenceReferenceV1,
     VerifierSummaryV1,
     OutcomeV1,
+    /// The coordination dispatch envelope (ADR-0016 §2). Registered as its own
+    /// object *because* it is not a contract: the contract schema could only
+    /// carry a coordination payload by inventing an objective, a deliverable,
+    /// and a deadline that the operator's consent never mentioned.
+    CoordDispatchV1,
 }
 
 impl SchemaId {
-    pub const ALL: [SchemaId; 8] = [
+    pub const ALL: [SchemaId; 9] = [
         SchemaId::ContractV1,
         SchemaId::DecisionV1,
         SchemaId::KeyBindingV1,
@@ -49,6 +54,7 @@ impl SchemaId {
         SchemaId::EvidenceReferenceV1,
         SchemaId::VerifierSummaryV1,
         SchemaId::OutcomeV1,
+        SchemaId::CoordDispatchV1,
     ];
 
     /// Registry name, matching the `spec/ext/<name>.v1.schema.json` file and
@@ -63,6 +69,7 @@ impl SchemaId {
             SchemaId::EvidenceReferenceV1 => "evidence-reference",
             SchemaId::VerifierSummaryV1 => "verifier-summary",
             SchemaId::OutcomeV1 => "outcome",
+            SchemaId::CoordDispatchV1 => "coord-dispatch",
         }
     }
 
@@ -99,6 +106,9 @@ impl SchemaId {
                 include_str!("../../../spec/ext/verifier-summary.v1.schema.json")
             }
             SchemaId::OutcomeV1 => include_str!("../../../spec/ext/outcome.v1.schema.json"),
+            SchemaId::CoordDispatchV1 => {
+                include_str!("../../../spec/ext/coord-dispatch.v1.schema.json")
+            }
         }
     }
 

@@ -224,6 +224,7 @@ dependencies = [
  "akson-transport",
  "akson-worker",
  "aksond",
+ "base64",
  "serde_json",
  "time",
  "tokio",

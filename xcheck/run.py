@@ -575,6 +575,54 @@ def check_coordination(name: str, case: dict) -> None:
             ]
             expect_eq(name, "card names the digest", staged_as, [inp["result"]["staged_digest"]])
 
+        # Where the bytes got to (ADR-0016 §2, slice 3). The timestamp and the
+        # one-line reason are instance values; the field set and the state
+        # vocabulary are the contract.
+        if "egress_keys" in exp:
+            expect_eq(name, "egress keys", sorted(inp["result"]["egress"]), exp["egress_keys"])
+            if "egress_states" in exp:
+                if inp["result"]["egress"]["state"] not in exp["egress_states"]:
+                    fail(name, "the example egress state is not in the frozen vocabulary")
+        if "verification_states" in exp:
+            v = inp["result"]["verification"]
+            if v["state"] not in exp["verification_states"]:
+                fail(name, "the example verification state is not in the frozen vocabulary")
+            # A coordination dispatch is not a contract, so these are permanently
+            # null — never "awaiting".
+            for field in ("result_manifest_digest", "outcome_state"):
+                if v[field] is not None:
+                    fail(name, f"{field} must be null for a coordination dispatch")
+
+    # The coordination dispatch envelope: independently re-derive the digest
+    # chain the receiver checks, and re-validate the envelope against the
+    # published schema — including that a contract term cannot be smuggled in.
+    if "envelope" in inp:
+        env = inp["envelope"]
+        derived = _coord_stage_reference(inp)
+        expect_eq(name, "envelope payload digest", env["payload_sha256"], derived["payload_sha256"])
+        expect_eq(name, "envelope staged digest", env["staged_digest"], derived["staged_digest"])
+        expect_eq(name, "envelope recipient label", env["recipient_label"], inp["performer"])
+        expect_eq(name, "envelope task type", env["task_type"], inp["task_type"])
+        expect_eq(name, "envelope keys", sorted(env), exp["envelope_keys"])
+        canonical = rfc8785.dumps(env)
+        expect_eq(name, "envelope canonical", canonical.decode("utf-8"), exp["envelope_canonical"])
+        expect_eq(
+            name,
+            "envelope canonical sha256",
+            hashlib.sha256(canonical).hexdigest(),
+            exp["envelope_canonical_sha256"],
+        )
+        schema = json.loads((SCHEMA_DIR / "coord-dispatch.v1.schema.json").read_text())
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        if list(validator.iter_errors(env)):
+            fail(name, "the frozen envelope does not conform to coord-dispatch.v1")
+        for member in exp["forbidden_members"]:
+            if member in env:
+                fail(name, f"{member} is a contract term the operator never consented to")
+            if not list(validator.iter_errors({**env, member: "x"})):
+                fail(name, f"coord-dispatch.v1 must refuse a smuggled {member}")
+
     # A refusal: the RFC 9457 body is exactly these members in this order.
     if "problem" in inp:
         p = inp["problem"]

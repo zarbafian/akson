@@ -46,7 +46,49 @@ fn daemon(dir: &Path) -> std::sync::Arc<DaemonState> {
     let mut config = DaemonConfig::from_env();
     config.data_dir = dir.join("data");
     config.receive_addr = None;
-    std::sync::Arc::new(DaemonState::bootstrap(&config).unwrap())
+    let state = std::sync::Arc::new(DaemonState::bootstrap(&config).unwrap());
+    seed_recipient(&state);
+    state
+}
+
+/// The label every staging below discloses to, and its root.
+const RECIPIENT: &str = "partner";
+const RECIPIENT_ROOT: &str = "root-recipient-fixture";
+
+/// Pins `partner` as an introduced, ACTIVE peer at an address nothing listens
+/// on. Since slice 3, `dispatch` refuses BEFORE spending consent when the staged
+/// recipient cannot receive a disclosure, so these tests need a real recipient —
+/// but not a live one: they are about the one-shot property and the surface
+/// boundary, and `tests/coord_egress_e2e.rs` is about the wire.
+fn seed_recipient(state: &DaemonState) {
+    use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+    let store = state.store();
+    let store = store.lock().unwrap();
+    if store.peer_import_by_label(RECIPIENT).unwrap().is_some() {
+        return; // a restarted daemon over the same data directory
+    }
+    store
+        .add_peer_import(RECIPIENT_ROOT, RECIPIENT, "127.0.0.1:1", NOW)
+        .unwrap();
+    store
+        .put_peer(&akson_store::StoredPeer {
+            identity: PeerIdentity {
+                issuer: Some("iss".to_owned()),
+                agent_id: "alice".to_owned(),
+                workload_id: None,
+                endpoint_id: "https://127.0.0.1:1/a2a".to_owned(),
+                tls_cert: Fingerprint::cert_sha256(b"der-fixture"),
+                agent_card_key: Fingerprint {
+                    kind: FingerprintKind::Jwk7638,
+                    value: RECIPIENT_ROOT.to_owned(),
+                },
+                key_bindings: vec![],
+                security_projection_digest: Fingerprint::json_sha256(b"{\"p\":1}"),
+                full_card_digest: Fingerprint::json_sha256(b"{\"c\":1}"),
+            },
+            local_note: String::new(),
+        })
+        .unwrap();
 }
 
 /// Serves exactly one request on `surface` over a real socket, through the real
@@ -105,7 +147,7 @@ fn staged_and_consented(
             Surface::Coord,
             &ControlRequest::Stage {
                 task_type: "https://byom.example/task/exchange/v1".to_owned(),
-                performer: String::new(),
+                performer: RECIPIENT.to_owned(),
                 payload_base64: payload_base64.to_owned(),
             },
         ),
@@ -209,7 +251,25 @@ fn one_consent_receipt_dispatches_once_over_the_real_coordination_socket() {
         .iter()
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, vec!["staged", "consent_recorded", "dispatched"]);
+    // Three calls, one dispatch. The two `egress_recorded` entries are the two
+    // carriage ATTEMPTS (the first dispatch and the retry, both failing against
+    // an address nothing listens on) — a carriage attempt is not a dispatch, and
+    // the feed keeps them distinguishable.
+    assert_eq!(
+        kinds,
+        vec![
+            "staged",
+            "consent_recorded",
+            "dispatched",
+            "egress_recorded",
+            "egress_recorded"
+        ]
+    );
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "dispatched").count(),
+        1,
+        "one consent, one dispatch, however many carriage attempts"
+    );
     let shown = ok(
         call(
             &dir,
@@ -295,7 +355,7 @@ fn a_dispatching_coord_surface_still_cannot_reach_admin_authority() {
             Surface::Coord,
             &ControlRequest::Stage {
                 task_type: "https://byom.example/task/exchange/v1".to_owned(),
-                performer: String::new(),
+                performer: RECIPIENT.to_owned(),
                 payload_base64: "c2Vjb25k".to_owned(),
             },
         ),
@@ -521,6 +581,6 @@ fn task_status_on_coord_cannot_see_an_inbound_task() {
     );
     assert_eq!(status["stage_ref"], stage_ref);
     assert_eq!(status["consent_receipt"], receipt);
-    assert_eq!(status["verification"]["state"], "awaiting_delivery");
+    assert_eq!(status["verification"]["state"], "unacknowledged");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,6 +1,6 @@
 {
   "name": "coordination/dispatch-reply-retry",
-  "description": "The same `execution_key` again — a retry, not a replay. The committed dispatch receipt and its timestamp come back unchanged, `replayed` is true, and nothing is spent a second time. This is what lets a driver that lost its reply ask again safely, while a *different* execution key on the same receipt is refused (refusal-consent-spent).",
+  "description": "The same `execution_key` again — a retry, not a replay. The committed dispatch receipt and its timestamp come back unchanged, `replayed` is true, and nothing is spent a second time. This is what lets a driver that lost its reply ask again safely, while a *different* execution key on the same receipt is refused (refusal-consent-spent). A retry is also the recovery path: if `egress.state` is not `sent`, the same call re-attempts carriage — still spending nothing, because the execution key already owns the one dispatch row.",
   "input": {
     "request": {
       "op": "dispatch",
@@ -23,8 +23,10 @@
       "dispatched_at": 1753574520,
       "replayed": true,
       "egress": {
-        "state": "not_implemented",
-        "detail": "the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine"
+        "state": "sent",
+        "at": 1753574521,
+        "detail": "acknowledged by fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+        "retryable": false
       }
     }
   },
@@ -47,7 +49,18 @@
       "status",
       "task_type"
     ],
-    "canonical": "{\"byte_length\":16,\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"consent_spent\":true,\"dispatch_receipt\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"dispatched_at\":1753574520,\"egress\":{\"detail\":\"the outbound A2A carrier for a staged coordination payload is not decided (ADR-0016 leaves the per-phase carrier table open); the consent receipt is spent and no bytes have left this machine\",\"state\":\"not_implemented\"},\"execution_key\":\"exec-0001\",\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"replayed\":true,\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"dispatched\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
-    "canonical_sha256": "58418c6604cb5d6045113e135e2b7b53038bdfe11fc7896505296fb99da05025"
+    "canonical": "{\"byte_length\":16,\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"consent_spent\":true,\"dispatch_receipt\":\"dispatch-3a9e1f70c4b25d86e07f1a2b3c4d5e6f\",\"dispatched_at\":1753574520,\"egress\":{\"at\":1753574521,\"detail\":\"acknowledged by fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"retryable\":false,\"state\":\"sent\"},\"execution_key\":\"exec-0001\",\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"replayed\":true,\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"dispatched\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "canonical_sha256": "a176113cfd6762b6f8937b169599f209a9fe2d6addecb11caa6a1c4ac51bdbd0",
+    "egress_keys": [
+      "at",
+      "detail",
+      "retryable",
+      "state"
+    ],
+    "egress_states": [
+      "failed",
+      "pending",
+      "sent"
+    ]
   }
 }

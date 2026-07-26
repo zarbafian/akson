@@ -42,7 +42,7 @@ fn vectors() -> Vec<(String, Value)> {
         cases.push((name, case));
     }
     cases.sort_by(|a, b| a.0.cmp(&b.0));
-    assert!(cases.len() >= 24, "the coordination family is incomplete");
+    assert!(cases.len() >= 26, "the coordination family is incomplete");
     cases
 }
 
@@ -73,6 +73,10 @@ fn expected_keys(case: &Value, field: &str) -> Vec<String> {
         .map(|v| v.as_str().unwrap().to_owned())
         .collect()
 }
+
+/// The root the `partner` fixture is pinned under, shared by the peer-show,
+/// capability-evidence, and dispatch vectors.
+const RECIPIENT_ROOT: &str = "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ";
 
 fn temp_state(label: &str) -> (DaemonState, PathBuf) {
     let dir = std::env::temp_dir().join(format!(
@@ -116,7 +120,13 @@ fn seed_peer(state: &DaemonState, root: &str, verified: bool) {
                     issuer: Some("orgA".to_owned()),
                     agent_id: "alice".to_owned(),
                     workload_id: None,
-                    endpoint_id: "ep-alice-1".to_owned(),
+                    // A pinned §8.1 endpoint is an interface URL, and since
+                    // slice 3 `dispatch` needs it to be one: an unroutable
+                    // recipient is refused before consent is spent. Nothing
+                    // listens on port 1, so carriage fails deterministically
+                    // without a network — the wire itself is covered by
+                    // `tests/coord_egress_e2e.rs`.
+                    endpoint_id: "https://127.0.0.1:1/a2a".to_owned(),
                     tls_cert: Fingerprint::cert_sha256(b"der-fixture"),
                     // `put_peer` keys the row by this thumbprint, so it IS the root.
                     agent_card_key: Fingerprint {
@@ -197,6 +207,73 @@ fn stage_reference_vectors() {
     );
 }
 
+/// The coordination dispatch envelope: what a consented disclosure actually
+/// looks like on the wire, rebuilt from the schema registry and the same §4
+/// derivation the sender staged with.
+///
+/// Three claims are checked, and the third is the one that matters: the frozen
+/// envelope must contain **no contract term**. A coordination dispatch that
+/// grew an objective or a deadline would be authorizing more than the operator's
+/// risk card ever named, and this is where that has to be argued for.
+#[test]
+fn dispatch_envelope_vector() {
+    let cases = vectors();
+    let case = case(&cases, "dispatch-envelope");
+    let inp = &case["input"];
+    let exp = &case["expected"];
+    let envelope = &inp["envelope"];
+
+    // 1. The media types are the registry's, not a hand-written string.
+    assert_eq!(
+        akson_ext::schema::SchemaId::CoordDispatchV1.payload_media_type(),
+        exp["envelope_media_type"].as_str().unwrap()
+    );
+
+    // 2. The envelope validates against its own registered schema, and its
+    //    canonical bytes are the frozen ones.
+    let reparsed =
+        akson_ext::ijson::parse(&serde_json::to_vec(envelope).unwrap()).expect("strict I-JSON");
+    akson_ext::schema::validate(akson_ext::schema::SchemaId::CoordDispatchV1, &reparsed)
+        .expect("the frozen envelope must conform to coord-dispatch.v1");
+    assert_eq!(keys(envelope), expected_keys(case, "envelope_keys"));
+    assert_eq!(
+        String::from_utf8(akson_ext::jcs::canonical_bytes(envelope).unwrap()).unwrap(),
+        exp["envelope_canonical"].as_str().unwrap()
+    );
+
+    // 3. The digest chain the receiver re-derives, run here against the same
+    //    implementation the sender uses.
+    let (stage_ref, staged_digest, payload_sha256) = stage_reference(
+        inp["payload_utf8"].as_str().unwrap().as_bytes(),
+        inp["performer"].as_str().unwrap(),
+        inp["task_type"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload_sha256, exp["payload_sha256"].as_str().unwrap());
+    assert_eq!(staged_digest, exp["staged_digest"].as_str().unwrap());
+    assert_eq!(stage_ref, exp["stage_ref"].as_str().unwrap());
+    assert_eq!(envelope["payload_sha256"], payload_sha256);
+    assert_eq!(envelope["staged_digest"], staged_digest);
+    assert_eq!(envelope["recipient_label"], inp["performer"]);
+    assert_eq!(envelope["task_type"], inp["task_type"]);
+
+    // 4. No contract terms — and the schema itself refuses one, so this is not
+    //    merely a naming convention.
+    for member in expected_keys(case, "forbidden_members") {
+        assert!(
+            envelope.get(&member).is_none(),
+            "{member} is a contract term the operator never consented to"
+        );
+        let mut smuggled = envelope.clone();
+        smuggled[&member] = Value::String("x".to_owned());
+        assert!(
+            akson_ext::schema::validate(akson_ext::schema::SchemaId::CoordDispatchV1, &smuggled)
+                .is_err(),
+            "coord-dispatch.v1 must refuse a smuggled {member}"
+        );
+    }
+}
+
 /// The opaque cursor encoding.
 #[test]
 fn cursor_vectors() {
@@ -249,6 +326,7 @@ fn refusal_vectors() {
     // The dispatch/status refusals, each produced by the REAL dispatch reaching the
     // real durable state — not by hand-building a `Problem` that happens to match.
     let (state, dir) = temp_state("refusals");
+    seed_peer(&state, RECIPIENT_ROOT, true);
     let (first_ref, first_receipt) = consented(&state, "first bytes");
     let (second_ref, second_receipt) = consented(&state, "second bytes");
 
@@ -283,6 +361,53 @@ fn refusal_vectors() {
         );
     }
 
+    // `unroutable-recipient`: an unrouted staging, consented, and refused BEFORE
+    // the spend — the vector's frozen claim is that the receipt is still live
+    // afterwards, so it is checked here rather than merely asserted in prose.
+    let unrouted = state
+        .dispatch(&ControlRequest::Stage {
+            task_type: "https://byom.example/task/exchange/v1".to_owned(),
+            performer: String::new(),
+            payload_base64: {
+                use base64::engine::general_purpose::STANDARD;
+                use base64::Engine as _;
+                STANDARD.encode("nowhere bytes")
+            },
+        })
+        .unwrap();
+    let unrouted_ref = unrouted["stage_ref"].as_str().unwrap().to_owned();
+    let unrouted_receipt = state
+        .dispatch(&ControlRequest::StageConsent {
+            stage_ref: unrouted_ref.clone(),
+        })
+        .unwrap()["consent_receipt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let unroutable = state
+        .dispatch(&dispatch_req(&unrouted_ref, &unrouted_receipt, "exec-0009"))
+        .unwrap_err();
+    let vector = case(&cases, "refusal-unroutable-recipient");
+    assert_eq!(
+        body(&unroutable),
+        vector["expected"]["body"].as_str().unwrap()
+    );
+    assert_eq!(unroutable.status, 409);
+    assert_eq!(
+        vector["expected"]["consent_receipt_still_live"],
+        serde_json::json!(true)
+    );
+    assert!(
+        state
+            .store()
+            .lock()
+            .unwrap()
+            .unconsumed_consent(&unrouted_ref)
+            .unwrap()
+            .is_some(),
+        "the vector claims the receipt is still live; it must be"
+    );
+
     // `consent-spent`: dispatch once, then again under a different key.
     state
         .dispatch(&dispatch_req(&first_ref, &first_receipt, "exec-0001"))
@@ -315,7 +440,7 @@ fn consented(state: &DaemonState, payload: &str) -> (String, String) {
     let staged = state
         .dispatch(&ControlRequest::Stage {
             task_type: "https://byom.example/task/exchange/v1".to_owned(),
-            performer: String::new(),
+            performer: "partner".to_owned(),
             payload_base64: STANDARD.encode(payload),
         })
         .unwrap();
@@ -443,7 +568,13 @@ fn reply_vectors() {
     let vector = case(&cases, "coord-whoami");
     let whoami = state.dispatch(&ControlRequest::CoordWhoAmI).unwrap();
     assert_eq!(keys(&whoami), expected_keys(vector, "result_keys"));
-    for field in ["protocol", "protocol_version", "features", "unimplemented"] {
+    for field in [
+        "protocol",
+        "protocol_version",
+        "features",
+        "unimplemented",
+        "partial",
+    ] {
         assert_eq!(
             whoami[field], vector["input"]["result"][field],
             "coord_whoami: {field}"
@@ -621,7 +752,6 @@ fn reply_vectors() {
         "consent_spent",
         "status",
         "replayed",
-        "egress",
     ] {
         assert_eq!(
             dispatched[field], vector["input"]["result"][field],
@@ -630,6 +760,23 @@ fn reply_vectors() {
     }
     assert_eq!(dispatched["consent_receipt"], receipt);
     assert_eq!(dispatched["execution_key"], "exec-0001");
+    // `egress.at` and `egress.detail` are instance values (a timestamp and a
+    // one-line reason); what the vector freezes is the field set and the state
+    // vocabulary. The fixture recipient is pinned at an address nothing listens
+    // on, so this run lands on `failed` — the point is that the state is one of
+    // the three the vector names, and that it came off the durable column.
+    assert_eq!(
+        keys(&dispatched["egress"]),
+        expected_keys(vector, "egress_keys")
+    );
+    let states = expected_keys(vector, "egress_states");
+    assert!(
+        states.contains(&dispatched["egress"]["state"].as_str().unwrap().to_owned()),
+        "{} is not one of the frozen egress states",
+        dispatched["egress"]["state"]
+    );
+    assert_eq!(dispatched["egress"]["state"], "failed");
+    assert_eq!(dispatched["egress"]["retryable"], true);
 
     let retry_vector = case(&cases, "dispatch-reply-retry");
     let retried = state
@@ -659,12 +806,28 @@ fn reply_vectors() {
             keys(&status["verification"]),
             expected_keys(vector, "verification_keys")
         );
+        assert_eq!(
+            keys(&status["egress"]),
+            expected_keys(vector, "egress_keys")
+        );
         assert_eq!(status["task_id"], id);
         assert_eq!(status["status"], "dispatched");
+        // The two contract-shaped fields are null and STAY null: a coordination
+        // dispatch has no result manifest and no requester outcome, ever.
         assert_eq!(
-            status["verification"],
-            vector["input"]["result"]["verification"]
+            status["verification"]["result_manifest_digest"],
+            Value::Null
         );
+        assert_eq!(status["verification"]["outcome_state"], Value::Null);
+        let vstates = expected_keys(vector, "verification_states");
+        assert!(
+            vstates.contains(&status["verification"]["state"].as_str().unwrap().to_owned()),
+            "{} is not one of the frozen verification states",
+            status["verification"]["state"]
+        );
+        // Nothing acknowledged this run's carriage, and the reply says exactly
+        // that rather than implying a delivery is pending.
+        assert_eq!(status["verification"]["state"], "unacknowledged");
     }
 
     // --- capability_evidence: the field sets and every dimension's declared source ---

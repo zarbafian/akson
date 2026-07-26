@@ -54,6 +54,9 @@ fi
 step "interop: pairing over mTLS (two processes, no containers)"
 run bash harness/interop/scenario-pairing.sh
 
+step "interop: coordination dispatch over mTLS (two processes)"
+run bash harness/interop/scenario-coord-dispatch.sh
+
 step "public-processor CA path (needs outbound TCP 443)"
 if timeout 8 bash -c 'exec 3<>/dev/tcp/example.com/443' 2>/dev/null; then
   echo "outbound TLS reachable — validating the CA-validated broker transport"

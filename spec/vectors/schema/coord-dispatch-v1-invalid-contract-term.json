@@ -1,0 +1,23 @@
+{
+  "name": "schema/coord-dispatch-v1-invalid-contract-term",
+  "description": "a contract term the operator never consented to: additionalProperties is false, so an objective (or a deadline, or a deliverable) cannot be smuggled into a coordination envelope to make it act like a contract",
+  "input": {
+    "schema": "coord-dispatch",
+    "version": 1,
+    "value": {
+      "schema_version": 1,
+      "protocol": "akson_byom_exchange_v1",
+      "task_type": "https://byom.example/task/exchange/v1",
+      "recipient_label": "partner",
+      "recipient_root": "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+      "sender_root": "hR3vQ1sKp0YtN7cB2mLzXwE8dF4gJ6aU9iO5rT1yPqM",
+      "payload_sha256": "cb039a35e2bcb613d0feca64b1ec06e10bae0bf83be9d9f539c3455ee69dc325",
+      "staged_digest": "253d90e8a70eb7462395571eb37d0c486de8ee77ce1b0434274bce8e9a3c62e8",
+      "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+      "objective": "review this diff"
+    }
+  },
+  "expected": {
+    "valid": false
+  }
+}
