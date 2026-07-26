@@ -1,0 +1,38 @@
+{
+  "name": "coordination/stage-idempotent",
+  "description": "The frozen idempotency claim (ADR-0016 §4): staging identical content twice yields the same reference (the daemon writes one record and one `staged` event), while different bytes yield a different reference. Cases 1 and 2 are byte-identical; case 3 differs only in the payload.",
+  "input": {
+    "stagings": [
+      {
+        "task_type": "https://byom.example/task/exchange/v1",
+        "performer": "partner",
+        "payload_utf8": "{\"hello\":\"byom\"}"
+      },
+      {
+        "task_type": "https://byom.example/task/exchange/v1",
+        "performer": "partner",
+        "payload_utf8": "{\"hello\":\"byom\"}"
+      },
+      {
+        "task_type": "https://byom.example/task/exchange/v1",
+        "performer": "partner",
+        "payload_utf8": "{\"hello\":\"kovee\"}"
+      }
+    ]
+  },
+  "expected": {
+    "stage_refs": [
+      "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "stage-e3558a6cf4495654dcacffc98ac30765"
+    ],
+    "same_reference": [
+      0,
+      1
+    ],
+    "distinct_reference": [
+      0,
+      2
+    ]
+  }
+}

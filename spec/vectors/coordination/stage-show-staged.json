@@ -1,0 +1,37 @@
+{
+  "name": "coordination/stage-show-staged",
+  "description": "`stage_show` before consent: status and digests, and no consent object. The payload bytes are never in the reply — the surface reports ABOUT the bytes.",
+  "input": {
+    "request": {
+      "op": "stage_show",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978"
+    },
+    "result": {
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+      "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+      "byte_length": 16,
+      "task_type": "https://byom.example/task/exchange/v1",
+      "performer": "partner",
+      "status": "staged",
+      "staged_at": 1753574400,
+      "consent": null
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"stage_show\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\"}",
+    "result_keys": [
+      "byte_length",
+      "consent",
+      "payload_sha256",
+      "performer",
+      "stage_ref",
+      "staged_at",
+      "staged_digest",
+      "status",
+      "task_type"
+    ],
+    "canonical": "{\"byte_length\":16,\"consent\":null,\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_at\":1753574400,\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"staged\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "canonical_sha256": "7244ba769bacc8d88acd6e08e5d2ff708733fe56d4bbe80347afef3526302fc3"
+  }
+}

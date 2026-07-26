@@ -39,30 +39,55 @@ CLI is a thin front end that builds the request object, writes one line, and pri
 
 Every connection is checked twice before the request runs:
 
-1. **Peer credentials.** The connecting process's UID (from `SO_PEERCRED`) must equal
-   the daemon's UID. A foreign UID is refused before the request is even read. The
-   socket file itself is bound `0600` in a `0700` per-user directory
-   (`$XDG_RUNTIME_DIR/akson`, else a UID-scoped temp dir).
-2. **Surface.** The daemon exposes two sockets; a request is refused unless the socket
-   it arrived on is privileged enough for that op.
+1. **Peer credentials.** The connecting process's UID (from `SO_PEERCRED`) must be one
+   the socket admits — **per socket**, not one rule for all three (see the table
+   below). A UID that is not admitted is refused before the request line is even
+   read, with a generic `unauthorized` problem that carries no detail, so a UID
+   mismatch and an unreadable credential are indistinguishable.
+2. **Surface.** A request is refused unless the socket it arrived on is privileged
+   enough for that op.
 
-## The two sockets
+## The three sockets
 
-| Socket | Path | For |
-|---|---|---|
-| **admin** | `$XDG_RUNTIME_DIR/akson/admin.sock` | Authority-bearing operator ops (peer import, approve, run, deliver, send, configure). |
-| **worker** | `$XDG_RUNTIME_DIR/akson/worker.sock` | The narrow surface the sandboxed worker/adapter uses: submit a result, request a brokered processor call. |
+| Socket | Path | Admits | Mode | For |
+|---|---|---|---|---|
+| **admin** | `$XDG_RUNTIME_DIR/akson/admin.sock` | the daemon's own UID | `0600` | Authority-bearing operator ops (peer import, approve, run, deliver, send, configure, **stage consent**). |
+| **worker** | `$XDG_RUNTIME_DIR/akson/worker.sock` | the daemon's own UID | `0600` | The narrow surface the sandboxed worker/adapter uses: submit a result, request a brokered processor call. |
+| **coord** | `$XDG_RUNTIME_DIR/akson/coord.sock` | the UID named by `AKSON_COORD_UID`, **or** the daemon's own (diagnostics) | `0660` | The coordination surface ([ADR 0016](adr/0016-coordination-surface.md), `akson_byom_exchange_v1`): a *different* local principal stages outbound contracts and reads coordination state. |
 
-Admin dominates worker: an admin-socket connection may invoke any op; a worker-socket
-connection may invoke **only** the worker ops. This is why a confined worker that is
-compromised still cannot approve a contract or send a task — those ops are not on its
-surface. An op used on the wrong socket returns `403` with a `forbidden-surface`
-problem that names only the surface, never the op's internals.
+Both narrow sockets live in the same `0700` per-user runtime directory
+(`$AKSON_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/akson`, else a UID-scoped temp dir).
+
+**The coordination socket exists only when it is configured.** With `AKSON_COORD_UID`
+unset, `coord.sock` is **not created at all** — absent rather than guarded, the same
+posture ADR-0015 took when it left the pairing bootstrap endpoint unmounted: there is
+nothing to connect to and nothing to probe. A value that is not a numeric UID is fatal
+at startup, so a typo cannot silently remove the surface. Its `0660` mode is *not* the
+boundary — `SO_PEERCRED` is; the mode plus the runtime directory are what decide
+whether a separate identity can reach the socket at all, and that grant is one visible
+OS act. The coordination surface also bounds its request line at 1 MiB (a different
+principal must not be able to make the daemon buffer without limit); admin and worker
+are the daemon's own UID and stay unbounded.
+
+Dominance is deliberately asymmetric:
+
+- **Admin dominates both narrow surfaces.** An admin-socket connection may invoke any
+  op, including the coordination ops — so an operator can diagnose that surface
+  without a second account.
+- **Worker and coord dominate nothing, including each other.** A worker connection may
+  invoke only the worker ops; a coordination connection only the coordination ops. A
+  compromised confined worker cannot approve a contract or send a task, and a
+  compromised coordination driver cannot mint consent, reach a credential, or touch
+  inbound authority — those ops are not on its surface.
+
+An op used on the wrong socket returns `403` with a `forbidden-surface` problem that
+names only the surface, never the op's internals.
 
 ## Operations
 
-`Surface` is the *minimum* socket an op needs (`worker` ops also work from admin). The
-`akson …` column is the CLI that issues the op.
+`Surface` is the *minimum* socket an op needs — and, for the narrow surfaces, the only
+one besides admin (`worker` and `coord` ops also work from admin; nothing else works
+from them). The `akson …` column is the CLI that issues the op.
 
 | `op` | Args | Surface | `akson …` | Result (on `ok`) |
 |---|---|---|---|---|
@@ -91,8 +116,36 @@ problem that names only the surface, never the op's internals.
 | `processor_list` | — | admin | `processor list` | `{processors:[{processor_id, provider, origin, local, pinned}]}` |
 | `processor_credential` | `processor_id`, `credential` | admin | `processor credential <id> <cred>` | `{credential_set:true, processor_id}` |
 | `issue_work_order` | `task_id` | admin | — | `{accepted:true}` |
+| `stage_consent` | `stage_ref` | admin | `stage consent <ref>` | `{consented:true, consent_receipt, stage_ref, staged_digest, max_uses:1, uses:0, minted_at, sentence, sections}` — the risk card for that exact staged digest **and** the one-shot receipt, from one call over the row it is minted against. `409 already-consented` while an unconsumed receipt exists |
 | `submit_result` | a `ResultSubmission` object | **worker** | — (the worker SDK) | `{completed:true, bundle_digest}` |
 | `request_processor_call` | `processor_id, work_order_id, request` | **worker** | — (the worker SDK) | the broker reply: `{state, status, response}` or `{error}` |
+
+### The coordination ops (`coord`)
+
+The registry is **deny-by-absence**: these eight ops are the whole surface, and
+everything else — approve/deny, pairing, peer import, processor and credential ops,
+`task send`/`fulfill`/`deliver`, configuration — returns `forbidden-surface`. Consent
+is not here; it is `stage_consent` on admin, above.
+
+| `op` | Args | Surface | Result (on `ok`) |
+|---|---|---|---|
+| `coord_whoami` | — | **coord** | `{protocol:"akson_byom_exchange_v1", protocol_version, issuer, agent, root_thumbprint, interface_url, endpoint_fingerprint, features[], unimplemented[]}` — narrower than `who_am_i` on purpose: no `data_dir`, no `receive_addr` |
+| `peer_show` | `label` | **coord** | `{label, root_thumbprint, verified, status, identity{issuer, agent_id, endpoint_id, tls_certificate_sha256, agent_card_thumbprint}, card_claims{security_projection_digest, full_card_digest, key_purposes[]}, endpoint_hint}` — the one peer asked for; `{verified:false, status:"imported"}` before an introduction; never the operator's private note. Unknown or malformed label ⇒ the same `404 unknown-peer` |
+| `stage` | `task_type`, `performer` (a local **label**, may be empty), `payload_base64` | **coord** | `{stage_ref, staged_digest, payload_sha256, byte_length, task_type, performer, status:"staged", staged_at, consent:null, already_staged}` — **inert and idempotent**: the bytes are persisted (sealed) with a reference derived from their content digest; nothing starts, no authority is minted, no socket opens. The same bytes return the same reference with `already_staged:true` and write no second record |
+| `stage_show` | `stage_ref` | **coord** | the same record plus `consent` — `null`, or `{consent_receipt, staged_digest, max_uses, uses, minted_at}` once the operator has consented |
+| `events_read` | `cursor?`, `limit?` (default 64, max 256) | **coord** | `{events:[{cursor, kind, stage_ref, at, detail}], next_cursor, has_more}` — the durable feed (`staged`, `consent_recorded`). Cursors are **opaque**: each event carries the cursor that resumes after it, and a cursor that did not come from a reply is refused `400 bad-cursor` |
+| `dispatch` | `stage_ref`, `consent_receipt`, `execution_key` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
+| `task_status` | `task_id` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
+| `capability_evidence` | `label` | **coord** | not implemented yet: `501 not-implemented`, naming the op |
+
+> The three `501`s are deliberate: an op that is registered but unbuilt says so, and
+> `coord_whoami` lists them under `unimplemented`. "Not built yet" (`501`), "you may
+> not" (`403 forbidden-surface`), and "no such op" (`400 malformed-request`) are three
+> distinguishable answers, and none of them is silence.
+
+Golden vectors for every coordination op — request wire, reply field set, the staged
+digest derivation and its idempotency, the cursor encoding, and every refusal body —
+live in `spec/vectors/coordination/`, re-derived independently by `xcheck/`.
 
 > The confined worker does **not** speak this protocol directly for a model call — a
 > `processor_use` grant hands it one already-connected fd (`AKSON_BROKER_FD`) and the

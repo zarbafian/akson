@@ -1,0 +1,43 @@
+{
+  "name": "coordination/stage-show-consented",
+  "description": "`stage_show` after the operator consented on the ADMIN surface: status `consented`, and the one-shot receipt reported with the digest it binds. The driver may hold a receipt it was given; it can never mint one.",
+  "input": {
+    "request": {
+      "op": "stage_show",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978"
+    },
+    "result": {
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+      "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+      "byte_length": 16,
+      "task_type": "https://byom.example/task/exchange/v1",
+      "performer": "partner",
+      "status": "consented",
+      "staged_at": 1753574400,
+      "consent": {
+        "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+        "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+        "max_uses": 1,
+        "uses": 0,
+        "minted_at": 1753574460
+      }
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"stage_show\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\"}",
+    "result_keys": [
+      "byte_length",
+      "consent",
+      "payload_sha256",
+      "performer",
+      "stage_ref",
+      "staged_at",
+      "staged_digest",
+      "status",
+      "task_type"
+    ],
+    "canonical": "{\"byte_length\":16,\"consent\":{\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"max_uses\":1,\"minted_at\":1753574460,\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"uses\":0},\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_at\":1753574400,\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"consented\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "canonical_sha256": "d981364d045409b5427808e8c0e74ed46ba0117a29832cb88ee3d7778e08985d"
+  }
+}

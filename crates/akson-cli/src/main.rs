@@ -18,6 +18,9 @@
 //! - `akson token` — this endpoint's identity token (§8.2).
 //! - `akson peer add <token> <label>` — import a peer's token, the trust act (§8.2).
 //! - `akson peer list` — imported peers under their labels (§16.4).
+//! - `akson stage show <ref>` — what a coordination driver staged (ADR-0016).
+//! - `akson stage consent <ref>` — the risk card for that exact staged digest, and
+//!   the one-shot consent receipt a dispatch must consume. Admin-only, by design.
 
 use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
@@ -35,13 +38,14 @@ fn main() -> ExitCode {
         Some("whoami") => whoami(),
         Some("token") => token(),
         Some("task") => task(&mut args),
+        Some("stage") => stage(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
         Some("mcp") => mcp(&mut args),
         Some("service") => service(&mut args),
         Some("demo") => demo(),
         _ => {
-            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}, mcp install <claude|codex>, service install, demo");
+            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, stage {{show|consent}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}, mcp install <claude|codex>, service install, demo");
             ExitCode::from(2)
         }
     }
@@ -1298,6 +1302,99 @@ fn task_show(task_id: &str) -> ExitCode {
             println!("  {}", line.as_str().unwrap_or(""));
         }
     }
+    ExitCode::SUCCESS
+}
+
+/// Routes `akson stage …` — the operator's side of the coordination surface
+/// (ADR-0016 §3). Both subcommands go over the **admin** socket: admin dominates
+/// coord, so the operator can inspect what a driver staged, and consent is
+/// reachable from nowhere else.
+fn stage(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    match args.next().as_deref().and_then(OsStr::to_str) {
+        Some("show") => match next_arg(args) {
+            Some(r) => stage_show(&r),
+            None => usage("akson stage show <stage-ref>"),
+        },
+        Some("consent") => match next_arg(args) {
+            Some(r) => stage_consent(&r),
+            None => usage("akson stage consent <stage-ref>"),
+        },
+        _ => usage("akson stage {show <stage-ref>|consent <stage-ref>}"),
+    }
+}
+
+/// What a coordination driver staged, by reference: status and digests, never the
+/// bytes (`akson stage show`).
+fn stage_show(stage_ref: &str) -> ExitCode {
+    let result = match call(&ControlRequest::StageShow {
+        stage_ref: stage_ref.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    println!("{stage_ref}");
+    println!("  status:     {}", result["status"].as_str().unwrap_or("?"));
+    println!(
+        "  task type:  {}",
+        result["task_type"].as_str().unwrap_or("?")
+    );
+    println!(
+        "  recipient:  {}",
+        match result["performer"].as_str() {
+            Some("") | None => "(none)",
+            Some(label) => label,
+        }
+    );
+    println!("  bytes:      {}", result["byte_length"]);
+    println!(
+        "  payload:    sha256:{}",
+        result["payload_sha256"].as_str().unwrap_or("?")
+    );
+    println!(
+        "  staged as:  {}",
+        result["staged_digest"].as_str().unwrap_or("?")
+    );
+    match result["consent"]["consent_receipt"].as_str() {
+        Some(receipt) => println!("  consent:    {receipt} (one-shot, unconsumed)"),
+        None => println!("  consent:    none — `akson stage consent {stage_ref}`"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// Mint the one-shot consent receipt for an exact staged digest, after printing
+/// its risk card (`akson stage consent`). This is the §5.2 explicit decision on
+/// the federation path: the disclosure is never automatic, and never the
+/// coordination driver's to authorize (ADR-0016 §3).
+fn stage_consent(stage_ref: &str) -> ExitCode {
+    let result = match call(&ControlRequest::StageConsent {
+        stage_ref: stage_ref.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    // The card and the receipt come from one call over the very row the receipt
+    // is minted against — what you read and what you authorized cannot differ.
+    if let Some(sentence) = result["sentence"].as_str() {
+        println!("{sentence}");
+        println!();
+    }
+    let empty = Vec::new();
+    for section in result["sections"].as_array().unwrap_or(&empty) {
+        println!("{}", section["heading"].as_str().unwrap_or(""));
+        for line in section["lines"].as_array().unwrap_or(&empty) {
+            println!("  {}", line.as_str().unwrap_or(""));
+        }
+    }
+    println!();
+    println!(
+        "consent receipt: {}",
+        result["consent_receipt"].as_str().unwrap_or("?")
+    );
+    println!(
+        "  binds:      {}",
+        result["staged_digest"].as_str().unwrap_or("?")
+    );
+    println!("  uses:       {}/{}", result["uses"], result["max_uses"]);
     ExitCode::SUCCESS
 }
 

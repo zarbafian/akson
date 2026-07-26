@@ -1,0 +1,15 @@
+{
+  "name": "coordination/stage-digest",
+  "description": "ADR-0016 §4: the staged reference is a function of the CONTENT. The digest is SHA-256 over the RFC 8785 canonical JSON of exactly three fields — the payload by its own SHA-256, the recipient label, and the task type — and the reference is 'stage-' plus the first 32 hex characters of that digest. This is what makes staging idempotent on the digest rather than on a client-chosen id: a driver cannot choose the reference, and two stages of the same content cannot disagree about it.",
+  "input": {
+    "task_type": "https://byom.example/task/exchange/v1",
+    "performer": "partner",
+    "payload_utf8": "{\"hello\":\"byom\"}"
+  },
+  "expected": {
+    "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+    "canonical": "{\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+    "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978"
+  }
+}

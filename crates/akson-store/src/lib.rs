@@ -86,6 +86,9 @@ const OUTCOME_CONTEXT: &str = "outcome.signed";
 const PROCESSOR_CREDENTIAL_CONTEXT: &str = "processor.credential";
 const TASK_INPUT_CONTEXT: &str = "task.input";
 const TASK_OUTPUT_CONTEXT: &str = "task.output";
+const COORD_STAGED_CONTEXT: &str = "coord.staged_payload";
+const COORD_CONSENT_CONTEXT: &str = "coord.consent_receipt";
+const COORD_EVENT_CONTEXT: &str = "coord.event_detail";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -398,6 +401,81 @@ pub enum CompletionOutcome {
     /// The attempt cannot complete from this state (pending, or already a terminal
     /// failure/ambiguous/cancelled). Nothing was written.
     NotRunnable(AttemptState),
+}
+
+/// Bytes to stage on the coordination surface (ADR-0016 §4). `stage_ref` and
+/// `staged_digest` are computed by the caller from the content itself — that is
+/// what makes staging idempotent on the digest rather than on a client-chosen id.
+#[derive(Debug, Clone)]
+pub struct NewStagedContract<'a> {
+    pub stage_ref: &'a str,
+    pub staged_digest: &'a str,
+    pub task_type: &'a str,
+    /// The operator's local label for the intended recipient (empty if none).
+    pub performer: &'a str,
+    pub payload_sha256: &'a str,
+    pub payload: &'a [u8],
+    /// The `staged` event's detail, appended in the same transaction.
+    pub event: serde_json::Value,
+}
+
+/// A staged outbound contract's record — status and digests, never the bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedContract {
+    pub stage_ref: String,
+    pub staged_digest: String,
+    pub task_type: String,
+    pub performer: String,
+    pub payload_sha256: String,
+    pub byte_length: i64,
+    pub status: String,
+    pub staged_at: i64,
+}
+
+/// Whether staging wrote a record or found the same content already there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageOutcome {
+    /// First time these bytes were staged; the record and one event were written.
+    Staged(StagedContract),
+    /// The same content digest was already staged — no second record, no second
+    /// event, the same reference.
+    AlreadyStaged(StagedContract),
+}
+
+impl StageOutcome {
+    /// The record, whichever way it went.
+    pub fn record(&self) -> &StagedContract {
+        match self {
+            StageOutcome::Staged(s) | StageOutcome::AlreadyStaged(s) => s,
+        }
+    }
+
+    /// Whether this call found an existing record rather than writing one.
+    pub fn already_staged(&self) -> bool {
+        matches!(self, StageOutcome::AlreadyStaged(_))
+    }
+}
+
+/// The operator's one-shot consent for exactly one staged digest (ADR-0016 §3).
+/// The secret body stays sealed; this is the record *about* it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentReceipt {
+    pub receipt_id: String,
+    pub stage_ref: String,
+    pub staged_digest: String,
+    pub max_uses: i64,
+    pub uses: i64,
+    pub minted_at: i64,
+}
+
+/// One durable coordination event — the driver's projection feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordEvent {
+    pub seq: i64,
+    pub kind: String,
+    pub stage_ref: Option<String>,
+    pub detail: serde_json::Value,
+    pub at: i64,
 }
 
 /// One endpoint's encrypted state database.
@@ -2694,6 +2772,294 @@ impl Store {
         tx.commit()?;
         Ok(keys.len())
     }
+
+    // --- The coordination surface (ADR-0016) ---------------------------------
+    //
+    // Three primitives, deliberately dull: stage bytes, mint a consent receipt
+    // for exactly those bytes, append/read the event feed. Nothing here starts,
+    // sends, or grants anything — `stage_contract` is the whole of what the
+    // coordination surface can write.
+
+    /// Stages outbound bytes **inertly** (ADR-0016 §4). Writes the payload
+    /// (sealed) and its reference, appends one `staged` event, and returns.
+    /// Nothing else happens: no task, no attempt, no work order, no egress.
+    ///
+    /// Idempotent on the content digest: `stage_ref` and `staged_digest` are
+    /// both functions of the content, so re-staging the same bytes finds the
+    /// existing row and returns [`StageOutcome::AlreadyStaged`] — no second
+    /// record, and no second event.
+    pub fn stage_contract(
+        &self,
+        new: &NewStagedContract<'_>,
+        now: i64,
+    ) -> Result<StageOutcome, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(existing) = staged_row(&tx, new.stage_ref)? {
+            tx.commit()?;
+            return Ok(StageOutcome::AlreadyStaged(existing));
+        }
+        let sealed = self.dek.seal(COORD_STAGED_CONTEXT, new.payload);
+        tx.execute(
+            "INSERT INTO coord_staged
+                 (stage_ref, staged_digest, task_type, performer, payload_sha256,
+                  byte_length, payload, status, staged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'staged', ?8)",
+            params![
+                new.stage_ref,
+                new.staged_digest,
+                new.task_type,
+                new.performer,
+                new.payload_sha256,
+                new.payload.len() as i64,
+                sealed,
+                now,
+            ],
+        )?;
+        self.append_event_in(
+            &tx,
+            COORD_EVENT_STAGED,
+            Some(new.stage_ref),
+            &new.event,
+            now,
+        )?;
+        audit::append(&tx, now, "coord.staged", new.stage_ref)?;
+        tx.commit()?;
+        let staged = StagedContract {
+            stage_ref: new.stage_ref.to_owned(),
+            staged_digest: new.staged_digest.to_owned(),
+            task_type: new.task_type.to_owned(),
+            performer: new.performer.to_owned(),
+            payload_sha256: new.payload_sha256.to_owned(),
+            byte_length: new.payload.len() as i64,
+            status: COORD_STATUS_STAGED.to_owned(),
+            staged_at: now,
+        };
+        Ok(StageOutcome::Staged(staged))
+    }
+
+    /// A staged contract's record (status + digests), or `None`. The payload is
+    /// deliberately not part of it: `stage_show` reports *about* the bytes.
+    pub fn staged_contract(&self, stage_ref: &str) -> Result<Option<StagedContract>, StoreError> {
+        staged_row(&self.conn, stage_ref)
+    }
+
+    /// The staged payload, unsealed — for the operator's own risk card and, in a
+    /// later slice, the dispatch that a consent receipt authorizes.
+    pub fn staged_payload(&self, stage_ref: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let sealed: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM coord_staged WHERE stage_ref = ?1",
+                [stage_ref],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match sealed {
+            Some(bytes) => Ok(Some(self.dek.open(COORD_STAGED_CONTEXT, &bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Mints the operator's one-shot consent receipt for a staged digest
+    /// (ADR-0016 §3 — an **admin** act). The receipt body is sealed; the stage
+    /// row advances to `consented` and one `consent_recorded` event is appended,
+    /// all in one transaction.
+    ///
+    /// Refuses (`None`) when an unconsumed receipt already exists for this stage:
+    /// two live authorizations for one disclosure is not a state the operator
+    /// asked for.
+    pub fn mint_consent_receipt(
+        &self,
+        stage_ref: &str,
+        receipt_id: &str,
+        receipt_body: &[u8],
+        event: &serde_json::Value,
+        now: i64,
+    ) -> Result<Option<ConsentReceipt>, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(staged) = staged_row(&tx, stage_ref)? else {
+            tx.commit()?;
+            return Err(StoreError::Corrupt(format!(
+                "consent for an unstaged reference {stage_ref}"
+            )));
+        };
+        if unconsumed_row(&tx, stage_ref)?.is_some() {
+            tx.commit()?;
+            return Ok(None);
+        }
+        let sealed = self.dek.seal(COORD_CONSENT_CONTEXT, receipt_body);
+        tx.execute(
+            "INSERT INTO coord_consents
+                 (receipt_id, stage_ref, staged_digest, receipt, max_uses, uses, minted_at)
+             VALUES (?1, ?2, ?3, ?4, 1, 0, ?5)",
+            params![
+                receipt_id,
+                stage_ref,
+                staged.staged_digest.as_str(),
+                sealed,
+                now
+            ],
+        )?;
+        tx.execute(
+            "UPDATE coord_staged SET status = 'consented' WHERE stage_ref = ?1",
+            [stage_ref],
+        )?;
+        self.append_event_in(&tx, COORD_EVENT_CONSENT, Some(stage_ref), event, now)?;
+        audit::append(&tx, now, "coord.consent_minted", stage_ref)?;
+        tx.commit()?;
+        Ok(Some(ConsentReceipt {
+            receipt_id: receipt_id.to_owned(),
+            stage_ref: stage_ref.to_owned(),
+            staged_digest: staged.staged_digest,
+            max_uses: 1,
+            uses: 0,
+            minted_at: now,
+        }))
+    }
+
+    /// The live (unconsumed) consent receipt for a staged reference, if any.
+    pub fn unconsumed_consent(
+        &self,
+        stage_ref: &str,
+    ) -> Result<Option<ConsentReceipt>, StoreError> {
+        unconsumed_row(&self.conn, stage_ref)
+    }
+
+    /// Appends one coordination event (design §16.4, ADR-0016). `detail` is
+    /// sealed at rest; only the kind, the reference, and the sequence stay
+    /// plaintext, because those are what a cursor addresses.
+    pub fn append_coord_event(
+        &self,
+        kind: &str,
+        stage_ref: Option<&str>,
+        detail: &serde_json::Value,
+        now: i64,
+    ) -> Result<i64, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let seq = self.append_event_in(&tx, kind, stage_ref, detail, now)?;
+        tx.commit()?;
+        Ok(seq)
+    }
+
+    fn append_event_in(
+        &self,
+        tx: &Connection,
+        kind: &str,
+        stage_ref: Option<&str>,
+        detail: &serde_json::Value,
+        now: i64,
+    ) -> Result<i64, StoreError> {
+        let sealed = self
+            .dek
+            .seal(COORD_EVENT_CONTEXT, &serde_json::to_vec(detail)?);
+        tx.execute(
+            "INSERT INTO coord_events (kind, stage_ref, detail, at) VALUES (?1, ?2, ?3, ?4)",
+            params![kind, stage_ref, sealed, now],
+        )?;
+        Ok(tx.last_insert_rowid())
+    }
+
+    /// Reads coordination events strictly after `after_seq`, oldest first, at
+    /// most `limit`. The feed is durable and append-only, so a cursor survives a
+    /// restart and never re-delivers what it already passed.
+    pub fn read_coord_events(
+        &self,
+        after_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<CoordEvent>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, kind, stage_ref, detail, at FROM coord_events
+             WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![after_seq, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, kind, stage_ref, sealed, at) = row?;
+            let detail = serde_json::from_slice(&self.dek.open(COORD_EVENT_CONTEXT, &sealed)?)?;
+            out.push(CoordEvent {
+                seq,
+                kind,
+                stage_ref,
+                detail,
+                at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The highest event sequence, or 0 when the feed is empty — the position a
+    /// cursor-less reader resumes from once it has caught up.
+    pub fn coord_events_head(&self) -> Result<i64, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM coord_events", [], |r| {
+                r.get(0)
+            })?)
+    }
+}
+
+/// The `staged` event kind (ADR-0016's feed).
+pub const COORD_EVENT_STAGED: &str = "staged";
+/// The `consent_recorded` event kind.
+pub const COORD_EVENT_CONSENT: &str = "consent_recorded";
+/// A staged contract awaiting the operator's consent.
+pub const COORD_STATUS_STAGED: &str = "staged";
+/// A staged contract with a live consent receipt.
+pub const COORD_STATUS_CONSENTED: &str = "consented";
+
+fn staged_row(conn: &Connection, stage_ref: &str) -> Result<Option<StagedContract>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT stage_ref, staged_digest, task_type, performer, payload_sha256,
+                    byte_length, status, staged_at
+             FROM coord_staged WHERE stage_ref = ?1",
+            [stage_ref],
+            |r| {
+                Ok(StagedContract {
+                    stage_ref: r.get(0)?,
+                    staged_digest: r.get(1)?,
+                    task_type: r.get(2)?,
+                    performer: r.get(3)?,
+                    payload_sha256: r.get(4)?,
+                    byte_length: r.get(5)?,
+                    status: r.get(6)?,
+                    staged_at: r.get(7)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn unconsumed_row(
+    conn: &Connection,
+    stage_ref: &str,
+) -> Result<Option<ConsentReceipt>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT receipt_id, stage_ref, staged_digest, max_uses, uses, minted_at
+             FROM coord_consents WHERE stage_ref = ?1 AND uses < max_uses
+             ORDER BY minted_at LIMIT 1",
+            [stage_ref],
+            |r| {
+                Ok(ConsentReceipt {
+                    receipt_id: r.get(0)?,
+                    stage_ref: r.get(1)?,
+                    staged_digest: r.get(2)?,
+                    max_uses: r.get(3)?,
+                    uses: r.get(4)?,
+                    minted_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 #[cfg(test)]
@@ -3900,5 +4266,101 @@ mod tests {
             .peer_tls_fingerprint("local", "stranger")
             .unwrap()
             .is_none());
+    }
+
+    const PAYLOAD_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn staged<'a>(payload: &'a [u8], digest: &'a str, stage_ref: &'a str) -> NewStagedContract<'a> {
+        NewStagedContract {
+            stage_ref,
+            staged_digest: digest,
+            task_type: "https://byom.example/task/exchange/v1",
+            performer: "partner",
+            payload_sha256: PAYLOAD_SHA256,
+            payload,
+            event: serde_json::json!({"stage_ref": stage_ref}),
+        }
+    }
+
+    #[test]
+    fn staging_the_same_content_twice_writes_one_record_and_one_event() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let digest = "bb".repeat(32);
+        let stage_ref = "stage-0123456789abcdef0123456789abcdef";
+        let first = store
+            .stage_contract(&staged(b"outbound bytes", &digest, stage_ref), 1000)
+            .unwrap();
+        assert!(matches!(first, StageOutcome::Staged(_)));
+        let second = store
+            .stage_contract(&staged(b"outbound bytes", &digest, stage_ref), 2000)
+            .unwrap();
+        assert!(second.already_staged(), "same content, no second record");
+        // The record is the first one — a re-stage does not move `staged_at`.
+        assert_eq!(second.record().staged_at, 1000);
+        assert_eq!(second.record().stage_ref, stage_ref);
+        // And exactly one event exists.
+        let events = store.read_coord_events(0, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, COORD_EVENT_STAGED);
+        // The payload is sealed at rest but readable through the store.
+        assert_eq!(
+            store.staged_payload(stage_ref).unwrap().as_deref(),
+            Some(&b"outbound bytes"[..])
+        );
+    }
+
+    #[test]
+    fn consent_is_one_live_receipt_per_staged_digest() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        let digest = "cc".repeat(32);
+        let stage_ref = "stage-fedcba9876543210fedcba9876543210";
+        store
+            .stage_contract(&staged(b"bytes", &digest, stage_ref), 1000)
+            .unwrap();
+        assert!(store.unconsumed_consent(stage_ref).unwrap().is_none());
+
+        let receipt = store
+            .mint_consent_receipt(
+                stage_ref,
+                "rcpt-1",
+                b"{\"one_shot\":true}",
+                &serde_json::json!({"stage_ref": stage_ref}),
+                2000,
+            )
+            .unwrap()
+            .expect("first mint");
+        assert_eq!(receipt.staged_digest, digest);
+        assert_eq!((receipt.max_uses, receipt.uses), (1, 0));
+        assert_eq!(
+            store.staged_contract(stage_ref).unwrap().unwrap().status,
+            COORD_STATUS_CONSENTED
+        );
+        // A second mint while the first is unconsumed is refused, not stacked.
+        assert!(store
+            .mint_consent_receipt(stage_ref, "rcpt-2", b"{}", &serde_json::json!({}), 3000)
+            .unwrap()
+            .is_none());
+        let events = store.read_coord_events(0, 10).unwrap();
+        assert_eq!(events.len(), 2, "staged + consent_recorded, nothing else");
+        assert_eq!(events[1].kind, COORD_EVENT_CONSENT);
+    }
+
+    #[test]
+    fn the_event_feed_is_cursored_and_never_re_delivers() {
+        let store = Store::open_in_memory(&kek(), checkpoint(0)).unwrap();
+        for i in 0..5 {
+            store
+                .append_coord_event("staged", None, &serde_json::json!({"i": i}), 1000 + i)
+                .unwrap();
+        }
+        let first = store.read_coord_events(0, 2).unwrap();
+        assert_eq!(first.len(), 2);
+        let after = first[1].seq;
+        let rest = store.read_coord_events(after, 10).unwrap();
+        assert_eq!(rest.len(), 3);
+        assert!(rest.iter().all(|e| e.seq > after));
+        assert_eq!(store.coord_events_head().unwrap(), 5);
+        // Reading past the head yields nothing (and no error).
+        assert!(store.read_coord_events(5, 10).unwrap().is_empty());
     }
 }

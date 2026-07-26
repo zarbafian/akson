@@ -1,0 +1,13 @@
+{
+  "name": "coordination/request-task-status",
+  "description": "The frozen request wire for `task_status` — the op is addressable on the coordination surface today (it answers 501 naming itself, see refusal-not-implemented-task-status); freezing the argument names now means the shape does not move when the behaviour lands.",
+  "input": {
+    "request": {
+      "op": "task_status",
+      "task_id": "task-7f3a"
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"task_status\",\"task_id\":\"task-7f3a\"}"
+  }
+}

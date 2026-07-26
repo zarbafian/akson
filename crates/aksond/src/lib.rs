@@ -1,15 +1,19 @@
 //! The Akson daemon library (design §16.2): the local control plane.
 //!
-//! The daemon exposes two OS-protected local surfaces — an [`Admin`](Surface::Admin)
-//! socket for authority-bearing operator operations and a narrow
-//! [`Worker`](Surface::Worker) socket for task I/O — and authenticates every local
-//! peer by its Unix credentials. Two pure gates enforce §16.2:
+//! The daemon exposes up to three OS-protected local surfaces — an
+//! [`Admin`](Surface::Admin) socket for authority-bearing operator operations, a
+//! narrow [`Worker`](Surface::Worker) socket for task I/O, and (only when
+//! `AKSON_COORD_UID` names one) a [`Coord`](Surface::Coord) socket for a separate
+//! local principal (ADR-0016) — and authenticates every local peer by its Unix
+//! credentials. Two pure gates enforce §16.2:
 //!
-//! - [`authorize`] — a control operation is refused unless the caller's surface is
-//!   at least the operation's required surface, so the worker surface can never
-//!   pair, set policy, approve, issue a work order, sign an outcome, or export.
-//! - [`authenticate_same_uid`] — a local peer is refused unless its UID is the
-//!   daemon's own (personal-profile convenience authentication).
+//! - [`authorize`] — a control operation is refused unless the caller's surface
+//!   dominates the operation's required surface, so neither narrow surface can
+//!   pair, set policy, approve, issue a work order, sign an outcome, export, or
+//!   mint consent for an outbound disclosure.
+//! - [`authenticate_same_uid`] / [`Admission`] — a local peer is refused unless its
+//!   UID is one the socket it connected to admits: the daemon's own for admin and
+//!   worker, plus the configured coordination UID for coord.
 //!
 //! The socket wiring, the OpenAPI 3.1 control API, the risk-card rendering, and the
 //! operator command set build on these gates.
@@ -22,6 +26,7 @@ mod broker_channel;
 mod confinement;
 mod control;
 mod control_dispatch;
+mod coord;
 mod decision;
 mod delivery;
 mod introduce;
@@ -46,6 +51,10 @@ pub use broker::{
 };
 pub use control::{authorize, ControlOp, Problem, Surface};
 pub use control_dispatch::dispatch_control;
+pub use coord::{
+    dispatch_coord, encode_cursor, stage_reference, COORD_PROTOCOL, COORD_PROTOCOL_VERSION,
+    MAX_STAGED_PAYLOAD_BYTES,
+};
 pub use decision::{decide, DecisionRecord};
 pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
 pub use introduce::{
@@ -68,7 +77,8 @@ pub use receive_server::{
 pub use result::{submit_result, OutputKind, ResultOutput, ResultSubmission};
 pub use send::{run_send, Deliverable, TaskInput, TaskSpec};
 pub use socket::{
-    admin_socket_path, bind_socket, handle_connection, send_request, serve, socket_dir,
-    worker_socket_path, ControlRequest, ControlResponse, FulfillOutput, SocketError,
+    admin_socket_path, bind_coord_socket, bind_socket, configured_coord_uid, coord_socket_path,
+    handle_connection, send_request, serve, socket_dir, worker_socket_path, Admission,
+    ControlRequest, ControlResponse, FulfillOutput, SocketError,
 };
 pub use worker_run::{run_fulfill, run_worker};

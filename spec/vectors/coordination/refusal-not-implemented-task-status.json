@@ -1,0 +1,17 @@
+{
+  "name": "coordination/refusal-not-implemented-task-status",
+  "description": "`task_status` is registered on the coordination surface but not implemented in this build. It answers a typed 501 that NAMES the op, so a driver can tell 'not built yet' from 'you may not' (403 forbidden-surface) and from 'no such op' (400 malformed-request). Recorded plainly, never silently absent.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:not-implemented",
+      "title": "this coordination operation is not implemented yet",
+      "status": 501,
+      "detail": "task_status is on the coordination surface but not implemented in this build"
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:not-implemented\",\"title\":\"this coordination operation is not implemented yet\",\"status\":501,\"detail\":\"task_status is on the coordination surface but not implemented in this build\"}",
+    "status": 501,
+    "op": "task_status"
+  }
+}

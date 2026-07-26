@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-unauthorized",
+  "description": "A peer whose SO_PEERCRED UID the socket does not admit. Written BEFORE the request line is read, so a foreign local user learns nothing at all — and the body carries no detail, so a UID mismatch, an unreadable credential, and a wrong socket are indistinguishable.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:unauthorized",
+      "title": "local peer is not authorized",
+      "status": 403
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:unauthorized\",\"title\":\"local peer is not authorized\",\"status\":403}",
+    "status": 403
+  }
+}

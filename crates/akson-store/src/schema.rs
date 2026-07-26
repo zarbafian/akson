@@ -436,6 +436,56 @@ ALTER TABLE sent_requests  ADD COLUMN performer_root TEXT NOT NULL DEFAULT '';
 ALTER TABLE contract_heads ADD COLUMN origin_root    TEXT NOT NULL DEFAULT '';
 "#;
 
+/// Version 21 (C4, the coordination surface — ADR-0016): the outbound staging
+/// ledger, the operator's consent receipts, and the durable coordination event
+/// log the driver reads with a cursor.
+///
+/// `coord_staged` is **inert** storage: bytes plus a reference, nothing more.
+/// The reference and the digest are both functions of the content, so the
+/// primary key IS the idempotency rule — the same bytes cannot make a second
+/// record. The payload is sealed at rest (it is an outbound disclosure that has
+/// not been consented to yet); the digests stay plaintext because they are the
+/// lookup keys and the thing consent binds to.
+///
+/// `coord_consents` holds the one-shot receipt the *admin* surface mints
+/// (§3 of the ADR: consent is never the driver's to authorize). `uses`/`max_uses`
+/// carry the one-shot property; the receipt body is sealed.
+///
+/// `coord_events` is the append-only feed: `seq` is the cursor's only content,
+/// so a cursor cannot address anything but a position in this table.
+const V21: &str = r#"
+CREATE TABLE coord_staged (
+    stage_ref      TEXT PRIMARY KEY,
+    staged_digest  TEXT NOT NULL UNIQUE,
+    task_type      TEXT NOT NULL,
+    performer      TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    byte_length    INTEGER NOT NULL,
+    payload        BLOB NOT NULL,
+    status         TEXT NOT NULL,
+    staged_at      INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE coord_consents (
+    receipt_id     TEXT PRIMARY KEY,
+    stage_ref      TEXT NOT NULL,
+    staged_digest  TEXT NOT NULL,
+    receipt        BLOB NOT NULL,
+    max_uses       INTEGER NOT NULL,
+    uses           INTEGER NOT NULL,
+    minted_at      INTEGER NOT NULL
+) STRICT;
+CREATE INDEX coord_consents_by_stage ON coord_consents (stage_ref);
+
+CREATE TABLE coord_events (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,
+    stage_ref  TEXT,
+    detail     BLOB NOT NULL,
+    at         INTEGER NOT NULL
+) STRICT;
+"#;
+
 /// Each numbered migration and the `user_version` it establishes. Steps run in
 /// order; opening an up-to-date database runs none. New milestones append here.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -459,6 +509,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (18, V18),
     (19, V19),
     (20, V20),
+    (21, V21),
 ];
 
 /// Applies pragmas and runs outstanding migrations. Idempotent. Returns the

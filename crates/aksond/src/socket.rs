@@ -2,16 +2,20 @@
 //! authorization (design §16.2).
 //!
 //! A control socket is bound with owner-only permissions, and every connection is
-//! (1) authenticated by Unix peer credentials — the peer's UID must be the
-//! daemon's — and (2) authorized by *surface* — a request is refused unless the
-//! socket it arrived on (admin or worker) is privileged enough for it. Only then is
-//! the request dispatched. Requests and responses are newline-delimited JSON;
-//! failures are RFC 9457 [`Problem`] objects.
+//! (1) authenticated by Unix peer credentials — the peer's UID must be one the
+//! socket [`Admission`]s — and (2) authorized by *surface* — a request is refused
+//! unless the socket it arrived on (admin, worker, or coord) is privileged enough
+//! for it. Only then is the request dispatched. Requests and responses are
+//! newline-delimited JSON; failures are RFC 9457 [`Problem`] objects.
+//!
+//! Admission is per socket: admin and worker admit only the daemon's own UID,
+//! while the coordination socket (ADR-0016) also admits one configured UID — and
+//! is not created at all when none is configured.
 //!
 //! The dispatch itself is injected, so this module owns only the security framing;
 //! the daemon supplies what each operation does.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -19,7 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{authorize, ControlOp, Problem, Surface};
-use crate::peercred::{authenticate_same_uid, current_uid};
+use crate::peercred::{current_uid, peer_credentials};
 
 /// The runtime directory holding the daemon's sockets. In priority:
 /// `$AKSON_RUNTIME_DIR` (the *exact* directory — used by the `--system` service
@@ -48,6 +52,75 @@ pub fn admin_socket_path() -> PathBuf {
 /// The worker control socket path (design §16.2).
 pub fn worker_socket_path() -> PathBuf {
     socket_dir().join("worker.sock")
+}
+
+/// The coordination control socket path (ADR-0016). The file exists only when a
+/// coordination UID is configured — see [`bind_coord_socket`].
+pub fn coord_socket_path() -> PathBuf {
+    socket_dir().join("coord.sock")
+}
+
+/// The configured coordination peer UID (`AKSON_COORD_UID`, ADR-0016 §1).
+///
+/// `Ok(None)` — unset or empty — means the coordination socket is **not created
+/// at all** ("absent rather than guarded"; an unmounted endpoint cannot be
+/// probed). A value that is not a UID is an error rather than a silent absence:
+/// a typo must not quietly remove the surface an operator asked for.
+pub fn configured_coord_uid() -> Result<Option<u32>, String> {
+    parse_coord_uid(std::env::var_os("AKSON_COORD_UID").as_deref())
+}
+
+fn parse_coord_uid(value: Option<&std::ffi::OsStr>) -> Result<Option<u32>, String> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let text = raw
+        .to_str()
+        .ok_or_else(|| "AKSON_COORD_UID is not valid UTF-8".to_owned())?
+        .trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    text.parse::<u32>()
+        .map(Some)
+        .map_err(|_| format!("AKSON_COORD_UID must be a numeric uid, not {text:?}"))
+}
+
+/// The UIDs one socket admits, checked by `SO_PEERCRED` **before** the request
+/// line is read (design §16.2, ADR-0016 §1).
+///
+/// Admin and worker admit exactly the daemon's own UID, as they always have.
+/// Coord admits the configured coordination UID *or* the daemon's own, so the
+/// operator can diagnose the surface without a second account. Anything else is
+/// refused, and the refusal is the same generic problem for every reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission(Vec<u32>);
+
+impl Admission {
+    /// Only the daemon's own UID — the admin and worker rule, unchanged.
+    pub fn same_uid(daemon_uid: u32) -> Self {
+        Self(vec![daemon_uid])
+    }
+
+    /// The coordination rule: the configured peer UID, plus the daemon's own for
+    /// diagnostics. A `coord_uid` equal to the daemon's collapses to one entry.
+    pub fn coord(daemon_uid: u32, coord_uid: u32) -> Self {
+        if coord_uid == daemon_uid {
+            Self(vec![daemon_uid])
+        } else {
+            Self(vec![coord_uid, daemon_uid])
+        }
+    }
+
+    /// Whether `uid` is admitted here.
+    pub fn admits(&self, uid: u32) -> bool {
+        self.0.contains(&uid)
+    }
+
+    /// The admitted UIDs, for the startup log line.
+    pub fn uids(&self) -> &[u32] {
+        &self.0
+    }
 }
 
 /// A control request over the local socket. Each variant maps to a [`ControlOp`]
@@ -178,6 +251,51 @@ pub enum ControlRequest {
     },
     /// Issue a one-shot work order (admin only) — used here to exercise the gate.
     IssueWorkOrder { task_id: String },
+
+    // --- The admin side of the coordination surface (ADR-0016 §3) ---
+    /// Mint the one-shot consent receipt for an exact staged digest, after
+    /// showing the operator its risk card (`akson stage consent <ref>`, admin
+    /// only). Deliberately **not** on the coordination surface: the outward
+    /// disclosure is never the driver's to authorize.
+    StageConsent { stage_ref: String },
+
+    // --- The coordination surface (ADR-0016 §2, `akson_byom_exchange_v1`) ---
+    /// This daemon's identity, endpoint fingerprint, and protocol/feature
+    /// versions — the driver's own handshake.
+    #[serde(rename = "coord_whoami")]
+    CoordWhoAmI,
+    /// One named verified peer's identity tuple and card claims. Answers about
+    /// the peer asked for and nothing else — it never enumerates.
+    PeerShow { label: String },
+    /// Stage outbound bytes: inert, and idempotent on their content digest.
+    Stage {
+        task_type: String,
+        /// The operator's local label for the intended recipient.
+        #[serde(default)]
+        performer: String,
+        /// The outbound bytes, base64 (standard alphabet, as `task_fulfill`).
+        payload_base64: String,
+    },
+    /// A staged contract's status and digests.
+    StageShow { stage_ref: String },
+    /// One-shot: consume a consent receipt and dispatch the staged bytes.
+    Dispatch {
+        stage_ref: String,
+        consent_receipt: String,
+        execution_key: String,
+    },
+    /// The verification status of a dispatched task.
+    TaskStatus { task_id: String },
+    /// Durable cursored coordination events. An absent `cursor` starts at the
+    /// beginning of the feed; cursors are opaque and only ever come from a reply.
+    EventsRead {
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// `FederationCapabilityEvidence` for a peer.
+    CapabilityEvidence { label: String },
 }
 
 /// One output an operator provides via `TaskFulfill`. `content` is base64 so
@@ -223,6 +341,15 @@ impl ControlRequest {
             | ControlRequest::ProcessorList
             | ControlRequest::ProcessorCredential { .. } => ControlOp::Processor,
             ControlRequest::IssueWorkOrder { .. } => ControlOp::IssueWorkOrder,
+            ControlRequest::StageConsent { .. } => ControlOp::StageConsent,
+            ControlRequest::CoordWhoAmI => ControlOp::CoordWhoAmI,
+            ControlRequest::PeerShow { .. } => ControlOp::CoordPeerShow,
+            ControlRequest::Stage { .. } => ControlOp::CoordStage,
+            ControlRequest::StageShow { .. } => ControlOp::CoordStageShow,
+            ControlRequest::Dispatch { .. } => ControlOp::CoordDispatch,
+            ControlRequest::TaskStatus { .. } => ControlOp::CoordTaskStatus,
+            ControlRequest::EventsRead { .. } => ControlOp::CoordEventsRead,
+            ControlRequest::CapabilityEvidence { .. } => ControlOp::CoordCapabilityEvidence,
         }
     }
 }
@@ -247,30 +374,71 @@ pub enum SocketError {
 /// Binds a control socket at `path` with owner-only (`0600`) permissions (design
 /// §16.2). Removes a stale socket file first, so a restart rebinds cleanly.
 pub fn bind_socket(path: &Path) -> Result<UnixListener, SocketError> {
+    bind_socket_mode(path, 0o600)
+}
+
+fn bind_socket_mode(path: &Path, mode: u32) -> Result<UnixListener, SocketError> {
     // A stale socket file from a previous run would block the bind.
     if path.exists() {
         std::fs::remove_file(path)?;
     }
     let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
     Ok(listener)
+}
+
+/// Binds the coordination socket **only** when a coordination UID is configured
+/// (ADR-0016 §1). `coord_uid` of `None` returns `Ok(None)` and creates no file at
+/// all: absent rather than guarded, the posture ADR-0015 took when it left the
+/// bootstrap endpoint unmounted. There is then nothing to connect to and nothing
+/// to probe.
+///
+/// The file is `0660`, not `0600`: the coordination identity is a *different*
+/// Unix user, so reachability is one visible OS grant (a group or an ACL on the
+/// socket, inside a runtime directory that user may traverse) — while admission
+/// stays the named-UID `SO_PEERCRED` check in the returned [`Admission`]. The
+/// mode is not the boundary; the peer credential is.
+pub fn bind_coord_socket(
+    path: &Path,
+    coord_uid: Option<u32>,
+    daemon_uid: u32,
+) -> Result<Option<(UnixListener, Admission)>, SocketError> {
+    let Some(coord_uid) = coord_uid else {
+        return Ok(None);
+    };
+    let listener = bind_socket_mode(path, 0o660)?;
+    Ok(Some((listener, Admission::coord(daemon_uid, coord_uid))))
+}
+
+/// The largest request line the coordination surface accepts (ADR-0016). Ample
+/// for a staged payload at [`MAX_STAGED_PAYLOAD_BYTES`](crate::MAX_STAGED_PAYLOAD_BYTES)
+/// once base64 has inflated it by 4/3, and small enough that a separate principal
+/// cannot pin unbounded daemon memory with one connection.
+pub const MAX_COORD_REQUEST_BYTES: u64 = 1 << 20;
+
+/// The per-surface request ceiling, or `None` for the daemon's own UID.
+fn request_ceiling(surface: Surface) -> Option<u64> {
+    match surface {
+        Surface::Coord => Some(MAX_COORD_REQUEST_BYTES),
+        Surface::Admin | Surface::Worker => None,
+    }
 }
 
 /// Serves one connection (design §16.2): authenticate the peer's UID, read one
 /// request, authorize it against `surface`, dispatch, and write the response. A
-/// peer whose UID is not `daemon_uid` is refused before any request is read; an
-/// operation not permitted on `surface` is refused before dispatch.
+/// peer whose UID `admission` does not admit is refused before any request is
+/// read; an operation not permitted on `surface` is refused before dispatch.
 pub fn handle_connection<F>(
     stream: UnixStream,
     surface: Surface,
-    daemon_uid: u32,
+    admission: &Admission,
     dispatch: &F,
 ) -> Result<(), SocketError>
 where
     F: Fn(&ControlRequest) -> Result<serde_json::Value, Problem>,
 {
     // (1) Peer-credential authentication — refuse a foreign UID before reading.
-    if authenticate_same_uid(&stream, daemon_uid).is_err() {
+    if !peer_credentials(&stream).is_ok_and(|cred| admission.admits(cred.uid)) {
         let problem = Problem {
             type_: "urn:akson:error:unauthorized".to_owned(),
             title: "local peer is not authorized".to_owned(),
@@ -280,9 +448,26 @@ where
         return write_response(&stream, &ControlResponse::Problem { problem });
     }
 
-    let mut reader = BufReader::new(stream.try_clone()?);
+    // A bounded read on the coordination surface: that peer is a *different*
+    // principal, so what it can make the daemon buffer must have a ceiling. Admin
+    // and worker are the daemon's own UID and stay unbounded — a `task send` spec
+    // or a `task fulfill` payload is legitimately large.
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    let read = match request_ceiling(surface) {
+        Some(max) => {
+            let mut reader = BufReader::new(stream.try_clone()?.take(max + 1));
+            reader.read_line(&mut line)?
+        }
+        None => BufReader::new(stream.try_clone()?).read_line(&mut line)?,
+    };
+    if request_ceiling(surface).is_some_and(|max| read as u64 > max) {
+        let problem = Problem::new(
+            413,
+            "request-too-large",
+            "the control request exceeds this surface's ceiling",
+        );
+        return write_response(&stream, &ControlResponse::Problem { problem });
+    }
     let request: ControlRequest = match serde_json::from_str(line.trim()) {
         Ok(r) => r,
         Err(e) => {
@@ -313,7 +498,7 @@ where
 pub fn serve<F>(
     listener: &UnixListener,
     surface: Surface,
-    daemon_uid: u32,
+    admission: &Admission,
     dispatch: F,
 ) -> Result<(), SocketError>
 where
@@ -322,7 +507,7 @@ where
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if let Err(e) = handle_connection(stream, surface, daemon_uid, &dispatch) {
+                if let Err(e) = handle_connection(stream, surface, admission, &dispatch) {
                     eprintln!("aksond: control connection error: {e}");
                 }
             }
@@ -355,7 +540,7 @@ pub fn send_request(path: &Path, request: &ControlRequest) -> Result<ControlResp
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::peercred::current_uid;
@@ -380,7 +565,13 @@ mod tests {
             let path = path.clone();
             thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
-                handle_connection(stream, surface, current_uid(), &dispatch).unwrap();
+                handle_connection(
+                    stream,
+                    surface,
+                    &Admission::same_uid(current_uid()),
+                    &dispatch,
+                )
+                .unwrap();
                 drop(listener);
                 let _ = std::fs::remove_file(&path);
             })
@@ -436,5 +627,97 @@ mod tests {
             ControlResponse::Problem { problem } => assert_eq!(problem.status, 403),
             other => panic!("expected a 403 Problem, got {other:?}"),
         }
+    }
+
+    // --- The coordination socket (ADR-0016 §1) ---
+
+    #[test]
+    fn an_unset_coord_uid_creates_no_socket_at_all() {
+        let dir = std::env::temp_dir().join(format!("aksond-coord-absent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("coord.sock");
+        let bound = bind_coord_socket(&path, None, current_uid()).unwrap();
+        assert!(bound.is_none(), "no UID configured ⇒ no listener");
+        assert!(
+            !path.exists(),
+            "absent rather than guarded: the socket file must not exist"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_configured_coord_uid_binds_a_socket_admitting_it_and_the_daemon() {
+        let dir = std::env::temp_dir().join(format!("aksond-coord-bound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("coord.sock");
+        let peer = current_uid().wrapping_add(4242);
+        let (listener, admission) = bind_coord_socket(&path, Some(peer), current_uid())
+            .unwrap()
+            .expect("a configured UID binds");
+        assert!(path.exists());
+        // The mode is deliberately group-reachable; admission is the peer credential.
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o660);
+        assert!(admission.admits(peer), "the configured driver is admitted");
+        assert!(
+            admission.admits(current_uid()),
+            "and the daemon itself, for diagnostics"
+        );
+        assert!(!admission.admits(peer.wrapping_add(1)), "nobody else");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_foreign_uid_is_refused_before_the_request_line_is_read() {
+        let dir = std::env::temp_dir().join(format!("aksond-coord-foreign-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foreign.sock");
+        let listener = bind_socket(&path).unwrap();
+        // An admission set that does NOT contain our UID stands in for a foreign
+        // peer connecting — the check is the same comparison either way.
+        let admission = Admission::same_uid(current_uid().wrapping_add(1));
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(stream, Surface::Coord, &admission, &dispatch).unwrap();
+        });
+
+        // Connect and write NOTHING: no request line ever crosses the socket.
+        let stream = UnixStream::connect(&path).unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        server.join().unwrap();
+
+        let response: ControlResponse = serde_json::from_str(line.trim()).unwrap();
+        match response {
+            ControlResponse::Problem { problem } => {
+                assert_eq!(problem.status, 403);
+                assert_eq!(problem.type_, "urn:akson:error:unauthorized");
+                // The refusal names no peer, no op, and no surface internals.
+                assert!(problem.detail.is_none());
+            }
+            other => panic!("expected an unauthorized Problem, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_coord_uid_is_parsed_strictly() {
+        use std::ffi::OsStr;
+        assert_eq!(parse_coord_uid(None), Ok(None));
+        assert_eq!(parse_coord_uid(Some(OsStr::new(""))), Ok(None));
+        assert_eq!(parse_coord_uid(Some(OsStr::new("  "))), Ok(None));
+        assert_eq!(parse_coord_uid(Some(OsStr::new("1234"))), Ok(Some(1234)));
+        // A typo is an error, never a silently absent surface.
+        assert!(parse_coord_uid(Some(OsStr::new("akson-coord"))).is_err());
+        assert!(parse_coord_uid(Some(OsStr::new("-1"))).is_err());
+    }
+
+    #[test]
+    fn the_three_socket_paths_are_siblings_in_the_runtime_dir() {
+        let dir = socket_dir();
+        assert_eq!(admin_socket_path(), dir.join("admin.sock"));
+        assert_eq!(worker_socket_path(), dir.join("worker.sock"));
+        assert_eq!(coord_socket_path(), dir.join("coord.sock"));
     }
 }

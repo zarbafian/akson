@@ -1,0 +1,13 @@
+{
+  "name": "coordination/request-capability-evidence",
+  "description": "The frozen request wire for `capability_evidence` — the op is addressable on the coordination surface today (it answers 501 naming itself, see refusal-not-implemented-capability-evidence); freezing the argument names now means the shape does not move when the behaviour lands.",
+  "input": {
+    "request": {
+      "op": "capability_evidence",
+      "label": "partner"
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"capability_evidence\",\"label\":\"partner\"}"
+  }
+}

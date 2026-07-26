@@ -447,6 +447,147 @@ def check_token(name: str, case: dict) -> None:
         expect_eq(cname, "root key", key.hex(), c["root_key_hex"])
 
 
+COORD_CURSOR_DOMAIN = "akson-coord-events-v1:"
+
+
+def _coord_stage_reference(staging: dict) -> dict:
+    """Independent ADR-0016 §4 derivation: the staged reference is a function of
+    the content — SHA-256 over the RFC 8785 canonical JSON of the payload digest,
+    the recipient label, and the task type; the reference is `stage-` plus the
+    digest's first 32 hex characters. Nothing here is client-chosen."""
+    payload = staging["payload_utf8"].encode("utf-8")
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    canonical = rfc8785.dumps(
+        {
+            "payload_sha256": payload_sha256,
+            "performer": staging["performer"],
+            "task_type": staging["task_type"],
+        }
+    )
+    staged_digest = hashlib.sha256(canonical).hexdigest()
+    return {
+        "payload_sha256": payload_sha256,
+        "canonical": canonical.decode("utf-8"),
+        "staged_digest": staged_digest,
+        "stage_ref": "stage-" + staged_digest[:32],
+    }
+
+
+def _coord_cursor(seq: int) -> str:
+    return b64url(f"{COORD_CURSOR_DOMAIN}{seq}".encode("utf-8"))
+
+
+def check_coordination(name: str, case: dict) -> None:
+    """Independent coordination-surface vectors (ADR-0016), dispatched by input
+    shape: the staged reference derivation and its idempotency, the opaque event
+    cursor, each op's frozen request wire and reply field set, and every refusal
+    body."""
+    inp, exp = case["input"], case["expected"]
+
+    # A request's wire form: `{"op": …}` plus that op's arguments, compact, in the
+    # frozen field order.
+    if "request" in inp:
+        expect_eq(
+            name,
+            "request wire",
+            json.dumps(inp["request"], separators=(",", ":")),
+            exp["request_wire"],
+        )
+        expect_eq(name, "request round-trip", json.loads(exp["request_wire"]), inp["request"])
+
+    # The staged reference derivation.
+    if "payload_utf8" in inp:
+        derived = _coord_stage_reference(inp)
+        for field in ("payload_sha256", "canonical", "staged_digest", "stage_ref"):
+            expect_eq(name, field, derived[field], exp[field])
+
+    # Idempotency: identical content ⇒ identical reference; different bytes ⇒ not.
+    if "stagings" in inp:
+        refs = [_coord_stage_reference(s)["stage_ref"] for s in inp["stagings"]]
+        expect_eq(name, "stage refs", refs, exp["stage_refs"])
+        i, j = exp["same_reference"]
+        expect_eq(name, f"stagings {i} and {j} share a reference", refs[i], refs[j])
+        i, j = exp["distinct_reference"]
+        if refs[i] == refs[j]:
+            fail(name, f"stagings {i} and {j} must NOT share a reference")
+
+    # The opaque cursor: base64url over the feed's domain plus the sequence.
+    if "seqs" in inp:
+        expect_eq(
+            name,
+            "cursors",
+            [_coord_cursor(s) for s in inp["seqs"]],
+            exp["cursors"],
+        )
+        expect_eq(name, "cursor domain", COORD_CURSOR_DOMAIN, exp["domain"])
+        for bogus in exp["refused"]:
+            try:
+                text = b64url_decode(bogus).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                continue  # not even base64url/UTF-8 — refused
+            if text.startswith(COORD_CURSOR_DOMAIN):
+                fail(name, f"cursor {bogus!r} should not decode into this feed")
+
+    # A reply's shape: the field set is the stable contract, and the canonical
+    # bytes pin it.
+    if "result" in inp:
+        canonical = rfc8785.dumps(inp["result"])
+        expect_eq(name, "result keys", sorted(inp["result"]), exp["result_keys"])
+        expect_eq(name, "canonical", canonical.decode("utf-8"), exp["canonical"])
+        expect_eq(
+            name,
+            "canonical sha256",
+            hashlib.sha256(canonical).hexdigest(),
+            exp["canonical_sha256"],
+        )
+        if "event_keys" in exp:
+            for event in inp["result"]["events"]:
+                expect_eq(name, "event keys", sorted(event), exp["event_keys"])
+            expect_eq(
+                name,
+                "event kinds",
+                [e["kind"] for e in inp["result"]["events"]],
+                exp["kinds"],
+            )
+            # Every event carries the cursor that resumes AFTER it, and
+            # `next_cursor` is the last one.
+            expect_eq(
+                name,
+                "next_cursor",
+                inp["result"]["events"][-1]["cursor"],
+                inp["result"]["next_cursor"],
+            )
+        if "section_headings" in exp:
+            expect_eq(
+                name,
+                "card headings",
+                [s["heading"] for s in inp["result"]["sections"]],
+                exp["section_headings"],
+            )
+            expect_eq(name, "card sentence", inp["result"]["sentence"], exp["sentence"])
+            # The card the operator read names the exact digest the receipt binds,
+            # and never the payload bytes.
+            staged_as = [
+                line.split(":", 1)[1].strip()
+                for section in inp["result"]["sections"]
+                for line in section["lines"]
+                if line.startswith("staged as:")
+            ]
+            expect_eq(name, "card names the digest", staged_as, [inp["result"]["staged_digest"]])
+
+    # A refusal: the RFC 9457 body is exactly these members in this order.
+    if "problem" in inp:
+        p = inp["problem"]
+        body = json.dumps(p, separators=(",", ":"))
+        expect_eq(name, "problem body", body, exp["body"])
+        expect_eq(name, "status", p["status"], exp["status"])
+        expect_eq(name, "problem round-trip", json.loads(exp["body"]), p)
+        if "op" in exp:
+            # A 501 must NAME the op, so "not built" never reads as "not allowed".
+            if exp["op"] not in p.get("detail", ""):
+                fail(name, f"the 501 detail must name {exp['op']!r}")
+
+
 def check_schema(name: str, case: dict) -> None:
     inp, exp = case["input"], case["expected"]
     schema_path = SCHEMA_DIR / f"{inp['schema']}.v{inp['version']}.schema.json"
@@ -473,6 +614,7 @@ CHECKERS = {
     "introduction": check_introduction,
     "token": check_token,
     "schema": check_schema,
+    "coordination": check_coordination,
     "ijson": check_ijson,
 }
 

@@ -1,0 +1,30 @@
+{
+  "name": "coordination/events-cursor",
+  "description": "The opaque cursor encoding: base64url (no padding) over the domain string 'akson-coord-events-v1:' followed by the event sequence. A cursor can address a position in this feed and nothing else; anything that does not decode to that domain is refused with `bad-cursor` rather than guessed at.",
+  "input": {
+    "seqs": [
+      0,
+      1,
+      2,
+      7,
+      4242
+    ]
+  },
+  "expected": {
+    "cursors": [
+      "YWtzb24tY29vcmQtZXZlbnRzLXYxOjA",
+      "YWtzb24tY29vcmQtZXZlbnRzLXYxOjE",
+      "YWtzb24tY29vcmQtZXZlbnRzLXYxOjI",
+      "YWtzb24tY29vcmQtZXZlbnRzLXYxOjc",
+      "YWtzb24tY29vcmQtZXZlbnRzLXYxOjQyNDI"
+    ],
+    "domain": "akson-coord-events-v1:",
+    "refused": [
+      "",
+      "0",
+      "4242",
+      "!!!",
+      "b3RoZXItZmVlZDox"
+    ]
+  }
+}

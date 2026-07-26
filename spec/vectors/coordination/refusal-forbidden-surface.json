@@ -1,0 +1,16 @@
+{
+  "name": "coordination/refusal-forbidden-surface",
+  "description": "Any admin op arriving on coord.sock (including `stage_consent`) and any worker op arriving there: the RFC 9457 body is exactly {type, title, status, detail} in that order. The detail names the surface and nothing else — a refusal must not tell a coordination driver which ops exist elsewhere. Deny-by-absence: the op is not merely unauthorized, it is unaddressable from here.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:forbidden-surface",
+      "title": "operation not permitted on this local surface",
+      "status": 403,
+      "detail": "the coordination surface cannot perform this operation"
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:forbidden-surface\",\"title\":\"operation not permitted on this local surface\",\"status\":403,\"detail\":\"the coordination surface cannot perform this operation\"}",
+    "status": 403
+  }
+}

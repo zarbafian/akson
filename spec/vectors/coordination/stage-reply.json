@@ -1,0 +1,41 @@
+{
+  "name": "coordination/stage-reply",
+  "description": "The `stage` reply. `already_staged` is the idempotency signal: false on the first call for this content, true on any later call with the same bytes (which writes no second record). `consent` is null because staging mints no authority — that is the inertness the ADR requires, visible on the wire.",
+  "input": {
+    "request": {
+      "op": "stage",
+      "task_type": "https://byom.example/task/exchange/v1",
+      "performer": "partner",
+      "payload_base64": "eyJoZWxsbyI6ImJ5b20ifQ=="
+    },
+    "result": {
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+      "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+      "byte_length": 16,
+      "task_type": "https://byom.example/task/exchange/v1",
+      "performer": "partner",
+      "status": "staged",
+      "staged_at": 1753574400,
+      "consent": null,
+      "already_staged": false
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"stage\",\"task_type\":\"https://byom.example/task/exchange/v1\",\"performer\":\"partner\",\"payload_base64\":\"eyJoZWxsbyI6ImJ5b20ifQ==\"}",
+    "result_keys": [
+      "already_staged",
+      "byte_length",
+      "consent",
+      "payload_sha256",
+      "performer",
+      "stage_ref",
+      "staged_at",
+      "staged_digest",
+      "status",
+      "task_type"
+    ],
+    "canonical": "{\"already_staged\":false,\"byte_length\":16,\"consent\":null,\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_at\":1753574400,\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"status\":\"staged\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "canonical_sha256": "935e0896333765aaacf31bc1a38b6c2e08b97db30edd169bed0af9021a872948"
+  }
+}

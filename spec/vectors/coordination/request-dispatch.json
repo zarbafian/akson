@@ -1,0 +1,15 @@
+{
+  "name": "coordination/request-dispatch",
+  "description": "The frozen request wire for `dispatch` — the op is addressable on the coordination surface today (it answers 501 naming itself, see refusal-not-implemented-dispatch); freezing the argument names now means the shape does not move when the behaviour lands.",
+  "input": {
+    "request": {
+      "op": "dispatch",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+      "execution_key": "exec-0001"
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"dispatch\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"execution_key\":\"exec-0001\"}"
+  }
+}

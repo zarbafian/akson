@@ -1,0 +1,64 @@
+{
+  "name": "coordination/events-read",
+  "description": "The durable cursored feed. Every event carries the cursor that resumes AFTER it, so a driver commits its position one event at a time and never re-sees what it acknowledged; `next_cursor` is the last event's cursor and `has_more` says whether the feed is ahead of it. The two event kinds this build emits are `staged` (written by the driver's own stage) and `consent_recorded` (written by the operator's admin consent).",
+  "input": {
+    "request": {
+      "op": "events_read",
+      "cursor": null,
+      "limit": 2
+    },
+    "result": {
+      "events": [
+        {
+          "cursor": "YWtzb24tY29vcmQtZXZlbnRzLXYxOjE",
+          "kind": "staged",
+          "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+          "at": 1753574400,
+          "detail": {
+            "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+            "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+            "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+            "task_type": "https://byom.example/task/exchange/v1",
+            "performer": "partner",
+            "byte_length": 16
+          }
+        },
+        {
+          "cursor": "YWtzb24tY29vcmQtZXZlbnRzLXYxOjI",
+          "kind": "consent_recorded",
+          "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+          "at": 1753574460,
+          "detail": {
+            "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+            "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+            "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+            "max_uses": 1
+          }
+        }
+      ],
+      "next_cursor": "YWtzb24tY29vcmQtZXZlbnRzLXYxOjI",
+      "has_more": false
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"events_read\",\"cursor\":null,\"limit\":2}",
+    "event_keys": [
+      "at",
+      "cursor",
+      "detail",
+      "kind",
+      "stage_ref"
+    ],
+    "kinds": [
+      "staged",
+      "consent_recorded"
+    ],
+    "result_keys": [
+      "events",
+      "has_more",
+      "next_cursor"
+    ],
+    "canonical": "{\"events\":[{\"at\":1753574400,\"cursor\":\"YWtzb24tY29vcmQtZXZlbnRzLXYxOjE\",\"detail\":{\"byte_length\":16,\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"partner\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"task_type\":\"https://byom.example/task/exchange/v1\"},\"kind\":\"staged\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\"},{\"at\":1753574460,\"cursor\":\"YWtzb24tY29vcmQtZXZlbnRzLXYxOjI\",\"detail\":{\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"max_uses\":1,\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\"},\"kind\":\"consent_recorded\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\"}],\"has_more\":false,\"next_cursor\":\"YWtzb24tY29vcmQtZXZlbnRzLXYxOjI\"}",
+    "canonical_sha256": "db9896ce9965b0bed5e0df820449eb501ff4d64405221cfd134224b569c9bb5a"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "coordination/peer-show-verified",
+  "description": "One named verified peer's §8.1 identity tuple and card claims. The reply answers about the label asked for and nothing else — there is no listing op on this surface — and it never carries the operator's private note on a peer. Key purposes are the kebab-case wire spellings of ADR-0004.",
+  "input": {
+    "request": {
+      "op": "peer_show",
+      "label": "partner"
+    },
+    "result": {
+      "label": "partner",
+      "root_thumbprint": "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+      "verified": true,
+      "status": "active",
+      "identity": {
+        "issuer": "orgA",
+        "agent_id": "alice",
+        "endpoint_id": "ep-alice-1",
+        "tls_certificate_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_card_thumbprint": "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ"
+      },
+      "card_claims": {
+        "security_projection_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "full_card_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "key_purposes": [
+          "agent-card",
+          "contract-proposal"
+        ]
+      },
+      "endpoint_hint": "127.0.0.1:18444"
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"peer_show\",\"label\":\"partner\"}",
+    "result_keys": [
+      "card_claims",
+      "endpoint_hint",
+      "identity",
+      "label",
+      "root_thumbprint",
+      "status",
+      "verified"
+    ],
+    "canonical": "{\"card_claims\":{\"full_card_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"key_purposes\":[\"agent-card\",\"contract-proposal\"],\"security_projection_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"endpoint_hint\":\"127.0.0.1:18444\",\"identity\":{\"agent_card_thumbprint\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"agent_id\":\"alice\",\"endpoint_id\":\"ep-alice-1\",\"issuer\":\"orgA\",\"tls_certificate_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"label\":\"partner\",\"root_thumbprint\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"status\":\"active\",\"verified\":true}",
+    "canonical_sha256": "d84e5537d174a20ca124dccdba52a0295a3e7ef1e61064cebf7584bb7aa9d99b"
+  }
+}

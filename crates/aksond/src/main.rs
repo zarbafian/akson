@@ -1,18 +1,21 @@
-//! The Akson daemon (`aksond serve`): opens the durable store and binds the two
-//! OS-protected local control sockets (design §16.2, §16.4).
+//! The Akson daemon (`aksond serve`): opens the durable store and binds the
+//! OS-protected local control sockets (design §16.2, §16.4, ADR-0016).
 //!
 //! The admin socket carries authority-bearing operator operations; the worker
-//! socket is narrow. Both authenticate the peer's UID and authorize by surface
-//! before dispatch. This assembly serves health (`diagnose`) and the store-backed
-//! operator views (`task inbox`, `task show`); the decision, work-order, and mTLS
-//! receive paths layer on the same shared store.
+//! socket is narrow; the coordination socket exists only when `AKSON_COORD_UID`
+//! names a peer UID. Each authenticates the connecting peer's UID against that
+//! socket's admission set and authorizes by surface before dispatch. This assembly
+//! serves health (`diagnose`) and the store-backed operator views (`task inbox`,
+//! `task show`); the decision, work-order, and mTLS receive paths layer on the same
+//! shared store.
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use aksond::{
-    admin_socket_path, bind_socket, current_uid, run_receive_listener, serve, socket_dir,
-    worker_socket_path, ControlRequest, DaemonConfig, DaemonState, Surface,
+    admin_socket_path, bind_coord_socket, bind_socket, configured_coord_uid, coord_socket_path,
+    current_uid, run_receive_listener, serve, socket_dir, worker_socket_path, Admission,
+    ControlRequest, DaemonConfig, DaemonState, Surface, COORD_PROTOCOL, COORD_PROTOCOL_VERSION,
 };
 
 /// `aksond init` (design §16.4): create the data directory and bootstrap this
@@ -79,6 +82,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("aksond: could not prepare the delegated cgroup ({e}); worker confinement may be unavailable");
     }
 
+    // Resolved BEFORE anything is bound, so a bad value fails startup without
+    // leaving half a control plane behind. `None` (AKSON_COORD_UID unset) means the
+    // coordination socket is not created at all — absent rather than guarded
+    // (ADR-0016 §1); a value that is not a UID is fatal, so a typo cannot quietly
+    // remove the surface an operator asked for.
+    let coord_uid = configured_coord_uid()?;
+
     // Private per-user runtime directory for the sockets (0700).
     let dir = socket_dir();
     std::fs::create_dir_all(&dir)?;
@@ -89,6 +99,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let worker_path = worker_socket_path();
     let admin = bind_socket(&admin_path)?;
     let worker = bind_socket(&worker_path)?;
+    let coord_path = coord_socket_path();
+    let coord = bind_coord_socket(&coord_path, coord_uid, uid)?;
 
     eprintln!(
         "aksond: {}/{} serving admin at {} and worker at {} (uid {uid}); data in {}",
@@ -98,6 +110,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         worker_path.display(),
         config.data_dir.display(),
     );
+    match &coord {
+        Some((_, admission)) => eprintln!(
+            "aksond: serving coordination ({COORD_PROTOCOL} v{COORD_PROTOCOL_VERSION}) at {} for uid(s) {:?}",
+            coord_path.display(),
+            admission.uids(),
+        ),
+        None => eprintln!(
+            "aksond: no coordination socket (AKSON_COORD_UID unset — the surface is absent, not guarded)"
+        ),
+    }
 
     // The A2A receive listener (if configured) runs on its own thread with its own
     // tokio runtime, sharing the daemon's store — a received Task shows up in the
@@ -124,23 +146,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::spawn(move || aksond::run_reactor(state));
     }
 
-    // Both surfaces share the one daemon state; each dispatch closure holds its own
-    // handle. The worker surface serves on its own thread, the admin on this one.
+    // Every surface shares the one daemon state; each dispatch closure holds its own
+    // handle. The narrow surfaces serve on their own threads, the admin on this one.
+    let same_uid = Admission::same_uid(uid);
     let worker_thread = {
         let state = state.clone();
+        let admission = same_uid.clone();
         std::thread::spawn(move || {
             let d = move |req: &ControlRequest| state.dispatch(req);
-            if let Err(e) = serve(&worker, Surface::Worker, uid, d) {
+            if let Err(e) = serve(&worker, Surface::Worker, &admission, d) {
                 eprintln!("aksond: worker socket stopped: {e}");
             }
         })
     };
+    let coord_thread = coord.map(|(listener, admission)| {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            let d = move |req: &ControlRequest| state.dispatch(req);
+            if let Err(e) = serve(&listener, Surface::Coord, &admission, d) {
+                eprintln!("aksond: coordination socket stopped: {e}");
+            }
+        })
+    });
     let admin_dispatch = {
         let state = state.clone();
         move |req: &ControlRequest| state.dispatch(req)
     };
-    serve(&admin, Surface::Admin, uid, admin_dispatch)?;
+    serve(&admin, Surface::Admin, &same_uid, admin_dispatch)?;
     let _ = worker_thread.join();
+    if let Some(t) = coord_thread {
+        let _ = t.join();
+    }
     Ok(())
 }
 

@@ -836,6 +836,17 @@ impl DaemonState {
                 Ok(serde_json::json!({ "credential_set": true, "processor_id": processor_id }))
             }
             ControlRequest::IssueWorkOrder { .. } => Ok(serde_json::json!({ "accepted": true })),
+            // The coordination surface (ADR-0016) and its admin-side consent. The
+            // gate upstream has already decided who may ask; this only routes.
+            ControlRequest::CoordWhoAmI
+            | ControlRequest::PeerShow { .. }
+            | ControlRequest::Stage { .. }
+            | ControlRequest::StageShow { .. }
+            | ControlRequest::Dispatch { .. }
+            | ControlRequest::TaskStatus { .. }
+            | ControlRequest::EventsRead { .. }
+            | ControlRequest::CapabilityEvidence { .. }
+            | ControlRequest::StageConsent { .. } => crate::coord::dispatch_coord(self, req),
         }
     }
 }
@@ -975,7 +986,7 @@ fn internal() -> Problem {
 /// The ADR-0013 label grammar: 1–64 chars of `[a-z0-9-]`, no leading,
 /// trailing, or doubled hyphen. Labels are routing keys and terminal output;
 /// anything else is refused at entry.
-fn valid_label(label: &str) -> bool {
+pub(crate) fn valid_label(label: &str) -> bool {
     let ok_chars = !label.is_empty()
         && label.len() <= 64
         && label

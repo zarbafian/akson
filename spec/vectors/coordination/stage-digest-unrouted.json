@@ -1,0 +1,15 @@
+{
+  "name": "coordination/stage-digest-unrouted",
+  "description": "The same payload staged with NO named recipient is a different disclosure, so it derives a different digest and reference. The empty performer is canonicalized as the empty string, not omitted — the field set is fixed.",
+  "input": {
+    "task_type": "https://byom.example/task/exchange/v1",
+    "performer": "",
+    "payload_utf8": "{\"hello\":\"byom\"}"
+  },
+  "expected": {
+    "payload_sha256": "2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+    "canonical": "{\"payload_sha256\":\"2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"performer\":\"\",\"task_type\":\"https://byom.example/task/exchange/v1\"}",
+    "staged_digest": "5303d5987960870459a7dd7ab63df575419bf43e13242caac7147afc0f45d706",
+    "stage_ref": "stage-5303d5987960870459a7dd7ab63df575"
+  }
+}

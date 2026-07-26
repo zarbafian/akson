@@ -1,0 +1,27 @@
+{
+  "name": "coordination/peer-show-imported",
+  "description": "A label the operator imported but no introduction has verified: the relationship's state is reported and no identity tuple is invented. `verified` is the flag a driver's fail-closed check reads.",
+  "input": {
+    "request": {
+      "op": "peer_show",
+      "label": "partner"
+    },
+    "result": {
+      "label": "partner",
+      "root_thumbprint": "fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+      "verified": false,
+      "status": "imported"
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"peer_show\",\"label\":\"partner\"}",
+    "result_keys": [
+      "label",
+      "root_thumbprint",
+      "status",
+      "verified"
+    ],
+    "canonical": "{\"label\":\"partner\",\"root_thumbprint\":\"fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"status\":\"imported\",\"verified\":false}",
+    "canonical_sha256": "41018e6c7434d51cbb98e046aaebae02d4661fa422fae6dbbbfec19e4496c8bd"
+  }
+}

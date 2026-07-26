@@ -1,15 +1,18 @@
 //! The local control surfaces and their authority separation (design §16.2).
 //!
-//! The daemon exposes two local surfaces: an OS-protected **admin** socket
-//! (pairing, policy, approval, recovery, audit) and a narrow **worker** socket
-//! (task input, progress, result submission, evidence references). The worker
-//! surface can never pair a peer, create standing policy, approve a contract, issue
-//! a work order, sign a requester outcome, or export unrelated content — even if
-//! the process on it is same-UID.
+//! The daemon exposes three local surfaces: an OS-protected **admin** socket
+//! (pairing, policy, approval, recovery, audit), a narrow **worker** socket (task
+//! input, progress, result submission, evidence references), and — when a
+//! coordination UID is configured — a **coord** socket for a *different* local
+//! principal (ADR-0016: stage, read, dispatch). Neither narrow surface can pair a
+//! peer, create standing policy, approve a contract, issue a work order, sign a
+//! requester outcome, or export unrelated content — even if the process on it is
+//! same-UID.
 //!
 //! [`authorize`] is the pure gate: every control operation declares the minimum
-//! surface it needs, and a request arriving on a lower surface is refused with an
-//! RFC 9457 [`Problem`] that reveals nothing about hidden paths, policy, or peers.
+//! surface it needs, and a request arriving on a surface that does not dominate it
+//! is refused with an RFC 9457 [`Problem`] that reveals nothing about hidden paths,
+//! policy, or peers.
 //!
 //! What you write:
 //! ```
@@ -18,6 +21,8 @@
 //! authorize(Surface::Worker, ControlOp::SubmitResult).unwrap();
 //! // …but never issue a work order.
 //! assert!(authorize(Surface::Worker, ControlOp::IssueWorkOrder).is_err());
+//! // And consent is admin's alone: the coordination surface cannot mint it.
+//! assert!(authorize(Surface::Coord, ControlOp::StageConsent).is_err());
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -46,12 +51,12 @@ impl Surface {
     /// connection reaching a worker op, or the reverse, is exactly the
     /// confusion the third socket exists to prevent.
     fn satisfies(self, required: Surface) -> bool {
-        match (self, required) {
-            (Surface::Admin, _) => true,
-            (Surface::Worker, Surface::Worker) => true,
-            (Surface::Coord, Surface::Coord) => true,
-            _ => false,
-        }
+        matches!(
+            (self, required),
+            (Surface::Admin, _)
+                | (Surface::Worker, Surface::Worker)
+                | (Surface::Coord, Surface::Coord)
+        )
     }
 }
 
@@ -188,7 +193,10 @@ impl Problem {
             status: 403,
             detail: Some(
                 match surface {
-                    Surface::Worker => "the worker surface cannot perform admin operations",
+                    // Not "cannot perform admin operations": with a third surface
+                    // in the picture, a refused op may be another *narrow*
+                    // surface's, and the detail must not misdescribe it.
+                    Surface::Worker => "the worker surface cannot perform this operation",
                     // Names the surface and nothing else: a refusal must not
                     // tell a coordination driver which ops exist elsewhere.
                     Surface::Coord => "the coordination surface cannot perform this operation",
@@ -223,7 +231,7 @@ mod tests {
         ControlOp::RequestProcessorCall,
     ];
 
-    const ADMIN_ONLY_OPS: [ControlOp; 14] = [
+    const ADMIN_ONLY_OPS: [ControlOp; 15] = [
         ControlOp::Pair,
         ControlOp::Policy,
         ControlOp::ApproveContract,
@@ -238,12 +246,58 @@ mod tests {
         ControlOp::RunWorker,
         ControlOp::FulfillTask,
         ControlOp::Diagnose,
+        // Minting consent for a staged disclosure is admin's alone (ADR-0016 §3).
+        ControlOp::StageConsent,
+    ];
+
+    /// The eight ops of ADR-0016's registry — the whole coordination surface.
+    const COORD_OPS: [ControlOp; 8] = [
+        ControlOp::CoordWhoAmI,
+        ControlOp::CoordPeerShow,
+        ControlOp::CoordStage,
+        ControlOp::CoordStageShow,
+        ControlOp::CoordDispatch,
+        ControlOp::CoordTaskStatus,
+        ControlOp::CoordEventsRead,
+        ControlOp::CoordCapabilityEvidence,
     ];
 
     #[test]
     fn admin_may_do_everything() {
-        for op in WORKER_OPS.into_iter().chain(ADMIN_ONLY_OPS) {
+        for op in WORKER_OPS
+            .into_iter()
+            .chain(ADMIN_ONLY_OPS)
+            .chain(COORD_OPS)
+        {
             authorize(Surface::Admin, op).unwrap_or_else(|_| panic!("admin should allow {op:?}"));
+        }
+    }
+
+    #[test]
+    fn coord_may_do_exactly_the_eight_coordination_ops() {
+        for op in COORD_OPS {
+            authorize(Surface::Coord, op).unwrap_or_else(|_| panic!("coord should allow {op:?}"));
+        }
+        // Deny-by-absence: everything else on this surface is unaddressable,
+        // including consent — the driver can burn receipts, never mint them.
+        for op in ADMIN_ONLY_OPS {
+            assert_eq!(
+                authorize(Surface::Coord, op).unwrap_err().status,
+                403,
+                "coord must not reach {op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_narrow_surfaces_dominate_nothing_including_each_other() {
+        // The asymmetry ADR-0016 chose: coord ops are not worker ops, and the
+        // reverse. Surface confusion is exactly what the third socket prevents.
+        for op in COORD_OPS {
+            assert!(authorize(Surface::Worker, op).is_err(), "worker ⊅ {op:?}");
+        }
+        for op in WORKER_OPS {
+            assert!(authorize(Surface::Coord, op).is_err(), "coord ⊅ {op:?}");
         }
     }
 

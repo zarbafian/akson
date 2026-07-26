@@ -1,0 +1,78 @@
+{
+  "name": "coordination/stage-consent",
+  "description": "The admin-only consent op (ADR-0016 §3), which `akson stage consent <ref>` renders. One call returns the risk card AND the receipt, over the very row the receipt is minted against, so what the operator read and what the receipt authorizes cannot drift apart. The card names the digest, the byte count, and the recipient — never the payload bytes. `max_uses` is 1: one disclosure, one authorization. A coordination connection cannot reach this op at all (see refusal-forbidden-surface).",
+  "input": {
+    "request": {
+      "op": "stage_consent",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978"
+    },
+    "result": {
+      "consented": true,
+      "consent_receipt": "consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8",
+      "stage_ref": "stage-2deacff5c7b26955f15c16c8e05cf978",
+      "staged_digest": "2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896",
+      "max_uses": 1,
+      "uses": 0,
+      "minted_at": 1753574460,
+      "sentence": "You are about to allow ONE outbound disclosure to your peer \"partner\": 16 bytes of https://byom.example/task/exchange/v1.",
+      "sections": [
+        {
+          "heading": "What leaves this machine",
+          "lines": [
+            "task type:   https://byom.example/task/exchange/v1",
+            "bytes:       16",
+            "payload:     sha256:2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb",
+            "staged as:   2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896"
+          ]
+        },
+        {
+          "heading": "Who receives it",
+          "lines": [
+            "recipient label: partner",
+            "root thumbprint: fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ",
+            "relationship: imported, not yet introduced",
+            "endpoint hint: 127.0.0.1:18444"
+          ]
+        },
+        {
+          "heading": "What this consent allows",
+          "lines": [
+            "exactly one dispatch of the staged digest above, once (max_uses 1)",
+            "nothing else: it grants no model call, no credential, and no inbound authority",
+            "akson does not interpret these bytes — it discloses them as staged"
+          ]
+        },
+        {
+          "heading": "Who staged it",
+          "lines": [
+            "the coordination surface (akson_byom_exchange_v1), at unix time 1753574400",
+            "staging was inert: nothing has left this machine yet"
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "request_wire": "{\"op\":\"stage_consent\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\"}",
+    "sentence": "You are about to allow ONE outbound disclosure to your peer \"partner\": 16 bytes of https://byom.example/task/exchange/v1.",
+    "section_headings": [
+      "What leaves this machine",
+      "Who receives it",
+      "What this consent allows",
+      "Who staged it"
+    ],
+    "result_keys": [
+      "consent_receipt",
+      "consented",
+      "max_uses",
+      "minted_at",
+      "sections",
+      "sentence",
+      "stage_ref",
+      "staged_digest",
+      "uses"
+    ],
+    "canonical": "{\"consent_receipt\":\"consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8\",\"consented\":true,\"max_uses\":1,\"minted_at\":1753574460,\"sections\":[{\"heading\":\"What leaves this machine\",\"lines\":[\"task type:   https://byom.example/task/exchange/v1\",\"bytes:       16\",\"payload:     sha256:2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb\",\"staged as:   2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\"]},{\"heading\":\"Who receives it\",\"lines\":[\"recipient label: partner\",\"root thumbprint: fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ\",\"relationship: imported, not yet introduced\",\"endpoint hint: 127.0.0.1:18444\"]},{\"heading\":\"What this consent allows\",\"lines\":[\"exactly one dispatch of the staged digest above, once (max_uses 1)\",\"nothing else: it grants no model call, no credential, and no inbound authority\",\"akson does not interpret these bytes — it discloses them as staged\"]},{\"heading\":\"Who staged it\",\"lines\":[\"the coordination surface (akson_byom_exchange_v1), at unix time 1753574400\",\"staging was inert: nothing has left this machine yet\"]}],\"sentence\":\"You are about to allow ONE outbound disclosure to your peer \\\"partner\\\": 16 bytes of https://byom.example/task/exchange/v1.\",\"stage_ref\":\"stage-2deacff5c7b26955f15c16c8e05cf978\",\"staged_digest\":\"2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896\",\"uses\":0}",
+    "canonical_sha256": "6c2ccb871f13bcc65b8e63f7d9b4e92c6735957b20ddfd0f9cbcb21eaa680361"
+  }
+}

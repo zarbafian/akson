@@ -1,0 +1,15 @@
+{
+  "name": "coordination/refusal-request-too-large",
+  "description": "The coordination surface bounds the request line (1 MiB): the driver is a different principal, so what it can make the daemon buffer has a ceiling. Admin and worker are the daemon's own UID and stay unbounded.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:request-too-large",
+      "title": "the control request exceeds this surface's ceiling",
+      "status": 413
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:request-too-large\",\"title\":\"the control request exceeds this surface's ceiling\",\"status\":413}",
+    "status": 413
+  }
+}
