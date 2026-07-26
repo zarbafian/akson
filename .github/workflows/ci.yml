@@ -191,16 +191,28 @@ jobs:
 
   # C1 family-substrate vectors: every repo's CI re-derives the shared
   # vectors independently. Pinned via plan/family-lock.json row
-  # 'family-vectors-c1-r2' (byom tag c1-r1); bump follows the D3 choreography.
+  # 'family-vectors-c1-r3' (byom tag c1-r3); bump follows the D3 choreography.
   family-vectors:
     name: family-vectors cross-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          path: consumer
+      - uses: actions/checkout@v4
+        with:
           repository: zarbafian/byom
-          ref: 6360fcb0ddafde87f93c01e7d185690bb7d9c9d5
+          ref: b3a8f4ad96c6992e029080faec93837a1fedeb40
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify this ref is the one the family lock pins
+        run: |
+          # R3-L03: CI must check the locked manifest, not merely carry a ref
+          # that someone remembered to bump. The vendored pin holds the
+          # manifest digest; the manifest holds the tree's commit.
+          pin_sha=$(python3 -c "import json;print(json.load(open('consumer/spec/family-lock.pin.json'))['manifest_sha256'])")
+          echo "vendored pin expects manifest sha256 $pin_sha"
+          test "$pin_sha" = "fb7282c0f3af47a2fb6e288eaefc1bb8656f00bf6a80839c6fd81e2b8eac2de7" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
+          test "$(git rev-parse HEAD)" = "b3a8f4ad96c6992e029080faec93837a1fedeb40" || { echo "checked-out byom tree is not the locked commit"; exit 1; }
       - run: python3 family-vectors/xcheck.py
