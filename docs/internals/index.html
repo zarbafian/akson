@@ -637,23 +637,43 @@ reported to the operator, and never silently retried.</code></pre>
 <p>
   Every exchange has that shape; <code>akson whoami</code> is exactly this request. The
   daemon checks two things before running any op: the connecting process's UID (via
-  <code>SO_PEERCRED</code>) must equal its own, and the op must be allowed on the socket
-  it arrived at:
+  <code>SO_PEERCRED</code>) must be one <em>that socket</em> admits — the rule is
+  per-socket, not one rule for all three — and the op must be allowed on the socket it
+  arrived at:
 </p>
 
 <div class="tw" tabindex="0">
 <table>
-  <tr><th>Socket</th><th>Surface</th></tr>
+  <tr><th>Socket</th><th>Admits</th><th>Surface</th></tr>
   <tr><td><code>admin.sock</code></td>
+      <td>the daemon's own UID</td>
       <td>Authority-bearing operator ops: import a peer, approve, run, fulfil, deliver,
-          send, configure processors.</td></tr>
+          send, configure processors, and mint a coordination consent receipt.</td></tr>
   <tr><td><code>worker.sock</code></td>
+      <td>the daemon's own UID</td>
       <td>The narrow surface the worker uses to submit its result. Nothing else — a
           compromised worker cannot approve a contract or send a task, because those
           ops do not exist on its socket. (Brokered processor calls do not travel here
           at all: the confined worker uses the pre-opened broker fd it inherited.)</td></tr>
+  <tr><td><code>coord.sock</code></td>
+      <td>the UID named by <code>AKSON_COORD_UID</code>, plus the daemon's own for
+          diagnostics</td>
+      <td>The coordination surface (ADR-0016): a <em>different</em> local principal
+          stages outbound payloads, spends a consent an operator already granted, and
+          reads coordination state. Eight ops exist here and everything else answers
+          <code>forbidden-surface</code> — no approve, no pairing, no credential op.
+          Consent is not on it. <strong>With <code>AKSON_COORD_UID</code> unset the
+          socket is not created at all.</strong></td></tr>
 </table>
 </div>
+
+<p>
+  Dominance is deliberately asymmetric: an admin connection may invoke the narrow
+  surfaces' ops (so an operator can diagnose them without a second account), while
+  worker and coord dominate nothing — including each other. And admission is a
+  <em>UID</em>, never an attested process identity: <code>SO_PEERCRED</code> says which
+  user connected, not which program.
+</p>
 
 <p>
   The framing, problem shapes, and operation tables:
