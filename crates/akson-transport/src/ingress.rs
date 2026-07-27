@@ -15,7 +15,7 @@
 //! # fn go(store: &akson_store::Store, req: &Ingress) {
 //! match admit(store, &BTreeSet::new(), req).unwrap() {
 //!     Admit::Accept(covered) => { /* process, then store.receive_request(&covered, ..) */ }
-//!     Admit::Duplicate { response, .. } => { /* return the saved bytes */ }
+//!     Admit::Duplicate { response, .. } => { /* return the saved bytes, as the saved class */ }
 //!     Admit::Conflict => { /* security event; refuse */ }
 //!     Admit::Rejected(reason) => { /* map to an HTTP status */ }
 //! }
@@ -50,10 +50,13 @@ pub enum Admit {
     /// Passed every gate and first sight: process the operation, then commit
     /// durably with these covered values (design §9.2 durable-before-response).
     Accept(CoveredValues),
-    /// Exact replay — return the saved response and server-assigned Task id.
+    /// Exact replay — return the saved response and server-assigned Task id,
+    /// under the class the first sighting was committed as (so a replayed
+    /// refusal is answered as a refusal, not as an acceptance).
     Duplicate {
         task_id: Option<String>,
         response: Vec<u8>,
+        response_class: String,
     },
     /// Same peer + Message id with a covered value changed — a security event;
     /// never a second effect.
@@ -128,7 +131,15 @@ pub fn admit(
 
     Ok(match store.peek(&covered)? {
         Receipt::Fresh => Admit::Accept(covered),
-        Receipt::Duplicate { task_id, response } => Admit::Duplicate { task_id, response },
+        Receipt::Duplicate {
+            task_id,
+            response,
+            response_class,
+        } => Admit::Duplicate {
+            task_id,
+            response,
+            response_class,
+        },
         Receipt::Conflict => Admit::Conflict,
     })
 }
@@ -251,9 +262,14 @@ mod tests {
 
         // The same request now replays the saved response.
         match admit(&store, &BTreeSet::new(), &ingress(&digest, &[])).unwrap() {
-            Admit::Duplicate { task_id, response } => {
+            Admit::Duplicate {
+                task_id,
+                response,
+                response_class,
+            } => {
                 assert_eq!(task_id.as_deref(), Some("task-1"));
                 assert_eq!(response, b"RESPONSE");
+                assert_eq!(response_class, "task");
             }
             other => panic!("expected duplicate, got {other:?}"),
         }

@@ -45,7 +45,7 @@ mod send;
 mod socket;
 mod worker_run;
 
-pub use a2a_client::{parse_endpoint, post_a2a};
+pub use a2a_client::{parse_endpoint, post_a2a, MAX_POST_A2A_DURATION};
 pub use bootstrap::{BootstrapError, DaemonConfig, DaemonState};
 pub use broker::{
     dispatch_processor_call, run_processor_call, CallResponse, CallTransport, HttpsTransport,

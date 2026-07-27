@@ -8,6 +8,7 @@
 //! peer is pinned exactly as at pairing.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use akson_crypto::cert::EndpointCert;
 use akson_crypto::identity::{Fingerprint, FingerprintKind};
@@ -24,6 +25,39 @@ use crate::control::Problem;
 
 /// Cap on the peer's response body (design §9.1).
 const MAX_RESPONSE_BODY: usize = 64 * 1024;
+
+// --- Every stage is bounded (C4 carrier review) -------------------------------
+//
+// A peer that completes the TCP connect and then says nothing is not an exotic
+// attack: it is what a hung process, a dropped route, or a hostile peer looks
+// like from here. This call runs on a **control-socket thread** — `coord`'s
+// `dispatch` blocks on it — so an unbounded wait is not just a slow request, it
+// is the coordination surface stopping. Each stage therefore has its own
+// ceiling rather than one total, so a large body that is *progressing* is not
+// cut off by the same threshold that catches a peer which never speaks at all.
+
+/// Name resolution.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The TCP connect.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The TLS 1.3 mutual handshake — where a peer that accepts and stays silent
+/// stalls, because the connect has already succeeded.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Writing the request and reading the (≤ [`MAX_RESPONSE_BODY`]) response.
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest one [`post_a2a`] can take before it gives up and returns a
+/// [`Problem`] — the sum of every stage's ceiling, since a hostile peer can
+/// spend all of each.
+///
+/// It is public so a caller (and a test) can bound its own wait on the shipped
+/// numbers rather than on a guess that drifts from them.
+pub const MAX_POST_A2A_DURATION: Duration = Duration::from_secs(
+    RESOLVE_TIMEOUT.as_secs()
+        + CONNECT_TIMEOUT.as_secs()
+        + HANDSHAKE_TIMEOUT.as_secs()
+        + EXCHANGE_TIMEOUT.as_secs(),
+);
 
 /// POSTs `body` as an A2A message to `endpoint_url` over mutual TLS pinned to
 /// `pinned_fingerprint`, presenting `endpoint_cert` as the client certificate.
@@ -51,30 +85,41 @@ pub async fn post_a2a(
         .map_err(|_| problem(500, "tls", "the client TLS config could not be built"))?;
     let connector = TlsConnector::from(Arc::new(config));
 
-    let addr = tokio::net::lookup_host((host.as_str(), port))
-        .await
+    let addr = bounded(
+        "name resolution",
+        RESOLVE_TIMEOUT,
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await?
+    .map_err(|_| {
+        problem(
+            502,
+            "unreachable",
+            "the peer endpoint could not be resolved",
+        )
+    })?
+    .next()
+    .ok_or_else(|| problem(502, "unreachable", "the peer endpoint did not resolve"))?;
+    let tcp = bounded("the TCP connect", CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await?
         .map_err(|_| {
             problem(
                 502,
                 "unreachable",
-                "the peer endpoint could not be resolved",
+                "the peer endpoint refused the connection",
             )
-        })?
-        .next()
-        .ok_or_else(|| problem(502, "unreachable", "the peer endpoint did not resolve"))?;
-    let tcp = TcpStream::connect(addr).await.map_err(|_| {
-        problem(
-            502,
-            "unreachable",
-            "the peer endpoint refused the connection",
-        )
-    })?;
+        })?;
     let server_name =
         ServerName::try_from(host).map_err(|_| problem(500, "bad-endpoint", "bad host name"))?;
-    let mut tls = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|_| problem(502, "tls-handshake", "the peer TLS handshake failed"))?;
+    // The stage a peer that accepts TCP and then says nothing stalls in: the
+    // connect has already succeeded, so only this ceiling ends the wait.
+    let mut tls = bounded(
+        "the TLS handshake",
+        HANDSHAKE_TIMEOUT,
+        connector.connect(server_name, tcp),
+    )
+    .await?
+    .map_err(|_| problem(502, "tls-handshake", "the peer TLS handshake failed"))?;
 
     // Activate the full required Akson extension set (design §10.1): the
     // signed card advertises them as required, so every operation names them —
@@ -109,10 +154,33 @@ pub async fn post_a2a(
         }
         Ok::<_, std::io::Error>(raw)
     };
-    let raw = exchange
-        .await
+    // The whole write-and-read, not each syscall: a peer that trickles one byte
+    // per minute is as much a denial as one that sends nothing, and the response
+    // is capped at MAX_RESPONSE_BODY, so there is no legitimate exchange this
+    // ceiling cuts short.
+    let raw = bounded("the request/response exchange", EXCHANGE_TIMEOUT, exchange)
+        .await?
         .map_err(|e| problem_detail(502, "peer-io", "the request to the peer failed", e))?;
     split_response(&raw).ok_or_else(|| problem(502, "peer-io", "the peer sent no HTTP response"))
+}
+
+/// Runs one stage of the exchange under its ceiling. Exceeding it is a
+/// `504 peer-timeout` naming the stage — a distinct outcome from "refused" or
+/// "handshake failed", because the caller's recovery differs: the bytes may or
+/// may not have been read by the peer, so nothing may be recorded as delivered.
+async fn bounded<F: std::future::Future>(
+    stage: &str,
+    limit: Duration,
+    work: F,
+) -> Result<F::Output, Problem> {
+    tokio::time::timeout(limit, work)
+        .await
+        .map_err(|_| Problem {
+            type_: "urn:akson:error:peer-timeout".to_owned(),
+            title: "the peer did not answer within the bound".to_owned(),
+            status: 504,
+            detail: Some(format!("{stage} exceeded {}s", limit.as_secs())),
+        })
 }
 
 /// Parses an endpoint URL into (host, port, path). Only `https` is usable.

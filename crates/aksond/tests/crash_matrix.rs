@@ -250,9 +250,14 @@ fn a_received_requests_idempotency_survives_a_crash_so_a_replay_is_a_duplicate()
     let store = state.store();
     let store = store.lock().unwrap();
     match store.peek(&covered).unwrap() {
-        Receipt::Duplicate { task_id, response } => {
+        Receipt::Duplicate {
+            task_id,
+            response,
+            response_class,
+        } => {
             assert_eq!(task_id.as_deref(), Some("task-1"));
             assert_eq!(response, b"THE-RESPONSE");
+            assert_eq!(response_class, "task");
         }
         other => panic!("expected Duplicate after restart, got {other:?}"),
     }

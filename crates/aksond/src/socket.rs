@@ -492,9 +492,29 @@ where
     write_response(&stream, &response)
 }
 
+/// How many connections one surface serves at the same time.
+///
+/// Bounded rather than unlimited, because a thread per connection with no
+/// ceiling is a different denial with the same shape. At the ceiling the next
+/// connection is served on the accept thread — the old behaviour — so the socket
+/// degrades to serialised rather than dropping anyone.
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+
 /// Runs the accept loop, serving each connection on `surface` (design §16.2). Blocks
 /// until the listener is closed. Per-connection errors are logged and skipped so one
 /// bad peer cannot take the socket down.
+///
+/// **Connections are served concurrently, up to [`MAX_CONCURRENT_CONNECTIONS`].**
+/// That is not throughput: an operation on this socket can block on the network
+/// — a coordination `dispatch` carries bytes to a pinned peer — and while the
+/// loop served one connection at a time, a peer that stalled a carriage stalled
+/// *every* operation on that surface with it. The carrier's own timeouts bound
+/// how long one such attempt lasts; this bounds who else has to wait for it.
+/// Nothing here relaxes admission or authorization: each connection still runs
+/// the full [`handle_connection`] gate, and shared state stays behind the
+/// dispatcher's own locks. A connection that panics now takes only itself with
+/// it rather than the accept loop, which is the intent the per-connection error
+/// handling already had.
 pub fn serve<F>(
     listener: &UnixListener,
     surface: Surface,
@@ -502,18 +522,37 @@ pub fn serve<F>(
     dispatch: F,
 ) -> Result<(), SocketError>
 where
-    F: Fn(&ControlRequest) -> Result<serde_json::Value, Problem>,
+    F: Fn(&ControlRequest) -> Result<serde_json::Value, Problem> + Sync,
 {
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                if let Err(e) = handle_connection(stream, surface, admission, &dispatch) {
-                    eprintln!("aksond: control connection error: {e}");
-                }
-            }
-            Err(e) => eprintln!("aksond: accept error: {e}"),
+    let serve_one = |stream| {
+        if let Err(e) = handle_connection(stream, surface, admission, &dispatch) {
+            eprintln!("aksond: control connection error: {e}");
         }
-    }
+    };
+    let in_flight = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for stream in listener.incoming() {
+            let stream = match stream {
+                Ok(stream) => stream,
+                Err(e) => {
+                    eprintln!("aksond: accept error: {e}");
+                    continue;
+                }
+            };
+            let claimed = in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if claimed >= MAX_CONCURRENT_CONNECTIONS {
+                in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                serve_one(stream);
+                continue;
+            }
+            let serve_one = &serve_one;
+            let in_flight = &in_flight;
+            scope.spawn(move || {
+                serve_one(stream);
+                in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+    });
     Ok(())
 }
 
@@ -698,6 +737,87 @@ mod tests {
             }
             other => panic!("expected an unauthorized Problem, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **One slow operation must not take the surface with it.** A coordination
+    /// `dispatch` blocks on the network — it carries bytes to a pinned peer —
+    /// and this loop used to serve connections strictly one at a time. A peer
+    /// that stalled one carriage therefore stalled `coord_whoami`, `stage_show`,
+    /// `events_read` and every other operation on that socket for as long as it
+    /// cared to, which is a remote party denying a local surface.
+    ///
+    /// The oracle is the second connection's answer *while the first is still
+    /// blocked*. With a sequential accept loop it never arrives, and this fails
+    /// on the receive timeout instead of hanging.
+    #[test]
+    fn a_blocked_operation_does_not_deny_the_surface_to_another_connection() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir().join(format!("aksond-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("busy.sock");
+        let listener = bind_socket(&path).unwrap();
+
+        // The first request blocks inside dispatch until this is released — the
+        // stand-in for a carriage to a peer that is not answering.
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let blocking = {
+            let gate = gate.clone();
+            move |req: &ControlRequest| -> Result<serde_json::Value, Problem> {
+                if matches!(req, ControlRequest::TaskInbox) {
+                    let _ = entered_tx.send(());
+                    let (lock, cv) = &*gate;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        released = cv.wait(released).unwrap();
+                    }
+                }
+                Ok(serde_json::json!({"ready": true}))
+            }
+        };
+
+        let admission = Admission::same_uid(current_uid());
+        thread::spawn(move || {
+            let _ = serve(&listener, Surface::Admin, &admission, blocking);
+        });
+
+        // Connection 1: occupy the surface.
+        let slow = {
+            let path = path.clone();
+            thread::spawn(move || send_request(&path, &ControlRequest::TaskInbox))
+        };
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the first request never reached dispatch");
+
+        // Connection 2, while connection 1 is provably still inside dispatch.
+        let (fast_tx, fast_rx) = mpsc::channel();
+        {
+            let path = path.clone();
+            thread::spawn(move || fast_tx.send(send_request(&path, &ControlRequest::Diagnose)));
+        }
+        let answered = fast_rx.recv_timeout(Duration::from_secs(5));
+        // Release the blocked op before asserting, so a failure does not leave a
+        // parked thread holding the gate.
+        {
+            let (lock, cv) = &*gate;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        match answered {
+            Ok(Ok(ControlResponse::Ok { result })) => assert_eq!(result["ready"], true),
+            other => {
+                panic!("a stalled operation denied the surface to a second connection: {other:?}")
+            }
+        }
+        assert!(matches!(
+            slow.join().unwrap().unwrap(),
+            ControlResponse::Ok { .. }
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

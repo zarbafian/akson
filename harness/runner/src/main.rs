@@ -22,8 +22,11 @@
 //!   Introduces (as above), then runs the real coordination surface end to end
 //!   over the introduced relationship: `stage` on coord, `stage consent` on
 //!   admin, `dispatch` — which carries the staged bytes to the peer in a
-//!   coordination envelope over pinned mutual TLS (ADR-0016 §2). Prints
-//!   `DISPATCHED <state> …` and exits 0 only when the peer acknowledged.
+//!   coordination envelope over pinned mutual TLS (ADR-0016 §2). Each step is a
+//!   request on the **control socket that owns it**, bound and served the way
+//!   the daemon does, so the surface gate really runs: the consent op is tried
+//!   on coord first and must be refused. Prints `CONSENT REFUSED ON COORD …`
+//!   and `DISPATCHED <state> …`, and exits 0 only when the peer acknowledged.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -41,8 +44,9 @@ use akson_store::envelope::Kek;
 use akson_store::{ExternalCheckpoint, Store};
 use akson_transport::tls::bootstrap_server_config;
 use aksond::{
-    dial_introduction, intro_profile, serve_receive, ControlRequest, DaemonConfig, DaemonState,
-    IdentityKeys, IntroIdentity, ReceiveState, StorePeerResolver,
+    bind_coord_socket, bind_socket, current_uid, dial_introduction, intro_profile, send_request,
+    serve, serve_receive, Admission, ControlRequest, ControlResponse, DaemonConfig, DaemonState,
+    IdentityKeys, IntroIdentity, ReceiveState, StorePeerResolver, Surface,
 };
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -283,10 +287,14 @@ async fn run_introduce(args: Args) -> Result<(), Err> {
 /// which builds the coordination envelope and carries the staged bytes to the
 /// introduced peer over pinned mutual TLS.
 ///
-/// Every step runs the **real** `DaemonState::dispatch`, over the very store the
+/// Every step goes over a **real control socket**, bound the way the daemon
+/// binds it and served by the shipped accept loop, so each request passes the
+/// real `SO_PEERCRED` admission and the real `authorize(Surface, op)` gate on
+/// the way to the real `DaemonState::dispatch` — over the very store the
 /// introduction just committed to, with the same endpoint certificate the peer
-/// pinned. Nothing about the carriage is simulated; the only thing the harness
-/// supplies is the operator's consent, on the admin surface where it belongs.
+/// pinned. Nothing about the carriage is simulated, and the surface each step
+/// claims to run on is the surface it actually ran on: the scenario proves that
+/// by trying the operator's consent on coord first and requiring a refusal.
 async fn run_coord_dispatch(args: Args) -> Result<(), Err> {
     let seed = args.seed()?;
     let agent = args.get("--agent").unwrap_or("dialer").to_owned();
@@ -323,59 +331,156 @@ async fn run_coord_dispatch(args: Args) -> Result<(), Err> {
         worker_exec: None,
         on_task: None,
     };
-    let state = DaemonState::from_parts(store, identity_keys(seed), me.cert.clone(), config);
+    let state = Arc::new(DaemonState::from_parts(
+        store,
+        identity_keys(seed),
+        me.cert.clone(),
+        config,
+    ));
 
-    // `dispatch` owns its own runtime for the outbound POST (exactly as the
-    // daemon's blocking control sockets call it), so it must not run on this
-    // async worker.
-    tokio::task::spawn_blocking(move || coord_steps(&state, &label, &payload))
+    // The sockets live beside the state file the scenario already owns.
+    let dir = std::path::Path::new(args.require("--state")?)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_owned();
+    let surfaces = bind_surfaces(&state, &dir)?;
+
+    // The control sockets block (they are the daemon's blocking front door, and
+    // `dispatch` owns its own runtime for the outbound POST), so the client side
+    // must not run on this async worker either.
+    tokio::task::spawn_blocking(move || coord_steps(&surfaces, &label, &payload))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| -> Err { e.into() })
 }
 
-/// stage → consent → dispatch → replay-refused, on the surfaces that own each
-/// step. Blocking, because `dispatch` drives the outbound carriage itself.
-fn coord_steps(state: &DaemonState, label: &str, payload: &str) -> Result<(), String> {
-    // `Problem` is an RFC 9457 body, not a std error; carry it as text (which is
-    // also what makes this closure's error `Send`, so it can cross back off the
-    // blocking pool).
-    let call = |req| {
-        state.dispatch(&req).map_err(|p: aksond::Problem| {
-            format!("{}: {} {}", p.status, p.type_, p.detail.unwrap_or(p.title))
-        })
-    };
+/// The two control sockets this scenario drives, bound and served exactly as
+/// `aksond serve` binds and serves them.
+///
+/// Admin admits only this uid; coord is bound through [`bind_coord_socket`] with
+/// a configured coordination uid — this process's own, because one scenario
+/// process is one Unix identity. What that does **not** weaken is the part being
+/// proved here: the surface gate is per socket, not per uid, so an op that is
+/// not on coord's registry is refused on the coord socket no matter who connects.
+struct Surfaces {
+    admin: std::path::PathBuf,
+    coord: std::path::PathBuf,
+}
 
-    // 1. stage — inert, on the coordination surface.
-    let staged = call(ControlRequest::Stage {
-        task_type: "https://byom.example/task/exchange/v1".to_owned(),
-        performer: label.to_owned(),
-        payload_base64: STANDARD.encode(payload),
-    })?;
+fn bind_surfaces(state: &Arc<DaemonState>, dir: &std::path::Path) -> Result<Surfaces, Err> {
+    let uid = current_uid();
+    let admin_path = dir.join("admin.sock");
+    let coord_path = dir.join("coord.sock");
+    let admin = bind_socket(&admin_path)?;
+    let (coord, coord_admission) = bind_coord_socket(&coord_path, Some(uid), uid)?
+        .ok_or("the coordination socket was not bound")?;
+
+    {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            let d = move |req: &ControlRequest| state.dispatch(req);
+            if let Err(e) = serve(&admin, Surface::Admin, &Admission::same_uid(uid), d) {
+                eprintln!("harness: admin socket stopped: {e}");
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            let d = move |req: &ControlRequest| state.dispatch(req);
+            if let Err(e) = serve(&coord, Surface::Coord, &coord_admission, d) {
+                eprintln!("harness: coordination socket stopped: {e}");
+            }
+        });
+    }
+    Ok(Surfaces {
+        admin: admin_path,
+        coord: coord_path,
+    })
+}
+
+/// One request over one control socket. The surface gate runs inside the
+/// daemon, on the far side of this socket — never here.
+fn on(path: &std::path::Path, req: ControlRequest) -> Result<ControlResponse, String> {
+    send_request(path, &req).map_err(|e| format!("control socket {}: {e}", path.display()))
+}
+
+/// The result of a request that is expected to succeed. `Problem` is an RFC 9457
+/// body, not a std error, so it is carried as text.
+fn ok(response: ControlResponse) -> Result<serde_json::Value, String> {
+    match response {
+        ControlResponse::Ok { result } => Ok(result),
+        ControlResponse::Problem { problem } => Err(format!(
+            "{}: {} {}",
+            problem.status,
+            problem.type_,
+            problem.detail.unwrap_or(problem.title)
+        )),
+    }
+}
+
+/// stage → consent → dispatch → replay-refused, each over the socket that owns
+/// the step. Blocking, because these are blocking sockets and `dispatch` drives
+/// the outbound carriage itself.
+fn coord_steps(surfaces: &Surfaces, label: &str, payload: &str) -> Result<(), String> {
+    // 1. stage — inert, on the coordination socket.
+    let staged = ok(on(
+        &surfaces.coord,
+        ControlRequest::Stage {
+            task_type: "https://byom.example/task/exchange/v1".to_owned(),
+            performer: label.to_owned(),
+            payload_base64: STANDARD.encode(payload),
+        },
+    )?)?;
     let stage_ref = staged["stage_ref"]
         .as_str()
         .ok_or_else(|| "stage returned no reference".to_owned())?
         .to_owned();
     println!("STAGED {stage_ref} (digest {})", staged["staged_digest"]);
 
-    // 2. consent — the operator's one-shot yes, on ADMIN. A coordination
-    //    connection cannot reach this op at all; the harness stands in for the
-    //    human who read the risk card.
-    let consent = call(ControlRequest::StageConsent {
-        stage_ref: stage_ref.clone(),
-    })?;
+    // 2. The boundary, over the wire and before the consent that needs it: the
+    //    driver's own socket cannot mint the authority it spends. This is what
+    //    makes "on ADMIN" below a claim about the surface rather than about a
+    //    comment — the same request, refused here and accepted there.
+    match on(
+        &surfaces.coord,
+        ControlRequest::StageConsent {
+            stage_ref: stage_ref.clone(),
+        },
+    )? {
+        ControlResponse::Problem { problem } if problem.status == 403 => {
+            println!("CONSENT REFUSED ON COORD {}", problem.type_)
+        }
+        other => {
+            return Err(format!(
+                "the coordination surface was allowed to mint consent: {other:?}"
+            ))
+        }
+    }
+
+    // 3. consent — the operator's one-shot yes, on ADMIN. The harness stands in
+    //    for the human who read the risk card.
+    let consent = ok(on(
+        &surfaces.admin,
+        ControlRequest::StageConsent {
+            stage_ref: stage_ref.clone(),
+        },
+    )?)?;
     let receipt = consent["consent_receipt"]
         .as_str()
         .ok_or_else(|| "consent returned no receipt".to_owned())?
         .to_owned();
     println!("CONSENTED {receipt}");
 
-    // 3. dispatch — spend the receipt, commit, and carry the bytes.
-    let dispatched = call(ControlRequest::Dispatch {
-        stage_ref: stage_ref.clone(),
-        consent_receipt: receipt.clone(),
-        execution_key: "exec-interop-1".to_owned(),
-    })?;
+    // 4. dispatch — on coord: spend the receipt, commit, and carry the bytes.
+    let dispatched = ok(on(
+        &surfaces.coord,
+        ControlRequest::Dispatch {
+            stage_ref: stage_ref.clone(),
+            consent_receipt: receipt.clone(),
+            execution_key: "exec-interop-1".to_owned(),
+        },
+    )?)?;
     let egress = dispatched["egress"]["state"].as_str().unwrap_or("");
     println!(
         "DISPATCHED {egress} receipt={} detail={}",
@@ -389,14 +494,23 @@ fn coord_steps(state: &DaemonState, label: &str, payload: &str) -> Result<(), St
 
     // The one-shot property, across a real relationship: a DIFFERENT execution
     // key on the spent receipt must be refused.
-    match state.dispatch(&ControlRequest::Dispatch {
-        stage_ref,
-        consent_receipt: receipt,
-        execution_key: "exec-interop-2".to_owned(),
-    }) {
-        Err(p) if p.status == 409 => println!("REPLAY REFUSED {}", p.type_),
-        Err(p) => return Err(format!("unexpected refusal {p:?}")),
-        Ok(_) => return Err("a spent consent receipt dispatched twice".to_owned()),
+    match on(
+        &surfaces.coord,
+        ControlRequest::Dispatch {
+            stage_ref,
+            consent_receipt: receipt,
+            execution_key: "exec-interop-2".to_owned(),
+        },
+    )? {
+        ControlResponse::Problem { problem } if problem.status == 409 => {
+            println!("REPLAY REFUSED {}", problem.type_)
+        }
+        ControlResponse::Problem { problem } => {
+            return Err(format!("unexpected refusal {problem:?}"))
+        }
+        ControlResponse::Ok { .. } => {
+            return Err("a spent consent receipt dispatched twice".to_owned())
+        }
     }
     Ok(())
 }

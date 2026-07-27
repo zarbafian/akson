@@ -66,7 +66,9 @@ pub fn dispatch_proposal(
 ) -> Result<Dispatched, StoreError> {
     // 1. Idempotency: replay or refuse before any effect (§9.2).
     match store.peek(covered)? {
-        Receipt::Duplicate { task_id, response } => {
+        Receipt::Duplicate {
+            task_id, response, ..
+        } => {
             return Ok(Dispatched {
                 outcome: DispatchOutcome::Duplicate { task_id },
                 response,

@@ -139,6 +139,18 @@ contract head, no work order, and nothing to approve. It is acknowledged, one
 retaining it would require an inbound coordination op §2's registry deliberately
 does not have. That remains open, and is the natural next decision.
 
+**A refusal is a write a remote party causes, so it is bounded the same way an
+admission is.** The reason is kept locally — an operator has to be able to tell a
+tampered disclosure from a lost one — but the refusal is committed through the
+same §9.2 idempotency record as an admitted dispatch, under its own response
+class, and the `dispatch_refused` event is appended only on first sight. A peer
+re-sending one refused dispatch therefore replays the same `422` and writes
+nothing; what it can still make this endpoint store is one row per *distinct*
+request, which is exactly what an accepted dispatch costs. The class travels with
+the replay because the stored bytes alone do not say whether the first answer
+admitted or refused, and replaying a refusal as `200` would tell the sender the
+opposite of the decision on record.
+
 ### 6. Where the bytes are is a durable column
 
 `coord_dispatches` gains `egress_state` (V23): `pending` — committed, no
@@ -146,6 +158,23 @@ acknowledgement, the schema **default**, so a crash between the commit and the
 send is honest by construction rather than by remembering to write something;
 `sent` — the pinned recipient echoed this exact staged digest, **terminal**;
 `failed` — attempted and refused.
+
+**Carriage is bounded, and a bounded carriage does not deny the surface.** Every
+stage of the outbound POST has its own ceiling — name resolution, the TCP
+connect, the TLS handshake, the request/response exchange — because a recipient
+that accepts the connection and then stays silent would otherwise hold the
+control-socket thread `dispatch` runs on, and with it every other operation on
+this surface. Two things follow, and both are chosen rather than incidental.
+*One:* a timed-out attempt is `failed`, not `sent` — nothing echoed the staged
+digest, and this endpoint does not report bytes as having left when that is
+unknown — and `failed` is retryable, so the timeout lands in a state the ordinary
+retry resumes; `egress.detail` names the stage that timed out. There is
+deliberately no fourth state for "attempted, outcome unknown": `sent` is the only
+one that claims delivery, and everything short of it is re-attemptable, which is
+precisely what the driver needs to know. *Two:* the control sockets serve
+connections concurrently (bounded), so one slow carriage delays only itself —
+the timeout bounds how long an attempt lasts, the concurrency bounds who waits
+for it.
 
 Recovery is the driver's retry, not a background sweeper: re-presenting the
 **same** `execution_key` re-attempts carriage and spends nothing (the V22 primary
@@ -207,6 +236,8 @@ under the same `execution_key` — which the refusal's `detail` names.
 | …stages a `task_type` the envelope schema refuses | it never stages: `stage` admits exactly what the §5 envelope admits, by asking that schema, so no receipt can ever be minted against bytes that cannot be sent (§6) |
 | …retries a dispatch whose acknowledgement was lost | the body is byte-identical, so the recipient's §9.2 idempotency replays its stored acknowledgement instead of refusing `409 conflict`; the sender reaches `sent` and nothing is admitted twice (§6) |
 | the operator is asked to consent to a staging that already went out | `409 already-dispatched`: the ledger, not the receipt table, decides whether this staging has disclosed anything, and the risk card's claim about it is read from the same row (§6) |
+| the pinned recipient accepts the connection and then says nothing | every stage of the POST is bounded, so the attempt ends; the row is `failed` (never `sent` — nothing acknowledged) and retryable, with the stage named in `egress.detail`. The socket serves other connections meanwhile, so a remote peer cannot deny the local surface (§6) |
+| …re-sends a dispatch this endpoint refused, over and over | the refusal carries a §9.2 idempotency record, so the re-send replays the same `422` and appends no second event: a peer pays one distinct request per durable row, exactly as an admitted dispatch does (§5) |
 | an admitted disclosure tries to become work at the recipient | it cannot: no Task, no contract head, no work order, nothing in the approval inbox — arrival is not execution (§5) |
 
 ## Consequences

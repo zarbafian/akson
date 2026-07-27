@@ -677,6 +677,112 @@ async fn a_dispatch_whose_acknowledgement_is_lost_is_replayed_not_conflicted() {
     assert_eq!(status["verification"]["state"], "acknowledged");
 }
 
+/// **A peer that accepts the connection and then says nothing must not be able
+/// to hold this endpoint.** It is the cheapest denial available to a pinned
+/// peer: complete the TCP connect, never send a TLS ServerHello, never close.
+/// `dispatch` runs on a control-socket thread, so an unbounded wait here is the
+/// coordination surface stopping, not merely one slow request.
+///
+/// What must be true when it returns, and each part matters on its own:
+///
+/// - it **returns**, within the bound `post_a2a` advertises;
+/// - the row is `failed`, which is retryable — the timeout left the carriage in
+///   a state the driver's retry under the same `execution_key` can resume;
+/// - it is **not** `sent`: nothing echoed the staged digest, so this endpoint
+///   claims no delivery it cannot evidence;
+/// - the receipt is spent *with* a record, and the crash-recovery worklist can
+///   see the row.
+///
+/// The oracle is the outer wait, and it is not vacuous: with no timeout in
+/// `post_a2a` the dispatch never returns at all and this fails by elapsing.
+/// It waits on a plain OS thread rather than `spawn_blocking` for exactly that
+/// reason — a runtime will not shut down while a blocking task is still stuck,
+/// so the unbounded case has to fail as an assertion, not as a hung process.
+#[test]
+fn a_silent_peer_cannot_stall_a_dispatch_and_leaves_it_resumable() {
+    let a = Endpoint::new("sender", 19);
+    let b = Endpoint::new("recipient", 29);
+
+    // The silent peer: a plain TCP listener that accepts and holds every
+    // connection open without writing a byte. No TLS is ever spoken, so the
+    // sender stalls in the handshake — after the connect has already succeeded,
+    // which is exactly why a connect timeout alone would not save it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    {
+        let held = held.clone();
+        std::thread::spawn(move || {
+            for accepted in listener.incoming() {
+                match accepted {
+                    Ok(stream) => held.lock().unwrap().push(stream),
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    let b_url = format!("https://127.0.0.1:{port}/a2a");
+
+    let a_state = sender_daemon(&a, &b, "partner", &b_url);
+    let (stage_ref, receipt) = staged_and_consented(&a_state, "partner", PAYLOAD);
+
+    let started = std::time::Instant::now();
+    let stalled = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let state = a_state.clone();
+        let req = dispatch_req(&stage_ref, &receipt, "exec-1");
+        std::thread::spawn(move || tx.send(state.dispatch(&req)));
+        rx.recv_timeout(aksond::MAX_POST_A2A_DURATION + Duration::from_secs(15))
+            .expect("a silent peer must not stall the coordination surface indefinitely")
+            .unwrap()
+    };
+
+    // The fixture really did stall: a refused connection comes back in
+    // milliseconds, so this also proves the wait above was the timeout firing
+    // and not the peer being trivially unreachable.
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "the silent-peer fixture did not actually stall the sender"
+    );
+
+    assert_eq!(stalled["consent_spent"], true);
+    assert_ne!(
+        stalled["egress"]["state"], "sent",
+        "an unanswered carriage is not a delivery: {stalled}"
+    );
+    assert_eq!(stalled["egress"]["state"], "failed");
+    assert_eq!(
+        stalled["egress"]["retryable"], true,
+        "a timed-out carriage must be resumable by the same execution key"
+    );
+    assert!(
+        stalled["egress"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("peer-timeout"),
+        "the durable detail must say the peer never answered: {stalled}"
+    );
+
+    // Spent WITH a record, and on the worklist the retry reads.
+    {
+        let store = a_state.store();
+        let store = store.lock().unwrap();
+        assert!(store.unconsumed_consent(&stage_ref).unwrap().is_none());
+        let unsent = store.unsent_dispatches(10).unwrap();
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].dispatch_receipt, stalled["dispatch_receipt"]);
+    }
+
+    // And the driver's status read says exactly that: nothing is acknowledged.
+    let status = a_state
+        .dispatch(&ControlRequest::TaskStatus {
+            task_id: stage_ref.clone(),
+        })
+        .unwrap();
+    assert_eq!(status["verification"]["state"], "unacknowledged");
+    assert_eq!(status["egress"]["state"], "failed");
+}
+
 /// **A 200 is not an acknowledgement.** The recipient answers, politely and
 /// successfully, without echoing the staged digest it was sent. That is no
 /// evidence that *this* disclosure landed, so carriage must record `failed` and
@@ -1009,6 +1115,85 @@ async fn a_payload_part_of_the_wrong_type_or_an_ambiguous_one_is_refused() {
     assert_eq!(reasons, vec!["payload-digest", "payload-digest"]);
 }
 
+/// **A refusal must not be a durable-growth primitive.** The reason a refused
+/// envelope is recorded at all is diagnostic — an operator has to be able to
+/// tell a tampered disclosure from a lost one — but the recipient used to append
+/// one `dispatch_refused` event per *request* and keep no §9.2 record, so an
+/// authenticated peer could re-send one refused dispatch as often as it liked
+/// and grow the recipient's durable feed for free.
+///
+/// The bound is the idempotency the admitted path already has: a re-send of the
+/// same dispatch (same Message id, byte-identical body) replays the same refusal
+/// and writes nothing new. The cost of a durable row is therefore one distinct
+/// request — exactly what an admitted dispatch costs, and no less.
+///
+/// Two halves, and the second is what keeps the first from being a mute button:
+/// the resend writes nothing, and a *genuinely different* refused dispatch is
+/// still recorded with its own reason.
+#[tokio::test]
+async fn a_resent_refused_dispatch_is_recorded_once_and_answered_the_same_way() {
+    let a = Endpoint::new("sender", 30);
+    let b = Endpoint::new("recipient", 40);
+
+    let b_store = Arc::new(Mutex::new(store(11)));
+    pin_peer(
+        &b_store.lock().unwrap(),
+        "sender",
+        &a,
+        "https://127.0.0.1:1/a2a",
+    );
+    let b_addr = spawn_receive(&b, b_store.clone()).await;
+    let b_url = format!("https://127.0.0.1:{}/a2a", b_addr.port());
+
+    // An envelope addressed to someone else: it authenticates fine and fails the
+    // recipient check, which is the cheapest refusal a pinned peer can produce.
+    let misrouted = serde_json::json!({
+        "schema_version": 1,
+        "protocol": "akson_byom_exchange_v1",
+        "task_type": TASK_TYPE,
+        "recipient_label": "partner",
+        "recipient_root": a.root,
+        "sender_root": a.root,
+        "payload_sha256": hex_sha256(PAYLOAD),
+        "staged_digest": staged_digest(PAYLOAD, "partner", TASK_TYPE),
+        "consent_receipt": "consent-fixture",
+    });
+
+    // The SAME bytes every time — what a real re-carriage is, since the sender
+    // emits canonical JSON for exactly that reason.
+    let body = coord_body(&misrouted, PAYLOAD, "msg-refused");
+    for attempt in 0..5 {
+        let (status, _) = post_body(&a, &b, &b_url, &body).await;
+        assert_eq!(
+            status, 422,
+            "attempt {attempt}: a replayed refusal must still read as refused, not as a 200"
+        );
+    }
+    assert_eq!(
+        coord_events(&b_store, "dispatch_refused").len(),
+        1,
+        "five sends of one refused dispatch must write one durable record, not five"
+    );
+
+    // The control: a different dispatch is a different request, and is recorded.
+    let mut other = misrouted.clone();
+    other["consent_receipt"] = serde_json::json!("consent-other");
+    let (status, _) = post_coord(&a, &b, &b_url, &other, PAYLOAD, "msg-refused-2").await;
+    assert_eq!(status, 422);
+    let reasons: Vec<String> = coord_events(&b_store, "dispatch_refused")
+        .iter()
+        .map(|r| r["reason"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        reasons,
+        vec!["not-the-recipient", "not-the-recipient"],
+        "bounding the resend must not silence a genuinely new refusal"
+    );
+
+    // And nothing was admitted by any of it.
+    assert!(coord_events(&b_store, "dispatch_received").is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // 4. Carrying bytes did not widen the surface.
 // ---------------------------------------------------------------------------
@@ -1143,8 +1328,39 @@ async fn post_parts(
     parts: Vec<akson_proto::v1::Part>,
     message_id: &str,
 ) -> (u16, Vec<u8>) {
+    post_body(from, to, url, &message_bytes(parts, message_id)).await
+}
+
+/// One coordination message's bytes, built once. A test that needs to re-send
+/// must send *these* bytes again: a `Part::Data` is a `HashMap`-backed Struct, so
+/// re-building the same message yields a different encoding and a different
+/// covered body digest — which is a `409 conflict`, not a replay.
+fn coord_body(envelope: &serde_json::Value, payload: &[u8], message_id: &str) -> Vec<u8> {
+    use akson_proto::v1::{part::Content, Part};
+    message_bytes(
+        vec![
+            Part {
+                metadata: None,
+                filename: String::new(),
+                media_type: "application/vnd.akson-dev.coord-dispatch.v1+json".to_owned(),
+                content: Some(Content::Data(
+                    serde_json::from_value(envelope.clone()).unwrap(),
+                )),
+            },
+            Part {
+                metadata: None,
+                filename: String::new(),
+                media_type: "application/octet-stream".to_owned(),
+                content: Some(Content::Raw(payload.to_vec())),
+            },
+        ],
+        message_id,
+    )
+}
+
+fn message_bytes(parts: Vec<akson_proto::v1::Part>, message_id: &str) -> Vec<u8> {
     use akson_proto::v1::{Message, SendMessageRequest};
-    let body = serde_json::to_vec(&SendMessageRequest {
+    serde_json::to_vec(&SendMessageRequest {
         message: Some(Message {
             message_id: message_id.to_owned(),
             context_id: "ctx-coord".to_owned(),
@@ -1153,13 +1369,17 @@ async fn post_parts(
         }),
         ..Default::default()
     })
-    .unwrap();
+    .unwrap()
+}
+
+/// POSTs pre-built request bytes over real mutual TLS, pinning `to`'s certificate.
+async fn post_body(from: &Endpoint, to: &Endpoint, url: &str, body: &[u8]) -> (u16, Vec<u8>) {
     aksond::post_a2a(
         &from.keys.purpose_key(KeyPurpose::TlsEndpoint),
         &from.cert,
         url,
         &to.cert.fingerprint.value,
-        &body,
+        body,
     )
     .await
     .unwrap()

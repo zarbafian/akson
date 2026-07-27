@@ -158,7 +158,11 @@ pub fn handle_receive(
     };
     match admit(store, config.required_extensions, &ingress)? {
         Admit::Rejected(reject) => Ok(reject_to_http(&reject)),
-        Admit::Duplicate { response, .. } => Ok(a2a_ok(response)),
+        Admit::Duplicate {
+            response,
+            response_class,
+            ..
+        } => Ok(replay(response, &response_class)),
         Admit::Conflict => Ok(problem(
             409,
             "conflict",
@@ -217,6 +221,16 @@ pub fn handle_receive(
 /// Every refusal is the same generic 422 with no reason on the wire. A sender
 /// that tampered with the envelope learns that it was not admitted, not which of
 /// the four checks caught it.
+///
+/// **A refusal costs the sender a distinct request, exactly like an admission.**
+/// The reason is kept locally because an operator has to be able to tell a
+/// tampered disclosure from a lost one — but that record is a write a remote
+/// party causes, so it goes through the same §9.2 idempotency as the admitted
+/// path: the refusal is committed under [`COORD_REFUSED_CLASS`] and the event is
+/// appended only on first sight. Re-sending one refused dispatch therefore
+/// replays the same 422 and writes nothing. What a peer can still make this side
+/// store is one row per *distinct* request it is authorized to send, which is
+/// what an accepted dispatch costs too and is bounded by the same §9.2 retention.
 #[allow(clippy::too_many_arguments)]
 fn handle_coord_dispatch(
     store: &Store,
@@ -232,22 +246,36 @@ fn handle_coord_dispatch(
     let received = match verify_coord(envelope, parts, req.peer, &config.local_performer.root) {
         Ok(received) => received,
         Err(reject) => {
-            // Recorded locally with the reason, so an operator can tell a
-            // tampered disclosure from a lost one; answered generically.
-            let _ = store.append_coord_event(
-                COORD_EVENT_REFUSED,
-                None,
-                &serde_json::json!({
-                    "sender_root": req.peer,
-                    "reason": reject.reason(),
-                }),
-                trusted_now_unix,
-            );
-            return Ok(problem(
+            let refusal = problem(
                 422,
                 "coordination-refused",
                 "the coordination envelope was not admitted",
-            ));
+            );
+            // The §9.2 record first, and the diagnostic event only if this
+            // request is one this endpoint has not already answered. A peer that
+            // re-sends a refused dispatch is then replaying, not writing.
+            let first_sight = store.receive_request(
+                covered,
+                req.body,
+                &refusal.body,
+                None,
+                COORD_REFUSED_CLASS,
+                trusted_now_unix,
+            )?;
+            if matches!(first_sight, akson_store::Receipt::Fresh) {
+                // Recorded locally with the reason, so an operator can tell a
+                // tampered disclosure from a lost one; answered generically.
+                let _ = store.append_coord_event(
+                    COORD_EVENT_REFUSED,
+                    None,
+                    &serde_json::json!({
+                        "sender_root": req.peer,
+                        "reason": reject.reason(),
+                    }),
+                    trusted_now_unix,
+                );
+            }
+            return Ok(refusal);
         }
     };
 
@@ -299,6 +327,12 @@ fn coord_received_detail(received: &ReceivedDispatch) -> serde_json::Value {
 /// `dispatch_refused` is one that failed a check, kept locally with its reason.
 const COORD_EVENT_RECEIVED: &str = "dispatch_received";
 const COORD_EVENT_REFUSED: &str = "dispatch_refused";
+
+/// The §9.2 response class a refused coordination dispatch is committed under.
+/// It is what makes a replay answer `422` rather than the generic `200`, and it
+/// is distinct from the admitted class (`coordination`) so the two are
+/// distinguishable in the inbox without unsealing a body.
+const COORD_REFUSED_CLASS: &str = "coordination-refused";
 
 /// Handles a delivered result (design §14.5): verify it under the sender's
 /// task-result key and sign this endpoint's requester outcome. Requires the
@@ -404,6 +438,24 @@ fn a2a_ok(body: Vec<u8>) -> HttpResponse {
         status: 200,
         content_type: A2A_MEDIA_TYPE.to_owned(),
         body,
+    }
+}
+
+/// Replays a §9.2 duplicate: the stored bytes, answered the way the first
+/// sighting was answered.
+///
+/// The class is what carries that. Stored bytes alone do not say whether the
+/// first answer accepted or refused, and a replay that always said `200` would
+/// tell a peer its re-sent dispatch was admitted when this endpoint had in fact
+/// refused it — the opposite of the decision on record.
+fn replay(response: Vec<u8>, response_class: &str) -> HttpResponse {
+    match response_class {
+        COORD_REFUSED_CLASS => HttpResponse {
+            status: 422,
+            content_type: PROBLEM_MEDIA_TYPE.to_owned(),
+            body: response,
+        },
+        _ => a2a_ok(response),
     }
 }
 

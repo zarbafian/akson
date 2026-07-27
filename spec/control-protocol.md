@@ -29,6 +29,13 @@ CLI is a thin front end that builds the request object, writes one line, and pri
   and the OS are the security boundary.
 - One request per connection: write one line, read one line, the daemon closes. There
   is no multiplexing, no streaming, and no request id (the reply is the reply).
+- Connections on one socket are served **concurrently**, up to 16 at a time (beyond
+  that the next is served on the accept thread, so the socket serialises rather than
+  refusing anyone). An op can block on the network — `dispatch` carries bytes to a
+  pinned peer — and while connections were served one at a time, a peer that stalled
+  a carriage stalled every other op on that surface with it. Ordering between
+  concurrent requests is therefore not guaranteed; each still passes the same
+  admission and surface gates, and durable state is serialised by the store.
 - Encoding: UTF-8 JSON, terminated by a single `\n`. The request object is
   `{"op": "<snake_case>", …args}` — the `op` tag is the enum discriminant; arguments
   ride as sibling fields.
@@ -174,7 +181,10 @@ reproduces `staged_digest` — which is why `recipient_label` is on the wire at 
 **Arrival is still not execution:** an admitted disclosure creates no Task, no contract
 head, no work order, and nothing to approve. It is acknowledged, one `dispatch_received`
 event is recorded, and the payload is *not retained* — retaining it would need an inbound
-coordination op that ADR-0016's registry deliberately does not have.
+coordination op that ADR-0016's registry deliberately does not have. A refusal is
+recorded the same way an admission is: through the §9.2 idempotency record, so one
+`dispatch_refused` event costs a peer one *distinct* request and re-sending a refused
+dispatch replays the same `422` and writes nothing further.
 
 **Where the bytes are is a durable column, not an inference.** `egress.state` is
 `pending` (committed, no acknowledgement — the state a crash between the commit and the
@@ -191,11 +201,22 @@ unnamed, un-introduced, suspended, or has no usable https endpoint is refused
 one-shot consent on a disclosure that provably cannot leave is the worst failure this
 surface has available to it.
 
+**Carriage is bounded at every stage.** Name resolution, the TCP connect, the TLS
+handshake, and the request/response exchange each have their own ceiling (5s, 10s, 10s,
+30s), so a recipient that accepts the connection and then says nothing ends the attempt
+instead of holding the surface. A timed-out attempt is `failed` — never `sent`, because
+nothing echoed the staged digest and this endpoint will not claim a delivery it cannot
+evidence — and `retryable`, with `egress.detail` naming the stage
+(`urn:akson:error:peer-timeout`). The recovery is the ordinary one: retry under the same
+`execution_key`, which re-carries the byte-identical body and spends nothing.
+
 Golden vectors for every coordination op — request wire, reply field set, the staged
 digest derivation and its idempotency, the dispatch envelope's wire shape, the cursor
 encoding, and every refusal body — live in `spec/vectors/coordination/`, re-derived
 independently by `xcheck/`. The two-process interop scenario
-`harness/interop/scenario-coord-dispatch.sh` runs the whole chain across a real socket.
+`harness/interop/scenario-coord-dispatch.sh` runs the whole chain across real sockets:
+each step is a request on the control socket that owns it, so the surface gate runs for
+real — the scenario asks **coord** to mint the consent first and requires the `403`.
 
 > The confined worker does **not** speak this protocol directly for a model call — a
 > `processor_use` grant hands it one already-connected fd (`AKSON_BROKER_FD`) and the

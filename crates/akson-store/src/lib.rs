@@ -205,6 +205,12 @@ pub enum Receipt {
     Duplicate {
         task_id: Option<String>,
         response: Vec<u8>,
+        /// The class the first sighting was committed under (`task`,
+        /// `rejected`, `coordination`, …). It travels with the replay because
+        /// the saved bytes alone do not say whether the first answer was an
+        /// acceptance or a refusal, and an endpoint that replays a refusal as a
+        /// `200` has told the peer the opposite of what it decided.
+        response_class: String,
     },
     /// Same (peer, Message id) but a covered value changed — a conflict and a
     /// security event. Nothing is stored or overwritten.
@@ -1217,12 +1223,13 @@ impl Store {
                 commitment: r.get(0)?,
                 task_id: r.get(1)?,
                 response: r.get(2)?,
+                response_class: r.get(3)?,
             })
         };
         let row = self
             .conn
             .query_row(
-                "SELECT commitment, task_id, response FROM inbox_objects
+                "SELECT commitment, task_id, response, response_class FROM inbox_objects
                  WHERE peer = ?1 AND message_id = ?2",
                 params![peer, message_id],
                 read,
@@ -1233,7 +1240,7 @@ impl Store {
         }
         self.conn
             .query_row(
-                "SELECT commitment, task_id, response FROM replay_tombstones
+                "SELECT commitment, task_id, response, response_class FROM replay_tombstones
                  WHERE peer = ?1 AND message_id = ?2",
                 params![peer, message_id],
                 read,
@@ -1251,6 +1258,7 @@ impl Store {
             Ok(response) => Receipt::Duplicate {
                 task_id: prior.task_id,
                 response,
+                response_class: prior.response_class,
             },
             // A stored response that will not unseal is corruption, not a
             // match; fail closed to a conflict rather than replay garbage.
@@ -1259,11 +1267,13 @@ impl Store {
     }
 }
 
-/// A prior sighting's stored commitment, Task id, and sealed response.
+/// A prior sighting's stored commitment, Task id, sealed response, and the class
+/// that response was committed under.
 struct PriorSighting {
     commitment: Vec<u8>,
     task_id: Option<String>,
     response: Vec<u8>,
+    response_class: String,
 }
 
 /// The task-contract head and stored revisions (design §9.3, §10.2). The pure
@@ -3697,9 +3707,15 @@ mod tests {
             .receive_request(&cv, b"body", b"RESP-2", Some("task-other"), "task", 101)
             .unwrap()
         {
-            Receipt::Duplicate { task_id, response } => {
+            Receipt::Duplicate {
+                task_id,
+                response,
+                response_class,
+            } => {
                 assert_eq!(task_id.as_deref(), Some("task-9"));
                 assert_eq!(response, b"RESP");
+                // The class of the FIRST answer, not of the retry.
+                assert_eq!(response_class, "task");
             }
             other => panic!("expected duplicate, got {other:?}"),
         }
@@ -3735,9 +3751,15 @@ mod tests {
             .receive_request(&cv, b"body", b"RESP-2", Some("task-x"), "task", 200)
             .unwrap()
         {
-            Receipt::Duplicate { task_id, response } => {
+            Receipt::Duplicate {
+                task_id,
+                response,
+                response_class,
+            } => {
                 assert_eq!(task_id.as_deref(), Some("task-9"));
                 assert_eq!(response, b"RESP");
+                // The class of the FIRST answer, not of the retry.
+                assert_eq!(response_class, "task");
             }
             other => panic!("expected duplicate, got {other:?}"),
         }

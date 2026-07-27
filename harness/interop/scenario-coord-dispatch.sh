@@ -7,6 +7,12 @@
 # `stage consent` (the operator's one-shot yes, on admin), `dispatch` (spend the
 # receipt, commit, and CARRY the staged bytes to a in a coordination envelope).
 #
+# Each of those steps is a request on a **real control socket**, bound and served
+# the way the daemon binds and serves them, so the surface named above is the
+# surface the request actually arrived on and `authorize(Surface, op)` really ran.
+# The scenario makes that a claim it can fail on: it asks the coordination socket
+# to mint the consent first, and requires the refusal.
+#
 # What the scenario proves that an in-process test cannot: the bytes crossed a
 # process boundary and a socket, a's receive server verified the envelope's
 # digests against the payload it actually read and the sender against the
@@ -66,6 +72,10 @@ else
   exit 1
 fi
 
+# The consent the driver spends is not the driver's to mint: the same request
+# that succeeds on admin must have been refused on the coordination socket.
+grep -q '^CONSENT REFUSED ON COORD urn:akson:error:forbidden-surface$' "$WORK/b.log" || {
+  echo "SCENARIO FAILED — the coordination socket was not refused the consent op" >&2; exit 1; }
 # The sender says `sent` only when the recipient echoed the exact staged digest,
 # and a second execution key on the spent receipt must have been refused.
 grep -q '^DISPATCHED sent ' "$WORK/b.log" || {
@@ -73,5 +83,6 @@ grep -q '^DISPATCHED sent ' "$WORK/b.log" || {
 grep -q '^REPLAY REFUSED urn:akson:error:consent-spent$' "$WORK/b.log" || {
   echo "SCENARIO FAILED — a spent consent receipt was not refused" >&2; exit 1; }
 
-echo "SCENARIO OK — a consented coordination payload crossed two processes over mTLS,"
+echo "SCENARIO OK — a consented coordination payload crossed two processes over mTLS"
+echo "  on the real control surfaces (consent refused on coord, minted on admin),"
 echo "  was digest- and sender-verified by the recipient, and the receipt is spent once"
