@@ -130,7 +130,16 @@ async fn mutual_import_introduces_and_pins_both_sides() {
     let now = OffsetDateTime::now_utc();
     let now_unix = now.unix_timestamp();
     let alice = identity("alice", 3);
+    // One bob, not two. `identity()` derives its keys from the seed but mints
+    // the endpoint certificate from the wall clock, so a second identity("bob",
+    // 5) built a fraction of a second later can land in the next whole second:
+    // same key, different notBefore, different DER, different SHA-256. When the
+    // responder was served from such a twin, the fingerprint asserted below was
+    // not the one the peer pinned, and this test failed about one run in eight.
+    // Bind what the assertions need, then hand the identity to the responder.
     let bob = identity("bob", 5);
+    let bob_root = bob.own_root.clone();
+    let bob_cert_sha256 = bob.cert.fingerprint.value.clone();
     let (store_a, store_b) = (store(), store());
 
     // The out-of-band exchange: each operator imported the other's token.
@@ -139,12 +148,12 @@ async fn mutual_import_introduces_and_pins_both_sides() {
         .unwrap()
         .add_peer_import(&alice.own_root, "their-alice", "", now_unix)
         .unwrap();
-    let port = serve_responder(identity("bob", 5), store_b.clone()).await;
+    let port = serve_responder(bob, store_b.clone()).await;
     store_a
         .lock()
         .unwrap()
         .add_peer_import(
-            &bob.own_root,
+            &bob_root,
             "bob-codex",
             &format!("127.0.0.1:{port}"),
             now_unix,
@@ -163,14 +172,14 @@ async fn mutual_import_introduces_and_pins_both_sides() {
         .expect("introduction succeeds");
     assert_eq!(outcome, IntroCommitOutcome::Committed);
     assert_eq!(peer.agent_id, "bob");
-    assert_eq!(peer.agent_card_key.value, bob.own_root);
+    assert_eq!(peer.agent_card_key.value, bob_root);
 
     // Both sides hold an ACTIVE peer with its verification keys pinned.
     {
         let a = store_a.lock().unwrap();
         assert_eq!(a.peer_status("bob").unwrap(), Some(PeerStatus::Active));
         let pk = a
-            .peer_key(&bob.cert.fingerprint.value, "contract-proposal")
+            .peer_key(&bob_cert_sha256, "contract-proposal")
             .unwrap()
             .expect("bob's proposal key pinned at A");
         assert_eq!(pk.agent_id, "bob");
