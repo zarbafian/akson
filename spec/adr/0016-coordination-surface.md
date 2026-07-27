@@ -155,11 +155,38 @@ dispatch record and at-least-once carriage of it, deduplicated at the recipient
 by the dispatch receipt, which is the A2A Message id. `Store::unsent_dispatches`
 makes the worklist readable rather than implied.
 
-**Routing is resolved before the spend.** A staging whose recipient is unnamed,
-un-introduced, suspended, or has no usable https endpoint is refused
-`409 unroutable-recipient` with the consent receipt still live. Burning a
-one-shot consent on a disclosure that provably cannot leave would be the worst
-failure available to this surface, so it is closed structurally by ordering.
+**A re-send is byte-identical.** The recipient's §9.2 idempotency covers the body
+digest as well as the Message id, so at-least-once carriage only works if one
+logical dispatch is one sequence of bytes: the A2A body is emitted as RFC 8785
+canonical JSON. Serialising the request struct directly does not have that
+property — an A2A `Part`'s `data` is a `HashMap`-backed `Struct` with no fixed
+member order — and without it the retry above arrives as a *different* request
+under the same Message id and is refused `409 conflict`, leaving a disclosure
+that was in fact admitted recorded here as never delivered.
+
+**Everything that decides "this cannot leave" runs before the spend.** A staging
+whose recipient is unnamed, un-introduced, suspended, or has no usable https
+endpoint is refused `409 unroutable-recipient`; a staging whose own members
+cannot form a conforming §5 envelope is refused `500 bad-envelope`. Both leave
+the consent receipt live. Burning a one-shot consent on a disclosure that
+provably cannot leave would be the worst failure available to this surface, so it
+is closed structurally by ordering — and *routing alone was not that ordering*,
+because the routing guard never inspects the envelope.
+
+The other half of the same closure is at `stage`: `task_type` and the recipient
+label are admitted by the §5 envelope schema itself rather than by a rule written
+out a second time, so "acceptable to stage" and "acceptable to send" have one
+definition and cannot drift apart into a gap a driver falls through.
+
+**A staging the ledger has dispatched cannot be consented again.**
+`stage_consent` refuses `409 already-dispatched`, and the §5.2 risk card's claim
+about what has already left this machine is read off that same ledger rather than
+asserted. An unconsumed receipt is not the only reason to refuse: consenting a
+second time could only authorize a second disclosure of the same staged digest,
+`coord_dispatches` resolves a `stage_ref` to a single row (so a second row would
+make `task_status` ambiguous about which disclosure it describes), and the
+recovery an operator wants for an unacknowledged carriage is the driver's retry
+under the same `execution_key` — which the refusal's `detail` names.
 
 ## Threat cases
 
@@ -177,6 +204,9 @@ failure available to this surface, so it is closed structurally by ordering.
 | …aims a consented disclosure at a different peer | the sender's TLS handshake is pinned to the recipient's certificate, so an impostor never receives the bytes; and a peer that *is* pinned refuses an envelope whose `recipient_root` is not its own (§5) |
 | the daemon crashes between the commit and the send | the row is `pending` by schema default: consent spent, record present, nothing claimed to have left. A retry under the same `execution_key` resumes carriage and spends nothing; a different key stays `409 consent-spent` (§6) |
 | …dispatches a staging with no reachable recipient | refused `409 unroutable-recipient` **before** the spend, so the receipt stays live (§6) |
+| …stages a `task_type` the envelope schema refuses | it never stages: `stage` admits exactly what the §5 envelope admits, by asking that schema, so no receipt can ever be minted against bytes that cannot be sent (§6) |
+| …retries a dispatch whose acknowledgement was lost | the body is byte-identical, so the recipient's §9.2 idempotency replays its stored acknowledgement instead of refusing `409 conflict`; the sender reaches `sent` and nothing is admitted twice (§6) |
+| the operator is asked to consent to a staging that already went out | `409 already-dispatched`: the ledger, not the receipt table, decides whether this staging has disclosed anything, and the risk card's claim about it is read from the same row (§6) |
 | an admitted disclosure tries to become work at the recipient | it cannot: no Task, no contract head, no work order, nothing in the approval inbox — arrival is not execution (§5) |
 
 ## Consequences

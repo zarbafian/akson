@@ -48,6 +48,20 @@
 //! violation this codebase refuses elsewhere. The honest consequence is stated
 //! rather than hidden: a coordination dispatch is authenticated, not
 //! non-repudiable, and a recipient cannot prove to a third party who sent it.
+//!
+//! **One logical dispatch is one sequence of bytes.** [`message_body`] emits RFC
+//! 8785 canonical JSON, so re-carrying a dispatch after a lost acknowledgement
+//! produces *byte-identical* bytes. That is not tidiness: the recipient's §9.2
+//! idempotency covers the body digest, so a body that re-serialised differently
+//! would turn the retry ADR-0016 §6 promises into a `409 conflict` and leave a
+//! delivered disclosure recorded as never delivered. `Part::Data` is a
+//! `HashMap`-backed `Struct`, whose serde output has no fixed member order, so
+//! serialising the request struct directly is exactly the trap this avoids.
+//!
+//! **What `stage` may accept is what the envelope may carry.** [`envelope_admits_task_type`]
+//! and [`envelope_admits_recipient_label`] answer that question with the schema
+//! itself, so `stage` cannot accept a value that only fails once a consent
+//! receipt has been burned on it.
 
 use akson_crypto::cert::EndpointCert;
 use akson_crypto::keypair::PurposeKey;
@@ -70,6 +84,63 @@ pub fn coord_dispatch_media_type() -> String {
 /// does not interpret a coordination payload, and saying `application/json`
 /// would invite something to try.
 pub const COORD_PAYLOAD_MEDIA_TYPE: &str = "application/octet-stream";
+
+// --- What may be staged is what may be enveloped ------------------------------
+
+/// A candidate envelope: the two members a driver chooses, and a fixed,
+/// schema-satisfying stand-in for every member the *daemon* chooses (the roots,
+/// the digests, the receipt id). Validating it answers "could these two values
+/// ever ride the envelope?" using the schema itself rather than a second,
+/// hand-written rule that can drift from it.
+fn candidate_envelope(task_type: &str, recipient_label: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "protocol": COORD_PROTOCOL,
+        "task_type": task_type,
+        "recipient_label": recipient_label,
+        "recipient_root": "candidate-root",
+        "sender_root": "candidate-root",
+        "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "staged_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "consent_receipt": "consent-candidate",
+    })
+}
+
+/// A `task_type` known to satisfy the schema, used while testing a label.
+const ADMISSIBLE_TASK_TYPE: &str = "https://example.invalid/task/v1";
+/// A `recipient_label` known to satisfy the schema, used while testing a type.
+const ADMISSIBLE_LABEL: &str = "peer";
+
+/// Whether `task_type` can ride the coordination envelope (ADR-0016 §5).
+///
+/// **This is `stage`'s admissibility rule, and it is the envelope's own.** The
+/// two used to be written separately — `stage` refused control and whitespace
+/// characters, while the schema's `task_type` pattern admits only printable
+/// US-ASCII — and one non-ASCII character fell into the gap: it staged, it
+/// consented, and it failed only when the envelope was built, *after* the
+/// one-shot receipt had been spent. There was then no way to make those bytes
+/// leave and no way to get the receipt back. Asking the schema is what makes
+/// "acceptable to stage" and "acceptable to send" one predicate with one
+/// definition, so that gap cannot reopen by editing one of two places.
+pub fn envelope_admits_task_type(task_type: &str) -> bool {
+    validate(
+        SchemaId::CoordDispatchV1,
+        &candidate_envelope(task_type, ADMISSIBLE_LABEL),
+    )
+    .is_ok()
+}
+
+/// Whether `label` can ride the coordination envelope as `recipient_label`
+/// (ADR-0016 §5) — the same one-definition rule as
+/// [`envelope_admits_task_type`], for the other member `stage` accepts from the
+/// driver.
+pub fn envelope_admits_recipient_label(label: &str) -> bool {
+    validate(
+        SchemaId::CoordDispatchV1,
+        &candidate_envelope(ADMISSIBLE_TASK_TYPE, label),
+    )
+    .is_ok()
+}
 
 /// A resolved recipient: everything needed to reach exactly one pinned peer, and
 /// nothing the driver chose.
@@ -141,6 +212,13 @@ pub fn resolve_route(store: &Store, staged: &StagedContract) -> Result<CoordRout
 /// can leave. Validating our own output is not ceremony: the schema is the
 /// contract with the receiver, and a producer that only validates what it
 /// receives discovers its own drift at the far end.
+///
+/// **It is built before the spend.** [`crate::coord::dispatch`] calls this under
+/// the store lock, alongside [`resolve_route`] and ahead of
+/// `Store::dispatch_staged`, so an envelope this endpoint cannot construct
+/// refuses with the consent receipt still live. That is what ADR-0016 §6's
+/// "closed structurally by ordering" has to mean: routing was only one of the
+/// two ways a consented staging could turn out to be unsendable.
 pub fn envelope(
     staged: &StagedContract,
     route: &CoordRoute,
@@ -168,12 +246,24 @@ pub fn envelope(
     Ok(value)
 }
 
-/// The A2A `SendMessage` body carrying one coordination dispatch.
+/// The A2A `SendMessage` body carrying one coordination dispatch — **the same
+/// bytes every time**, for a given dispatch.
 ///
 /// `message_id` is the **dispatch receipt**: it is unique per committed
 /// dispatch, so the recipient's §9.2 idempotency treats a re-attempt of the same
 /// dispatch as the duplicate it is and replays its stored acknowledgement rather
 /// than admitting the disclosure a second time.
+///
+/// That only works if the bytes are stable, which is why the body is emitted as
+/// **RFC 8785 canonical JSON** rather than by serialising the request struct.
+/// `Part::Data` is a `pbjson_types::Struct` over a `HashMap`, so serialising it
+/// twice yields two different member orders and therefore two different body
+/// digests. The recipient's §9.2 covered values include that digest: an
+/// unstable body turns the retry ADR-0016 §6 promises — re-present the same
+/// `execution_key` after a lost acknowledgement — into `409 conflict`, which
+/// this endpoint records as `failed` for a disclosure that in fact arrived and
+/// was admitted. Canonical output is the whole of the fix; nothing downstream
+/// has to remember anything.
 pub fn message_body(
     envelope: &serde_json::Value,
     payload: &[u8],
@@ -190,8 +280,11 @@ pub fn message_body(
     };
     let payload_part = Part {
         metadata: None,
-        // The payload's own digest names the part, so the receiver pairs bytes
-        // to envelope without trusting an ordering.
+        // A human-readable label for a captured message, and nothing more: the
+        // receiver never reads it. What binds these bytes to this envelope is
+        // the digest check in `verify`, not this string and not the part's
+        // position — see [`coord_payload`], which selects on media type and
+        // refuses an ambiguous message outright.
         filename: envelope["payload_sha256"]
             .as_str()
             .unwrap_or_default()
@@ -199,7 +292,7 @@ pub fn message_body(
         media_type: COORD_PAYLOAD_MEDIA_TYPE.to_owned(),
         content: Some(Content::Raw(payload.to_vec())),
     };
-    serde_json::to_vec(&SendMessageRequest {
+    let request = serde_json::to_value(SendMessageRequest {
         message: Some(Message {
             message_id: dispatch_receipt.to_owned(),
             context_id: stage_ref.to_owned(),
@@ -208,7 +301,8 @@ pub fn message_body(
         }),
         ..Default::default()
     })
-    .map_err(|_| internal())
+    .map_err(|_| internal())?;
+    akson_ext::jcs::canonical_bytes(&request).map_err(|_| internal())
 }
 
 /// How one carriage attempt resolved. Deliberately two-valued: either the pinned
@@ -356,12 +450,25 @@ pub fn coord_dispatch_envelope(parts: &[Part]) -> Option<serde_json::Value> {
     })
 }
 
-/// The raw payload bytes carried alongside the envelope.
+/// The raw payload bytes carried alongside the envelope: the message's **one**
+/// [`COORD_PAYLOAD_MEDIA_TYPE`] raw part.
+///
+/// Two rules, and neither trusts an ordering. The media type is required, so a
+/// raw part of some other type is not a coordination payload and is never read
+/// as one. And *exactly* one such part must exist: a message carrying two is
+/// ambiguous about which bytes the envelope describes, so it is refused rather
+/// than resolved by position. A sender that would like the digest check to run
+/// over the first of several candidates therefore gets no such message admitted
+/// at all.
 fn coord_payload(parts: &[Part]) -> Option<&[u8]> {
-    parts.iter().find_map(|part| match part.content.as_ref()? {
-        Content::Raw(bytes) if part.media_type == COORD_PAYLOAD_MEDIA_TYPE => Some(&bytes[..]),
-        _ => None,
-    })
+    let mut candidates = parts
+        .iter()
+        .filter_map(|part| match part.content.as_ref()? {
+            Content::Raw(bytes) if part.media_type == COORD_PAYLOAD_MEDIA_TYPE => Some(&bytes[..]),
+            _ => None,
+        });
+    let only = candidates.next()?;
+    candidates.next().is_none().then_some(only)
 }
 
 /// Verifies an inbound coordination dispatch against the transport-authenticated
@@ -489,6 +596,132 @@ mod tests {
             endpoint: "https://127.0.0.1:18444/a2a".to_owned(),
             tls_fingerprint: "fp-recipient".to_owned(),
         }
+    }
+
+    /// **One logical dispatch is one sequence of bytes.** Twelve builds of the
+    /// same dispatch must produce one encoding, because the recipient's §9.2
+    /// idempotency covers the body digest: an unstable body makes a re-carriage
+    /// look like a *different* request under the same Message id, which is a
+    /// `409 conflict` rather than the replayed acknowledgement ADR-0016 §6
+    /// promises. `Part::Data` is a `HashMap`-backed Struct, so this went twelve
+    /// ways before `message_body` canonicalized.
+    #[test]
+    fn the_body_of_one_dispatch_is_the_same_bytes_every_time() {
+        let staged = staged();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..12 {
+            let env = envelope(&staged, &route(), "root-sender-fixture", "consent-abc").unwrap();
+            seen.insert(
+                message_body(&env, b"outbound bytes", "dispatch-1", &staged.stage_ref).unwrap(),
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            1,
+            "12 serialisations of one dispatch produced {} encodings",
+            seen.len()
+        );
+        // And a *different* dispatch is different bytes — the stability above is
+        // not the body having stopped depending on its content.
+        let env = envelope(&staged, &route(), "root-sender-fixture", "consent-abc").unwrap();
+        let other = message_body(&env, b"outbound bytes", "dispatch-2", &staged.stage_ref).unwrap();
+        assert!(!seen.contains(&other));
+    }
+
+    /// **`stage`'s rule and the envelope's rule are one rule.** These predicates
+    /// are the whole of `stage`'s task-type and label admissibility, and they
+    /// answer with the schema, so the two cannot drift. The non-ASCII case is
+    /// the one that used to stage, consent, and then destroy the receipt.
+    #[test]
+    fn what_may_be_staged_is_what_the_envelope_admits() {
+        assert!(envelope_admits_task_type(
+            "https://byom.example/task/exchange/v1"
+        ));
+        for refused in [
+            "",                             // empty
+            "https://byom.example/tâsk/v1", // one non-ASCII character
+            "has a space",                  // whitespace
+            "line\nbreak",                  // a control character
+            &"x".repeat(513),               // over the schema's ceiling
+        ] {
+            assert!(
+                !envelope_admits_task_type(refused),
+                "{refused:?} must not be stageable"
+            );
+        }
+        assert!(envelope_admits_recipient_label("partner"));
+        for refused in ["", "NotALabel", "-leading", "a".repeat(65).as_str()] {
+            assert!(
+                !envelope_admits_recipient_label(refused),
+                "{refused:?} must not be stageable"
+            );
+        }
+        // The stand-ins are not what is being tested: a candidate built from two
+        // admissible values must itself conform, or these predicates would
+        // refuse everything for a reason of their own.
+        validate(
+            SchemaId::CoordDispatchV1,
+            &candidate_envelope(ADMISSIBLE_TASK_TYPE, ADMISSIBLE_LABEL),
+        )
+        .expect("the candidate's own stand-in members must satisfy the schema");
+    }
+
+    /// `envelope` validates its own output against the registered schema, and
+    /// refuses rather than emitting a member the receiver would reject. This is
+    /// the guard `dispatch` now runs BEFORE the spend, so its failure leaves the
+    /// operator's receipt live instead of destroying it.
+    #[test]
+    fn an_envelope_that_does_not_conform_is_refused_at_the_sender() {
+        // A pinned root that is not a root shape: the schema's `root` pattern
+        // admits no `/`, so this envelope can never be built.
+        let mut bad_route = route();
+        bad_route.root = "not/a/root".to_owned();
+        let problem = envelope(&staged(), &bad_route, "root-sender-fixture", "consent-abc")
+            .expect_err("a non-conforming envelope must not be produced");
+        assert_eq!(problem.status, 500);
+        assert_eq!(problem.type_, "urn:akson:error:bad-envelope");
+        // The same for a receipt id the schema's opaque-id pattern refuses.
+        assert!(envelope(&staged(), &route(), "root-sender-fixture", "consent abc").is_err());
+        // And the control: unmodified, the very same call succeeds.
+        assert!(envelope(&staged(), &route(), "root-sender-fixture", "consent-abc").is_ok());
+    }
+
+    /// The payload part is chosen by its media type and must be the only one of
+    /// its kind. Neither its position nor its `filename` is trusted: a raw part
+    /// of another type is not a coordination payload, and a message carrying two
+    /// candidates is ambiguous about which bytes its envelope describes, so it
+    /// is refused rather than resolved by ordering.
+    #[test]
+    fn the_payload_part_is_named_by_its_media_type_and_must_be_unique() {
+        let raw = |media_type: &str, bytes: &[u8]| Part {
+            metadata: None,
+            filename: String::new(),
+            media_type: media_type.to_owned(),
+            content: Some(Content::Raw(bytes.to_vec())),
+        };
+        assert_eq!(
+            coord_payload(&[raw(COORD_PAYLOAD_MEDIA_TYPE, b"bytes")]),
+            Some(&b"bytes"[..])
+        );
+        // A raw part of some other media type is not a payload.
+        assert_eq!(coord_payload(&[raw("text/plain", b"bytes")]), None);
+        // Two candidates: ambiguous, so neither is picked.
+        assert_eq!(
+            coord_payload(&[
+                raw(COORD_PAYLOAD_MEDIA_TYPE, b"bytes"),
+                raw(COORD_PAYLOAD_MEDIA_TYPE, b"other bytes"),
+            ]),
+            None,
+            "a message with two payload parts must not be resolved by ordering"
+        );
+        // A wrongly-typed part beside the real one changes nothing.
+        assert_eq!(
+            coord_payload(&[
+                raw("text/plain", b"decoy"),
+                raw(COORD_PAYLOAD_MEDIA_TYPE, b"bytes")
+            ]),
+            Some(&b"bytes"[..])
+        );
     }
 
     /// The round trip, with nothing tampered: what the sender builds is exactly

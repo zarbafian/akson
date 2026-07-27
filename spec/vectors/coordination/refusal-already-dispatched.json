@@ -1,0 +1,17 @@
+{
+  "name": "coordination/refusal-already-dispatched",
+  "description": "The second half of the §5.2 explicit-decision invariant, on the admin side (ADR-0016 §3, §6). `stage_consent` refuses a staging the **dispatch ledger** says has already been dispatched — not merely one that still holds an unconsumed receipt. Without this the surface would mint a second one-shot authorization for a disclosure that had already been carried to a pinned peer and acknowledged by it, and would render the operator a risk card reading \"staging was inert: nothing has left this machine yet\" over exactly those bytes: the one moment the card exists to get right.\n\nRefused rather than permitted-with-an-honest-card, for two reasons. A second consent could only authorize a second disclosure of the same staged digest, and `coord_dispatches` resolves a `stage_ref` to a single row — a second row would make `task_status` and `stage_show` ambiguous about which disclosure they describe. And the recovery an operator actually wants when carriage was not acknowledged is the driver's retry under the same `execution_key`, which spends nothing and re-carries the disclosure that already exists. So `detail` names that key and where its carriage got to, which is the whole of the operator's next step. `409`, not `403`: the operator was allowed to ask; there is simply nothing left to authorize.",
+  "input": {
+    "problem": {
+      "type": "urn:akson:error:already-dispatched",
+      "title": "this staging has already been dispatched",
+      "status": 409,
+      "detail": "consent for this staged digest was already spent under execution_key exec-0001 (carriage failed); re-present that execution_key to resume carriage, which spends nothing"
+    }
+  },
+  "expected": {
+    "body": "{\"type\":\"urn:akson:error:already-dispatched\",\"title\":\"this staging has already been dispatched\",\"status\":409,\"detail\":\"consent for this staged digest was already spent under execution_key exec-0001 (carriage failed); re-present that execution_key to resume carriage, which spends nothing\"}",
+    "status": 409,
+    "card_rendered": false
+  }
+}

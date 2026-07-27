@@ -42,7 +42,7 @@ fn vectors() -> Vec<(String, Value)> {
         cases.push((name, case));
     }
     cases.sort_by(|a, b| a.0.cmp(&b.0));
-    assert!(cases.len() >= 26, "the coordination family is incomplete");
+    assert!(cases.len() >= 27, "the coordination family is incomplete");
     cases
 }
 
@@ -418,6 +418,33 @@ fn refusal_vectors() {
     let vector = case(&cases, "refusal-consent-spent");
     assert_eq!(body(&spent), vector["expected"]["body"].as_str().unwrap());
     assert_eq!(spent.status, 409);
+
+    // `already-dispatched`: the ADMIN side of one-shot. A staging the dispatch
+    // ledger has already carried cannot be consented again — and the frozen
+    // claim is that no risk card is rendered for it, because the only card such
+    // a staging could honestly carry is one saying the bytes have already left.
+    let already = state
+        .dispatch(&ControlRequest::StageConsent {
+            stage_ref: first_ref.clone(),
+        })
+        .unwrap_err();
+    let vector = case(&cases, "refusal-already-dispatched");
+    assert_eq!(body(&already), vector["expected"]["body"].as_str().unwrap());
+    assert_eq!(already.status, 409);
+    assert_eq!(
+        vector["expected"]["card_rendered"],
+        serde_json::json!(false)
+    );
+    assert!(
+        state
+            .store()
+            .lock()
+            .unwrap()
+            .unconsumed_consent(&first_ref)
+            .unwrap()
+            .is_none(),
+        "the refusal must mint nothing"
+    );
 
     // `execution-key-conflict`: a committed key reused for other arguments.
     let conflict = state

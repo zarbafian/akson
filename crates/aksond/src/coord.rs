@@ -98,9 +98,6 @@ const MAX_ID_CHARS: usize = 128;
 /// that needs more than this is not a coordination message.
 pub const MAX_STAGED_PAYLOAD_BYTES: usize = 512 * 1024;
 
-/// Ceiling on a `task_type` URI — a bounded, printable identifier.
-const MAX_TASK_TYPE_CHARS: usize = 512;
-
 /// The default and maximum number of events one `events_read` returns.
 const DEFAULT_EVENT_LIMIT: u32 = 64;
 const MAX_EVENT_LIMIT: u32 = 256;
@@ -275,19 +272,24 @@ fn stage(
     performer: &str,
     payload_base64: &str,
 ) -> Result<serde_json::Value, Problem> {
-    if task_type.is_empty()
-        || task_type.chars().count() > MAX_TASK_TYPE_CHARS
-        || task_type
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace())
-    {
+    // What may be staged is exactly what the dispatch envelope may carry, asked
+    // of the envelope's own schema. Writing this rule out a second time here is
+    // how a `task_type` used to stage, consent, and then fail at envelope-build
+    // time with the one-shot receipt already burned — see
+    // [`coord_egress::envelope_admits_task_type`].
+    if !coord_egress::envelope_admits_task_type(task_type) {
         return Err(Problem::new(
             400,
             "bad-task-type",
-            "task_type must be a non-empty printable URI with no whitespace",
+            "task_type must be a bounded printable US-ASCII URI with no whitespace — exactly what the coordination envelope admits",
         ));
     }
-    if !performer.is_empty() && !valid_label(performer) {
+    // A named recipient must be a valid local label AND one the envelope can
+    // carry — the same one-definition rule, for the other member `stage` takes
+    // from the driver.
+    let label_ok =
+        |label: &str| valid_label(label) && coord_egress::envelope_admits_recipient_label(label);
+    if !performer.is_empty() && !label_ok(performer) {
         return Err(unknown_peer());
     }
     let payload = STANDARD.decode(payload_base64).map_err(|_| {
@@ -460,6 +462,30 @@ fn events_read(
 /// row the receipt is minted against, in one call, so what the operator reads and
 /// what the receipt authorizes cannot drift apart. A second consent while the
 /// first is unconsumed is refused — one disclosure, one live authorization.
+///
+/// **The dispatch ledger is consulted too, and it is the authority.** An
+/// unconsumed receipt is not the only reason to refuse: a staging that has
+/// already been dispatched has nothing left to authorize, and consenting again
+/// would have handed the operator a card that read *"staging was inert: nothing
+/// has left this machine yet"* over bytes that had already been carried to a
+/// pinned peer and acknowledged by it. That is the §5.2 explicit-decision
+/// invariant broken at the only point it exists to protect. So:
+///
+/// - **any** committed dispatch for this staging ⇒ `409 already-dispatched`,
+///   naming the execution key and where its carriage got to;
+/// - and the card's claim about what has already left is *derived* from that
+///   same ledger read rather than asserted, so it cannot be true only by
+///   coincidence.
+///
+/// Refused rather than permitted-with-an-honest-card, for two reasons. A second
+/// consent could only authorize a second disclosure of the same digest, and
+/// `coord_dispatches` resolves a `stage_ref` to a single row — a second one
+/// would make `task_status` and `stage_show` ambiguous about which disclosure
+/// they describe. And the recovery an operator actually wants when carriage has
+/// not been acknowledged is the driver's retry under the same `execution_key`,
+/// which spends nothing and re-carries the disclosure that already exists; the
+/// refusal says so, so the honest card would only have been a slower route to
+/// the wrong action.
 fn stage_consent(state: &DaemonState, stage_ref: &str) -> Result<serde_json::Value, Problem> {
     let store = state.store();
     let store = store.lock().map_err(|_| internal())?;
@@ -478,8 +504,14 @@ fn stage_consent(state: &DaemonState, stage_ref: &str) -> Result<serde_json::Val
             "an unconsumed consent receipt already exists for this staged digest",
         ));
     }
+    // The ledger, not the stage row's status projection: what did this staging
+    // actually do?
+    let dispatched = store.coord_dispatch(stage_ref).map_err(|_| internal())?;
+    if let Some(record) = &dispatched {
+        return Err(already_dispatched(record));
+    }
     let now = trusted_now(&store)?;
-    let card = risk_card(&store, &staged)?;
+    let card = risk_card(&store, &staged, dispatched.as_ref())?;
     let receipt_id = format!("consent-{}", random_hex());
     let body = serde_json::json!({
         "receipt_id": receipt_id,
@@ -524,9 +556,16 @@ fn stage_consent(state: &DaemonState, stage_ref: &str) -> Result<serde_json::Val
 /// facts the decision rests on. The payload bytes are **not** rendered — the
 /// operator consents to a digest and a recipient, and untrusted bytes never reach
 /// the terminal.
+///
+/// `dispatched` is this staging's row in the dispatch ledger, as read by the
+/// caller. The card's closing claim about what has already left this machine is
+/// rendered *from it*: a card that asserts inertness on its own has no way to
+/// know, and the one that did was wrong for exactly the staging an operator is
+/// most likely to be asked about twice.
 fn risk_card(
     store: &Store,
     staged: &StagedContract,
+    dispatched: Option<&DispatchRecord>,
 ) -> Result<(String, Vec<serde_json::Value>), Problem> {
     let recipient = if staged.performer.is_empty() {
         "no named recipient".to_owned()
@@ -588,11 +627,51 @@ fn risk_card(
             "heading": "Who staged it",
             "lines": [
                 format!("the coordination surface ({COORD_PROTOCOL}), at unix time {}", staged.staged_at),
-                "staging was inert: nothing has left this machine yet",
+                egress_line(dispatched),
             ],
         }),
     ];
     Ok((sentence, sections))
+}
+
+/// The card's one claim about what has already left this machine, read off the
+/// dispatch ledger. Never asserted: an operator deciding whether to authorize a
+/// disclosure must be told if this staging has already made one.
+fn egress_line(dispatched: Option<&DispatchRecord>) -> String {
+    let Some(record) = dispatched else {
+        return "staging was inert: nothing has left this machine yet".to_owned();
+    };
+    match record.egress_state.as_str() {
+        COORD_EGRESS_SENT => format!(
+            "ALREADY DISCLOSED: dispatch {} was acknowledged by the recipient — these bytes have left this machine",
+            record.dispatch_receipt
+        ),
+        COORD_EGRESS_FAILED => format!(
+            "ALREADY DISPATCHED: consent was spent on dispatch {} and its carriage failed; the bytes may or may not have left",
+            record.dispatch_receipt
+        ),
+        _ => format!(
+            "ALREADY DISPATCHED: consent was spent on dispatch {} and no acknowledgement is recorded; the bytes may or may not have left",
+            record.dispatch_receipt
+        ),
+    }
+}
+
+/// `stage_consent` against a staging the ledger says has already been
+/// dispatched. It names the execution key on purpose: the recovery for a
+/// carriage that was not acknowledged is a **retry under that key**, which
+/// spends nothing, not a second consent — which would authorize a second
+/// disclosure.
+fn already_dispatched(record: &DispatchRecord) -> Problem {
+    Problem {
+        type_: "urn:akson:error:already-dispatched".to_owned(),
+        title: "this staging has already been dispatched".to_owned(),
+        status: 409,
+        detail: Some(format!(
+            "consent for this staged digest was already spent under execution_key {} (carriage {}); re-present that execution_key to resume carriage, which spends nothing",
+            record.execution_key, record.egress_state
+        )),
+    }
 }
 
 /// `dispatch` — one-shot: spend the operator's consent receipt, commit the
@@ -611,11 +690,15 @@ fn risk_card(
 ///
 /// The order is the whole recovery story, so read it as four steps:
 ///
-/// 1. **Route first, under the lock, before anything is spent.** A staging whose
-///    recipient is unnamed, un-introduced, suspended, or unreachable-by-shape is
-///    refused with the receipt still live — burning an operator's one-shot
-///    consent on a disclosure that provably cannot leave would be the worst
-///    possible failure of this surface.
+/// 1. **Route and build the envelope, under the lock, before anything is
+///    spent.** A staging whose recipient is unnamed, un-introduced, suspended,
+///    or unreachable-by-shape is refused with the receipt still live — and so is
+///    one whose own members cannot form a conforming envelope. Burning an
+///    operator's one-shot consent on a disclosure that provably cannot leave
+///    would be the worst possible failure of this surface, and routing was only
+///    half of "provably cannot leave": the envelope used to be built *after* the
+///    spend, so an unsendable staging burned the receipt and then answered
+///    `500` to every retry forever.
 /// 2. **Spend and commit**, in the one [`Store::dispatch_staged`] transaction,
 ///    which yields a [`ConsentBurn`] only to the caller that won it. The row it
 ///    writes is `egress_state = 'pending'` by schema default, so a crash here
@@ -649,9 +732,9 @@ fn dispatch(
         return Err(consent_required());
     }
 
-    // --- 1 & 2: route, then spend. Both under one lock; neither touches the
-    // network.
-    let (staged, route, payload, outcome) = {
+    // --- 1 & 2: route and envelope, then spend. All under one lock; none of it
+    // touches the network.
+    let (staged, route, envelope, payload, outcome) = {
         let store = state.store();
         let store = store.lock().map_err(|_| internal())?;
         let staged = store
@@ -660,6 +743,17 @@ fn dispatch(
             .ok_or_else(unknown_stage)?;
         // BEFORE the spend. Every refusal below leaves the receipt live.
         let route = resolve_route(&store, &staged)?;
+        // Also before the spend: the bytes that would go on the wire must be
+        // constructible at all. `dispatch_staged` resolves a retry only for the
+        // execution key that owns the row and only when it names this same
+        // receipt, so the receipt id used here is the one the record will hold
+        // on both the first-carriage and the re-carriage path.
+        let envelope = coord_egress::envelope(
+            &staged,
+            &route,
+            &state.config().local_performer.root,
+            consent_receipt,
+        )?;
         let payload = store
             .staged_payload(stage_ref)
             .map_err(|_| internal())?
@@ -688,20 +782,22 @@ fn dispatch(
                 now,
             )
             .map_err(|_| internal())?;
-        (staged, route, payload, outcome)
+        (staged, route, envelope, payload, outcome)
     };
 
     match outcome {
         // The one path that spent something. `disclose` consumes the burn by
         // value at the point of effect.
-        DispatchOutcome::Dispatched(burn) => disclose(state, &staged, &route, &payload, burn)
-            .map(|r| dispatched_json(&staged, &r, false)),
+        DispatchOutcome::Dispatched(burn) => {
+            disclose(state, &staged, &route, &envelope, &payload, burn)
+                .map(|r| dispatched_json(&staged, &r, false))
+        }
         // A retry. No burn exists here, so nothing can be spent again — but if
         // the bytes are not known to have left, this is exactly the call that
         // resumes their carriage.
         DispatchOutcome::AlreadyDispatched(record) => {
             let record = if record.egress_may_be_attempted() {
-                re_disclose(state, &staged, &route, &payload, record)?
+                re_disclose(state, &staged, &route, &envelope, &payload, record)?
             } else {
                 record
             };
@@ -733,11 +829,12 @@ fn disclose(
     state: &DaemonState,
     staged: &StagedContract,
     route: &CoordRoute,
+    envelope: &serde_json::Value,
     payload: &[u8],
     burn: ConsentBurn,
 ) -> Result<DispatchRecord, Problem> {
     let record = burn.into_record();
-    carry_and_record(state, staged, route, payload, record)
+    carry_and_record(state, staged, route, envelope, payload, record)
 }
 
 /// Re-carries a dispatch that already committed but is not known to have landed
@@ -749,29 +846,29 @@ fn re_disclose(
     state: &DaemonState,
     staged: &StagedContract,
     route: &CoordRoute,
+    envelope: &serde_json::Value,
     payload: &[u8],
     record: DispatchRecord,
 ) -> Result<DispatchRecord, Problem> {
-    carry_and_record(state, staged, route, payload, record)
+    carry_and_record(state, staged, route, envelope, payload, record)
 }
 
-/// Builds the envelope, puts it on the wire, and records where it got to.
-/// The store lock is **not** held across the network I/O.
+/// Puts the (already built and validated) envelope on the wire and records where
+/// it got to. The store lock is **not** held across the network I/O.
+///
+/// The body is byte-identical to the one an earlier attempt under this same
+/// execution key produced, which is what makes the recipient's §9.2 idempotency
+/// treat a re-carriage as the duplicate it is.
 fn carry_and_record(
     state: &DaemonState,
     staged: &StagedContract,
     route: &CoordRoute,
+    envelope: &serde_json::Value,
     payload: &[u8],
     record: DispatchRecord,
 ) -> Result<DispatchRecord, Problem> {
-    let envelope = coord_egress::envelope(
-        staged,
-        route,
-        &state.config().local_performer.root,
-        &record.receipt_id,
-    )?;
     let body = coord_egress::message_body(
-        &envelope,
+        envelope,
         payload,
         &record.dispatch_receipt,
         &record.stage_ref,
@@ -1300,34 +1397,44 @@ mod tests {
         (state, dir)
     }
 
-    /// Pins `partner` as an introduced, ACTIVE peer with a dialable-shaped
-    /// endpoint. Port 1 is never listening, so `carry` fails on connect.
-    fn seed_recipient(state: &DaemonState) {
+    /// One introduced, ACTIVE peer: an import under `label` plus the §8.1 tuple
+    /// behind `root`, pinned at `endpoint_id`.
+    fn peer_record(root: &str, endpoint_id: &str, cert_der: &[u8]) -> akson_store::StoredPeer {
         use akson_crypto::identity::{Fingerprint, FingerprintKind, PeerIdentity};
+        akson_store::StoredPeer {
+            identity: PeerIdentity {
+                issuer: Some("orgA".to_owned()),
+                agent_id: "alice".to_owned(),
+                workload_id: None,
+                endpoint_id: endpoint_id.to_owned(),
+                tls_cert: Fingerprint::cert_sha256(cert_der),
+                agent_card_key: Fingerprint {
+                    kind: FingerprintKind::Jwk7638,
+                    value: root.to_owned(),
+                },
+                key_bindings: vec![],
+                security_projection_digest: Fingerprint::json_sha256(b"{\"p\":1}"),
+                full_card_digest: Fingerprint::json_sha256(b"{\"c\":1}"),
+            },
+            local_note: String::new(),
+        }
+    }
+
+    fn pin_peer(state: &DaemonState, root: &str, label: &str, endpoint_id: &str) {
         let store = state.store();
         let store = store.lock().unwrap();
         store
-            .add_peer_import(RECIPIENT_ROOT, RECIPIENT, "127.0.0.1:1", 1_753_574_000)
+            .add_peer_import(root, label, "127.0.0.1:1", 1_753_574_000)
             .unwrap();
         store
-            .put_peer(&akson_store::StoredPeer {
-                identity: PeerIdentity {
-                    issuer: Some("orgA".to_owned()),
-                    agent_id: "alice".to_owned(),
-                    workload_id: None,
-                    endpoint_id: "https://127.0.0.1:1/a2a".to_owned(),
-                    tls_cert: Fingerprint::cert_sha256(b"der-fixture"),
-                    agent_card_key: Fingerprint {
-                        kind: FingerprintKind::Jwk7638,
-                        value: RECIPIENT_ROOT.to_owned(),
-                    },
-                    key_bindings: vec![],
-                    security_projection_digest: Fingerprint::json_sha256(b"{\"p\":1}"),
-                    full_card_digest: Fingerprint::json_sha256(b"{\"c\":1}"),
-                },
-                local_note: String::new(),
-            })
+            .put_peer(&peer_record(root, endpoint_id, b"der-fixture"))
             .unwrap();
+    }
+
+    /// Pins `partner` as an introduced, ACTIVE peer with a dialable-shaped
+    /// endpoint. Port 1 is never listening, so `carry` fails on connect.
+    fn seed_recipient(state: &DaemonState) {
+        pin_peer(state, RECIPIENT_ROOT, RECIPIENT, "https://127.0.0.1:1/a2a");
     }
 
     fn stage_req(payload: &str) -> ControlRequest {
@@ -1648,6 +1755,270 @@ mod tests {
             store.staged_contract(&stage_ref).unwrap().unwrap().status,
             "consented"
         );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A `task_type` the envelope cannot carry never reaches a consent
+    /// receipt.** One non-ASCII character used to pass `stage`'s own check and
+    /// fail the envelope schema's — after the burn — so the receipt was spent,
+    /// the row sat `pending`, every retry answered `500`, and the bytes could
+    /// never leave. `stage` now asks the envelope's schema, so the case is
+    /// refused at the door with nothing durable written.
+    #[test]
+    fn a_task_type_the_envelope_cannot_carry_never_reaches_a_consent_receipt() {
+        let (state, dir) = state("bad-type");
+        for refused in [
+            "https://byom.example/tâsk/v1",
+            "https://byom.example/t\u{200b}ask/v1",
+            "https://byom.example/tasк/v1",
+        ] {
+            let problem = dispatch_coord(
+                &state,
+                &ControlRequest::Stage {
+                    task_type: refused.to_owned(),
+                    performer: RECIPIENT.to_owned(),
+                    payload_base64: STANDARD.encode("outbound bytes"),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(problem.status, 400, "{refused:?}");
+            assert_eq!(
+                problem.type_, "urn:akson:error:bad-task-type",
+                "{refused:?}"
+            );
+        }
+        // Nothing durable: no stage row means no receipt can ever bind these.
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(store.read_coord_events(0, 50).unwrap().is_empty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A dispatch whose envelope cannot be built refuses BEFORE the spend.**
+    /// ADR-0016 §6 says a disclosure that provably cannot leave must not burn
+    /// the receipt, and routing was only half of "cannot leave": the envelope
+    /// used to be built after the spend. Here the pinned root is not a root
+    /// shape, so no conforming envelope exists — and the receipt survives.
+    #[test]
+    fn a_dispatch_whose_envelope_cannot_be_built_does_not_spend_the_receipt() {
+        let (state, dir) = state("bad-envelope");
+        // A root the envelope schema's `root` pattern refuses. It reaches the
+        // store the way any pinned identity does; nothing between `stage` and
+        // the wire re-checks it, which is why the pre-spend build matters.
+        pin_peer(&state, "not/a/root", "elsewhere", "https://127.0.0.1:1/a2a");
+        let staged = dispatch_coord(
+            &state,
+            &ControlRequest::Stage {
+                task_type: "https://byom.example/task/exchange/v1".to_owned(),
+                performer: "elsewhere".to_owned(),
+                payload_base64: STANDARD.encode("outbound bytes"),
+            },
+        )
+        .unwrap();
+        let stage_ref = staged["stage_ref"].as_str().unwrap().to_owned();
+        let receipt = dispatch_coord(
+            &state,
+            &ControlRequest::StageConsent {
+                stage_ref: stage_ref.clone(),
+            },
+        )
+        .unwrap()["consent_receipt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let problem =
+            dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap_err();
+        assert_eq!(problem.type_, "urn:akson:error:bad-envelope");
+
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(
+            store.unconsumed_consent(&stage_ref).unwrap().is_some(),
+            "an unsendable envelope must not burn the operator's receipt"
+        );
+        assert!(store.coord_dispatch(&stage_ref).unwrap().is_none());
+        assert_eq!(
+            store.staged_contract(&stage_ref).unwrap().unwrap().status,
+            "consented"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A suspended relationship receives no outward disclosure**, and the
+    /// refusal comes before the spend. §8.4 makes reinstatement the operator's
+    /// call; a dispatch must never be the thing that heals it.
+    #[test]
+    fn a_suspended_recipient_is_unroutable_and_the_receipt_survives() {
+        let (state, dir) = state("suspended");
+        let (stage_ref, receipt) = consented(&state, "outbound bytes");
+        {
+            // The production path to suspension: a re-introduction presenting
+            // rotated pinned material (§8.4).
+            let store = state.store();
+            let store = store.lock().unwrap();
+            let epoch = store
+                .peer_import_by_label(RECIPIENT)
+                .unwrap()
+                .unwrap()
+                .epoch;
+            let outcome = store
+                .commit_introduced_peer(
+                    RECIPIENT_ROOT,
+                    epoch,
+                    &peer_record(RECIPIENT_ROOT, "https://127.0.0.1:1/a2a", b"rotated-der"),
+                    &[],
+                    1_753_574_100,
+                )
+                .unwrap();
+            assert!(
+                matches!(outcome, akson_store::IntroCommitOutcome::Suspended(_)),
+                "{outcome:?}"
+            );
+            assert_ne!(
+                store.peer_status_by_root(RECIPIENT_ROOT).unwrap(),
+                Some(akson_store::PeerStatus::Active)
+            );
+        }
+        let refused =
+            dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert_eq!(refused.type_, "urn:akson:error:unroutable-recipient");
+
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(store.unconsumed_consent(&stage_ref).unwrap().is_some());
+        assert!(store.coord_dispatch(&stage_ref).unwrap().is_none());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recipient pinned at something that is not a usable https URL cannot be
+    /// dialled, so the disclosure provably cannot leave — refused before the
+    /// spend, like every other unroutable shape.
+    #[test]
+    fn a_recipient_with_no_usable_https_endpoint_is_unroutable() {
+        let (state, dir) = state("bad-endpoint");
+        // Introduced and ACTIVE, but its pinned endpoint is not dialable.
+        pin_peer(&state, "root-no-endpoint", "nowhere", "ep-alice-1");
+        let staged = dispatch_coord(
+            &state,
+            &ControlRequest::Stage {
+                task_type: "https://byom.example/task/exchange/v1".to_owned(),
+                performer: "nowhere".to_owned(),
+                payload_base64: STANDARD.encode("outbound bytes"),
+            },
+        )
+        .unwrap();
+        let stage_ref = staged["stage_ref"].as_str().unwrap().to_owned();
+        let receipt = dispatch_coord(
+            &state,
+            &ControlRequest::StageConsent {
+                stage_ref: stage_ref.clone(),
+            },
+        )
+        .unwrap()["consent_receipt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let refused =
+            dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert_eq!(refused.type_, "urn:akson:error:unroutable-recipient");
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(store.unconsumed_consent(&stage_ref).unwrap().is_some());
+        assert!(store.coord_dispatch(&stage_ref).unwrap().is_none());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A staging that has already been dispatched cannot be consented again,
+    /// and the card never claims otherwise.** `stage_consent` used to look only
+    /// for an unconsumed receipt, so a dispatched staging minted a second one
+    /// and handed the operator a card reading "staging was inert: nothing has
+    /// left this machine yet" over bytes that had already been carried. The
+    /// refusal names the recovery that actually exists: retry the execution key.
+    #[test]
+    fn a_dispatched_staging_cannot_be_consented_again() {
+        let (state, dir) = state("re-consent");
+        let (stage_ref, receipt) = consented(&state, "outbound bytes");
+        let dispatched =
+            dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap();
+
+        let refused = dispatch_coord(
+            &state,
+            &ControlRequest::StageConsent {
+                stage_ref: stage_ref.clone(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert_eq!(refused.type_, "urn:akson:error:already-dispatched");
+        let detail = refused.detail.unwrap_or_default();
+        assert!(detail.contains("exec-1"), "{detail}");
+        assert!(detail.contains("carriage failed"), "{detail}");
+        assert_eq!(dispatched["execution_key"], "exec-1");
+
+        // And no second authorization exists: one staging, one disclosure.
+        let store = state.store();
+        let store = store.lock().unwrap();
+        assert!(store.unconsumed_consent(&stage_ref).unwrap().is_none());
+        let consents = store
+            .read_coord_events(0, 200)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "consent_recorded")
+            .count();
+        assert_eq!(consents, 1, "one staging, one consent");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The card's claim about what has already left this machine is read off the
+    /// dispatch ledger, not asserted. `stage_consent` refuses before it can
+    /// render a card over a dispatched staging, so this exercises the renderer
+    /// directly — the claim must be false-proof on its own terms, not merely
+    /// unreachable.
+    #[test]
+    fn the_risk_card_reads_the_dispatch_ledger() {
+        let (state, dir) = state("card");
+        let (stage_ref, receipt) = consented(&state, "outbound bytes");
+        let store = state.store();
+        let store = store.lock().unwrap();
+        let staged = store.staged_contract(&stage_ref).unwrap().unwrap();
+
+        // Before any dispatch, the ledger is empty and the card says so.
+        let (_, sections) = risk_card(&store, &staged, None).unwrap();
+        let rendered = serde_json::Value::from(sections).to_string();
+        assert!(rendered.contains("staging was inert"), "{rendered}");
+        drop(store);
+
+        dispatch_coord(&state, &dispatch_req(&stage_ref, &receipt, "exec-1")).unwrap();
+        let store = state.store();
+        let store = store.lock().unwrap();
+        let record = store.coord_dispatch(&stage_ref).unwrap().unwrap();
+        let (_, sections) = risk_card(&store, &staged, Some(&record)).unwrap();
+        let rendered = serde_json::Value::from(sections).to_string();
+        assert!(
+            !rendered.contains("staging was inert"),
+            "the card must not claim inertness after a dispatch: {rendered}"
+        );
+        assert!(rendered.contains("ALREADY DISPATCHED"), "{rendered}");
+        assert!(rendered.contains(&record.dispatch_receipt), "{rendered}");
+
+        // And an acknowledged one says the bytes have left, in as many words.
+        let sent = akson_store::DispatchRecord {
+            egress_state: COORD_EGRESS_SENT.to_owned(),
+            ..record
+        };
+        let (_, sections) = risk_card(&store, &staged, Some(&sent)).unwrap();
+        let rendered = serde_json::Value::from(sections).to_string();
+        assert!(rendered.contains("ALREADY DISCLOSED"), "{rendered}");
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

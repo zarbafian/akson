@@ -7,17 +7,25 @@
 //! pairing left it. Nothing about the carriage is mocked, because a mock of a
 //! transport proves nothing about a transport.
 //!
-//! The four properties, and the way each is written to fail if its guard is
-//! removed rather than to pass because the guard is spelled a certain way:
+//! The properties, and the way each is written to fail if its guard is removed
+//! rather than to pass because the guard is spelled a certain way:
 //!
 //! 1. **Bytes that do not match the staged digest are refused.** The attacker is
 //!    a *sender* that swaps the payload after building the envelope, and one
 //!    that swaps the label the staged digest was taken over. B must refuse, and
-//!    must record no arrival.
+//!    must record no arrival. The payload part is chosen by its media type and
+//!    must be the only one of its kind, so neither its position nor its
+//!    `filename` decides which bytes the envelope describes.
 //! 2. **A dispatch whose send fails is recoverable and is not re-spendable.**
 //!    The receipt is spent, the row is durable and not `sent`, a retry under the
 //!    same execution key re-carries and succeeds, and a *different* key stays
-//!    `409 consent-spent` throughout.
+//!    `409 consent-spent` throughout. Two ways for a send to fail are covered
+//!    and they are not the same case: the recipient is *unreachable* (nothing
+//!    ever arrives), and the recipient **admits the disclosure but the
+//!    acknowledgement is lost** — the one that only works if the re-sent body is
+//!    byte-identical and the recipient committed its §9.2 record before
+//!    answering. A `200` that does not echo this staged digest is not an
+//!    acknowledgement either.
 //! 3. **A peer that is not the pinned recipient is refused.** Two directions: a
 //!    sender whose pinned certificate does not match refuses to hand the bytes
 //!    over at all, and a receiver that is not the addressee refuses an envelope
@@ -540,6 +548,185 @@ async fn a_dispatch_whose_send_fails_is_recoverable_and_never_respends_consent()
     assert_eq!(replay.type_, "urn:akson:error:consent-spent");
 }
 
+/// **The disclosure lands; the acknowledgement is lost.** This is the case V23,
+/// `pending`, and the retry exist for, and the one a test that fails at TCP
+/// connect never reaches: B genuinely receives the message, verifies it, records
+/// the arrival and its §9.2 idempotency record, and *then* the connection dies
+/// before A can read the 200.
+///
+/// Everything that must then be true:
+///
+/// - A records the attempt as not-acknowledged and keeps it retryable;
+/// - B has admitted the disclosure exactly once;
+/// - the retry under the same execution key is recognised as the **duplicate it
+///   is** and replays B's stored acknowledgement — so A ends `sent` and
+///   `task_status.verification` says `acknowledged`;
+/// - and B still shows exactly one arrival, not two.
+///
+/// Two guards hold this up and neither had an oracle before: the body must be
+/// byte-stable (a `HashMap`-backed `Part::Data` re-serialised differently every
+/// time, so the retry arrived as a *different* body under the same Message id
+/// and was refused `409 conflict` forever), and the recipient must commit that
+/// idempotency record before answering.
+#[tokio::test]
+async fn a_dispatch_whose_acknowledgement_is_lost_is_replayed_not_conflicted() {
+    let a = Endpoint::new("sender", 16);
+    let b = Endpoint::new("recipient", 26);
+
+    let b_store = Arc::new(Mutex::new(store(8)));
+    pin_peer(
+        &b_store.lock().unwrap(),
+        "sender",
+        &a,
+        "https://127.0.0.1:1/a2a",
+    );
+
+    // One listener, one port, two servers over the same store: first the one
+    // that swallows its own reply, then the real one.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let b_url = format!("https://127.0.0.1:{port}/a2a");
+    let silent = tokio::spawn(silent_receive_once(
+        b.keys.clone(),
+        b.cert.clone(),
+        b.identity(),
+        a.identity(),
+        a.keys.purpose_key(KeyPurpose::ContractProposal).verifying(),
+        b_store.clone(),
+        b_url.clone(),
+        listener,
+    ));
+
+    let a_state = sender_daemon(&a, &b, "partner", &b_url);
+    let (stage_ref, receipt) = staged_and_consented(&a_state, "partner", PAYLOAD);
+
+    let lost = call(&a_state, dispatch_req(&stage_ref, &receipt, "exec-1"))
+        .await
+        .unwrap();
+    silent.await.unwrap();
+
+    // A has no acknowledgement, and says so rather than guessing.
+    assert_ne!(lost["egress"]["state"], "sent", "{lost}");
+    assert_eq!(lost["egress"]["retryable"], true);
+    assert_eq!(lost["consent_spent"], true);
+
+    // B, however, admitted it — once — and kept the idempotency record that
+    // makes the retry safe.
+    assert_eq!(
+        coord_events(&b_store, "dispatch_received").len(),
+        1,
+        "the disclosure genuinely landed"
+    );
+
+    // The real receiver comes up on the same port; the driver retries the SAME
+    // execution key, which spends nothing.
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let state = Arc::new(ReceiveState::new(
+        b_store.clone(),
+        StorePeerResolver,
+        b.identity(),
+        BTreeSet::new(),
+        b_url.clone(),
+    ));
+    let acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&b.keys.purpose_key(KeyPurpose::TlsEndpoint), &b.cert).unwrap(),
+    ));
+    tokio::spawn(serve_receive(listener, acceptor, state));
+
+    let recovered = call(&a_state, dispatch_req(&stage_ref, &receipt, "exec-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered["egress"]["state"], "sent",
+        "a re-send of the same dispatch must replay the recipient's acknowledgement, not conflict: {recovered}"
+    );
+    assert_eq!(recovered["replayed"], true);
+    assert_eq!(recovered["dispatch_receipt"], lost["dispatch_receipt"]);
+
+    // Deduplicated at the recipient: still ONE arrival, and one dispatch here.
+    assert_eq!(
+        coord_events(&b_store, "dispatch_received").len(),
+        1,
+        "the retry must not be admitted a second time"
+    );
+    {
+        let store = a_state.store();
+        let store = store.lock().unwrap();
+        assert!(store.unsent_dispatches(10).unwrap().is_empty());
+        assert_eq!(
+            store
+                .read_coord_events(0, 200)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.kind == "dispatched")
+                .count(),
+            1
+        );
+    }
+
+    // And the driver's status read now tells the truth about a disclosure that
+    // did arrive — the thing that used to stay `unacknowledged` permanently.
+    let status = call(
+        &a_state,
+        ControlRequest::TaskStatus {
+            task_id: stage_ref.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(status["verification"]["state"], "acknowledged");
+}
+
+/// **A 200 is not an acknowledgement.** The recipient answers, politely and
+/// successfully, without echoing the staged digest it was sent. That is no
+/// evidence that *this* disclosure landed, so carriage must record `failed` and
+/// `task_status` must keep saying `unacknowledged` — a terminal `sent` here
+/// would be the sender inventing a delivery from a peer's `200`.
+#[tokio::test]
+async fn a_recipient_that_does_not_echo_the_staged_digest_is_not_recorded_sent() {
+    let a = Endpoint::new("sender", 17);
+    let b = Endpoint::new("recipient", 27);
+
+    // A server presenting B's real, pinned certificate — the channel is
+    // perfect; only the answer is wrong.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let b_url = format!("https://127.0.0.1:{port}/a2a");
+    tokio::spawn(always_200(
+        b.keys.clone(),
+        b.cert.clone(),
+        serde_json::json!({
+            "coordination": "acknowledged",
+            "protocol": "akson_byom_exchange_v1",
+            "staged_digest": staged_digest(b"some other disclosure", "partner", TASK_TYPE),
+            "recipient_root": b.root,
+        })
+        .to_string(),
+        listener,
+    ));
+
+    let a_state = sender_daemon(&a, &b, "partner", &b_url);
+    let (stage_ref, receipt) = staged_and_consented(&a_state, "partner", PAYLOAD);
+    let result = call(&a_state, dispatch_req(&stage_ref, &receipt, "exec-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        result["egress"]["state"], "failed",
+        "a 200 that acknowledges another digest is not evidence this one landed: {result}"
+    );
+    assert_eq!(result["egress"]["retryable"], true);
+
+    let status = call(
+        &a_state,
+        ControlRequest::TaskStatus {
+            task_id: stage_ref.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(status["verification"]["state"], "unacknowledged");
+}
+
 /// A staging with nowhere to go must not burn the operator's consent. The
 /// refusal has to come *before* the spend, so the receipt is still live
 /// afterwards and the operator can fix the relationship instead of re-consenting.
@@ -720,6 +907,108 @@ async fn a_peer_that_is_not_the_pinned_recipient_is_refused() {
     assert_eq!(reasons, vec!["not-the-recipient", "sender-mismatch"]);
 }
 
+/// **The payload part is named by its media type, and there must be exactly
+/// one.** A raw part of some other type is not a coordination payload, and a
+/// message carrying two candidates is ambiguous about which bytes its envelope
+/// describes — so it is refused rather than resolved by taking whichever came
+/// first. Neither position nor the part's `filename` decides anything.
+#[tokio::test]
+async fn a_payload_part_of_the_wrong_type_or_an_ambiguous_one_is_refused() {
+    use akson_proto::v1::{part::Content, Part};
+
+    let a = Endpoint::new("sender", 18);
+    let b = Endpoint::new("recipient", 28);
+    let b_store = Arc::new(Mutex::new(store(9)));
+    pin_peer(
+        &b_store.lock().unwrap(),
+        "sender",
+        &a,
+        "https://127.0.0.1:1/a2a",
+    );
+    let b_addr = spawn_receive(&b, b_store.clone()).await;
+    let b_url = format!("https://127.0.0.1:{}/a2a", b_addr.port());
+
+    let envelope = serde_json::json!({
+        "schema_version": 1,
+        "protocol": "akson_byom_exchange_v1",
+        "task_type": TASK_TYPE,
+        "recipient_label": "partner",
+        "recipient_root": b.root,
+        "sender_root": a.root,
+        "payload_sha256": hex_sha256(PAYLOAD),
+        "staged_digest": staged_digest(PAYLOAD, "partner", TASK_TYPE),
+        "consent_receipt": "consent-fixture",
+    });
+    let envelope_part = || Part {
+        metadata: None,
+        filename: String::new(),
+        media_type: "application/vnd.akson-dev.coord-dispatch.v1+json".to_owned(),
+        content: Some(Content::Data(
+            serde_json::from_value(envelope.clone()).unwrap(),
+        )),
+    };
+    let raw = |media_type: &str, filename: &str, bytes: &[u8]| Part {
+        metadata: None,
+        filename: filename.to_owned(),
+        media_type: media_type.to_owned(),
+        content: Some(Content::Raw(bytes.to_vec())),
+    };
+
+    // (a) The right bytes, under a media type that is not the payload's. The
+    //     digest would match if the part were read at all; it must not be.
+    let (status, _) = post_parts(
+        &a,
+        &b,
+        &b_url,
+        vec![envelope_part(), raw("text/plain", "", PAYLOAD)],
+        "msg-mistyped",
+    )
+    .await;
+    assert_eq!(status, 422, "a raw part of another type is not the payload");
+
+    // (b) Two payload parts, the consented bytes first. Taking the first would
+    //     admit this; ambiguity must be refused instead — and the part's
+    //     `filename` naming the consented digest changes nothing, because
+    //     nothing reads it.
+    let (status, _) = post_parts(
+        &a,
+        &b,
+        &b_url,
+        vec![
+            envelope_part(),
+            raw("application/octet-stream", &hex_sha256(PAYLOAD), PAYLOAD),
+            raw("application/octet-stream", "", b"a second candidate"),
+        ],
+        "msg-ambiguous",
+    )
+    .await;
+    assert_eq!(
+        status, 422,
+        "two payload parts must not be resolved by order"
+    );
+
+    // (c) The control: one correctly typed part, and the same machinery admits it.
+    let (status, _) = post_parts(
+        &a,
+        &b,
+        &b_url,
+        vec![
+            envelope_part(),
+            raw("application/octet-stream", "", PAYLOAD),
+        ],
+        "msg-well-formed",
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    assert_eq!(coord_events(&b_store, "dispatch_received").len(), 1);
+    let reasons: Vec<String> = coord_events(&b_store, "dispatch_refused")
+        .iter()
+        .map(|r| r["reason"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(reasons, vec!["payload-digest", "payload-digest"]);
+}
+
 // ---------------------------------------------------------------------------
 // 4. Carrying bytes did not widen the surface.
 // ---------------------------------------------------------------------------
@@ -819,27 +1108,47 @@ async fn post_coord(
     payload: &[u8],
     message_id: &str,
 ) -> (u16, Vec<u8>) {
-    use akson_proto::v1::{part::Content, Message, Part, SendMessageRequest};
+    use akson_proto::v1::{part::Content, Part};
+    post_parts(
+        from,
+        to,
+        url,
+        vec![
+            Part {
+                metadata: None,
+                filename: String::new(),
+                media_type: "application/vnd.akson-dev.coord-dispatch.v1+json".to_owned(),
+                content: Some(Content::Data(
+                    serde_json::from_value(envelope.clone()).unwrap(),
+                )),
+            },
+            Part {
+                metadata: None,
+                filename: String::new(),
+                media_type: "application/octet-stream".to_owned(),
+                content: Some(Content::Raw(payload.to_vec())),
+            },
+        ],
+        message_id,
+    )
+    .await
+}
+
+/// The same, with the message's Parts chosen outright — so a test can send a
+/// part list the daemon would never build.
+async fn post_parts(
+    from: &Endpoint,
+    to: &Endpoint,
+    url: &str,
+    parts: Vec<akson_proto::v1::Part>,
+    message_id: &str,
+) -> (u16, Vec<u8>) {
+    use akson_proto::v1::{Message, SendMessageRequest};
     let body = serde_json::to_vec(&SendMessageRequest {
         message: Some(Message {
             message_id: message_id.to_owned(),
             context_id: "ctx-coord".to_owned(),
-            parts: vec![
-                Part {
-                    metadata: None,
-                    filename: String::new(),
-                    media_type: "application/vnd.akson-dev.coord-dispatch.v1+json".to_owned(),
-                    content: Some(Content::Data(
-                        serde_json::from_value(envelope.clone()).unwrap(),
-                    )),
-                },
-                Part {
-                    metadata: None,
-                    filename: String::new(),
-                    media_type: "application/octet-stream".to_owned(),
-                    content: Some(Content::Raw(payload.to_vec())),
-                },
-            ],
+            parts,
             ..Default::default()
         }),
         ..Default::default()
@@ -854,4 +1163,146 @@ async fn post_coord(
     )
     .await
     .unwrap()
+}
+
+/// A recipient that does everything the real one does — real mutual TLS, the
+/// real [`aksond::handle_receive`], the real durable commit — and then **drops
+/// the connection instead of answering**. That is a lost acknowledgement: the
+/// disclosure landed and is admitted; the sender simply never learns it.
+///
+/// It serves exactly one connection and returns, so the port is free for the
+/// real receiver to take over.
+#[allow(clippy::too_many_arguments)]
+async fn silent_receive_once(
+    keys: IdentityKeys,
+    cert: EndpointCert,
+    local: Identity,
+    peer: Identity,
+    peer_proposal_key: akson_crypto::keypair::PurposeVerifyingKey,
+    store: Arc<Mutex<Store>>,
+    interface_url: String,
+    listener: TcpListener,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&keys.purpose_key(KeyPurpose::TlsEndpoint), &cert).unwrap(),
+    ));
+    let (tcp, _) = listener.accept().await.unwrap();
+    let mut tls = acceptor.accept(tcp).await.unwrap();
+
+    // Read the request head, then exactly Content-Length bytes of body.
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        let n = tls.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "the sender closed before sending a request");
+        raw.extend_from_slice(&chunk[..n]);
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8(raw[..head_end].to_vec()).unwrap();
+    let header = |name: &str| -> Option<String> {
+        head.lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.trim().to_owned())
+    };
+    let length: usize = header("content-length").unwrap().parse().unwrap();
+    while raw.len() < head_end + length {
+        let n = tls.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "the sender closed mid-body");
+        raw.extend_from_slice(&chunk[..n]);
+    }
+    let body = raw[head_end..head_end + length].to_vec();
+
+    // Exactly what the real server extracts, so the §9.2 covered values match.
+    let activated: Vec<String> = header("a2a-extensions")
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_owned())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let content_type = header("content-type").unwrap_or_default();
+    let a2a_version = header("a2a-version");
+    let content_digest = header("content-digest");
+
+    {
+        let store = store.lock().unwrap();
+        let config = aksond::ReceiveConfig {
+            local_performer: &local,
+            requester_origin: &peer,
+            proposal_key: &peer_proposal_key,
+            required_extensions: &BTreeSet::new(),
+            interface_url: &interface_url,
+            outcome_key: None,
+            performer_task_result_key: None,
+        };
+        let req = aksond::HttpRequest {
+            method: "POST",
+            content_type: &content_type,
+            a2a_version: a2a_version.as_deref(),
+            content_digest: content_digest.as_deref(),
+            activated_extensions: &activated,
+            tenant: None,
+            peer: &peer.root,
+            body: &body,
+        };
+        let response = aksond::handle_receive(&store, &config, &req, NOW).unwrap();
+        assert_eq!(
+            response.status, 200,
+            "the disclosure must genuinely be admitted before the reply is lost"
+        );
+    }
+    // …and the reply never leaves. The connection closes here.
+    drop(tls);
+}
+
+/// A server that presents `cert` and answers every request `200` with `body`,
+/// whatever was asked. Used to prove the sender does not take a bare `200` for
+/// an acknowledgement of its own disclosure.
+async fn always_200(keys: IdentityKeys, cert: EndpointCert, body: String, listener: TcpListener) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let acceptor = TlsAcceptor::from(Arc::new(
+        bootstrap_server_config(&keys.purpose_key(KeyPurpose::TlsEndpoint), &cert).unwrap(),
+    ));
+    loop {
+        let Ok((tcp, _)) = listener.accept().await else {
+            return;
+        };
+        let acceptor = acceptor.clone();
+        let body = body.clone();
+        tokio::spawn(async move {
+            let Ok(mut tls) = acceptor.accept(tcp).await else {
+                return;
+            };
+            // Drain until the request head is complete; the body is irrelevant
+            // to the point being made.
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let Ok(n) = tls.read(&mut chunk).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                raw.extend_from_slice(&chunk[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/a2a+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = tls.write_all(response.as_bytes()).await;
+            let _ = tls.flush().await;
+        });
+    }
 }

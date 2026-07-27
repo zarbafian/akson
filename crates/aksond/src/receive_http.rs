@@ -260,7 +260,10 @@ fn handle_coord_dispatch(
 
     // Durable BEFORE the response (§9.2): the arrival event and the idempotency
     // record commit first, so a sender that retries after our reply is lost gets
-    // the same acknowledgement rather than a second admission.
+    // the same acknowledgement rather than a second admission. The covered
+    // values include the body digest, so this only replays for a sender whose
+    // re-send is byte-identical — which is why `coord_egress::message_body`
+    // emits canonical JSON rather than serialising a `HashMap`-backed struct.
     store.append_coord_event(
         COORD_EVENT_RECEIVED,
         None,
