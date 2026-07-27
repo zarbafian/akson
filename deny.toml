@@ -1,5 +1,8 @@
 # cargo-deny configuration (design §17.2: dependency provenance and policy).
 # Every dependency must be OSI-licensed, advisory-clean, and from crates.io.
+# Advisory exceptions are named one by one below, each with the reason it is not
+# reachable here and the single event that removes it. There is no blanket
+# ignore and no lowered severity threshold.
 
 [graph]
 all-features = true
@@ -7,6 +10,45 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+
+# All six exceptions arrive through one edge: `rustls-rustcrypto v0.0.2-alpha`,
+# the pure-Rust rustls CryptoProvider ADR-0011 chose so that no C enters the
+# crypto surface. It is the crate's only non-yanked release (published
+# 2024-04-24) and it requires `rustls-webpki ^0.102.0`, so `cargo update` cannot
+# reach the fixed 0.103.x — the upgrade is blocked by the dependency's own
+# requirement, not by a pin of ours. Two things retire this whole block:
+#
+#   1. rustls-rustcrypto publishes a release on rustls-webpki 0.103 (and off
+#      `paste`); or
+#   2. the CryptoProvider is swapped to aws-lc-rs/ring at the seam ADR-0011
+#      names as the fallback — which reintroduces C and supersedes that ADR.
+#
+# A `[patch.crates-io]` fork is deliberately not on that list: it would make the
+# tree depend on a git source, which `[sources]` below denies and the release
+# provenance (crates.io digests per dependency) cannot express.
+ignore = [
+    # rustls-webpki 0.102.8, reached ONLY as rustls-rustcrypto's `use
+    # webpki::alg_id` — a table of DER AlgorithmIdentifier constants in
+    # verify/{rsa,ecdsa,eddsa}.rs. None of the affected code (CRL parsing, name
+    # constraints, path building) is linked to a call site here. Certificate and
+    # CRL handling in akson runs inside rustls 0.23, which carries its own
+    # rustls-webpki 0.103.13 — at or above the fixed version of all four.
+    { id = "RUSTSEC-2026-0049", reason = "CRL/distributionPoint matching in rustls-webpki 0.102.8; akson only uses that crate's alg_id constants, and validates chains via rustls' own rustls-webpki 0.103.13 (fix: >=0.103.10)" },
+    { id = "RUSTSEC-2026-0098", reason = "URI name constraints in rustls-webpki 0.102.8; same unreachable-by-construction argument, and the validating copy is 0.103.13 (fix: >=0.103.12)" },
+    { id = "RUSTSEC-2026-0099", reason = "wildcard-vs-name-constraint acceptance in rustls-webpki 0.102.8; same argument, validating copy is 0.103.13 (fix: >=0.103.12)" },
+    { id = "RUSTSEC-2026-0104", reason = "reachable panic parsing a CRL in rustls-webpki 0.102.8; akson parses no CRLs at all, and the validating copy is 0.103.13 (fix: >=0.103.13)" },
+    # rsa 0.9.10. RustSec states no safe upgrade exists — there is no fixed
+    # release to move to. The Marvin sidechannel is in RSA *decryption* and
+    # recovers a private key; akson holds no RSA private key (endpoint certs are
+    # self-issued Ed25519, ADR-0011) and TLS 1.3 has no RSA key transport, so the
+    # affected operation is never performed. rustls-rustcrypto's use of `rsa` is
+    # public-key signature verification (verify/rsa.rs).
+    { id = "RUSTSEC-2023-0071", reason = "Marvin timing sidechannel in rsa 0.9 decryption; no fixed release exists upstream, and akson performs no RSA decryption and holds no RSA private key" },
+    # paste 1.0.15: a build-time proc-macro, unmaintained rather than vulnerable.
+    # It expands rustls-rustcrypto's verifier macros; nothing of it survives into
+    # the binary and it reads no untrusted input.
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (no vulnerability); it is a compile-time proc-macro pulled in by rustls-rustcrypto and contributes no runtime code" },
+]
 
 [licenses]
 version = 2
@@ -22,11 +64,21 @@ allow = [
     # Mozilla's CA root data (webpki-roots) ships under the Community Data License
     # Agreement – Permissive 2.0: a permissive, FOSS-friendly data license.
     "CDLA-Permissive-2.0",
+    # MIT without the attribution clause — OSI-approved, strictly more permissive
+    # than the MIT already allowed above. Reached via borrow-or-share → fluent-uri
+    # → referencing → jsonschema (the schema validator akson-ext compiles with).
+    "MIT-0",
 ]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Every crate in this workspace is `publish = false` and depends on its siblings
+# by path alone, so `{ workspace = true }` resolves to a versionless requirement
+# — a wildcard, formally. The ban exists to stop `foo = "*"` reaching a registry
+# crate; a path dependency inside this repo has no registry to float against, and
+# Cargo.lock pins the tree exactly. Registry wildcards are still denied.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
