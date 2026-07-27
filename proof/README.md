@@ -90,12 +90,14 @@ work order terminates or expires within its TTL, assuming only that time
 passes, crashed daemons restart, and deadlines are enforced — the worker
 itself gets no fairness.
 
-**`specs/PairingLedgerInd.tla`, `specs/RollbackAdversaryInd.tla`** —
-Apalache inductive proofs that lift two models beyond TLC's bounds: every
-pairing invariant, and the one-shot-nonce property for an *arbitrary*
-generation bound, now hold for any run length (base + consecution +
-implication, all discharged; vacuity and detection-dependence guarded in
-`negative-checks.sh`).
+**`specs/IntroductionInd.tla`, `specs/RollbackAdversaryInd.tla`** —
+Apalache inductive proofs that lift two models beyond TLC's bounds:
+no-admission-without-import and one-material-per-epoch for an arbitrary
+`MaxEpoch`, and the one-shot-nonce property for an *arbitrary* generation
+bound, now hold for any run length (base + consecution + implication, all
+discharged; vacuity and detection-dependence guarded in
+`negative-checks.sh`). (`PairingLedgerInd.tla` retired with the
+invitation-era pairing model it proved; `IntroductionInd.tla` replaced it.)
 
 **`conformance/`** — `cargo test` proves the Rust pure functions
 (`attempt::next`, `subattempt::next`, `apply_revision`/`accept_head`) equal

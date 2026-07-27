@@ -16,11 +16,20 @@ standard [A2A 1.0](https://a2a-protocol.org/latest/specification/) over
 mutually authenticated TLS 1.3 and adds a small, versioned extension surface
 for signed task contracts, durable delivery, and portable evidence.
 
-**Status: pre-release, under active development.** The end-to-end spine now runs
-as a developer preview — two daemons pair, exchange a signed task, run it in a
-real sandbox, and settle a verifiable outcome (see [Try it](#try-it)) — but key
-custody is interim, the worker is a shell stand-in, and extension namespaces and
-licensing are not finalized. Not yet fit for real use.
+**Status: `v0.0.1-alpha.1` — a prerelease, under active development.** The
+end-to-end spine runs as a developer preview — two daemons pair, exchange a
+signed task, run it in a real sandbox, and settle a verifiable outcome (see
+[Try it](#try-it)) — but key custody is interim (ADR-0009), the quickstart's
+worker is a shell stand-in, and licensing is not finalized.
+
+The version is a prerelease *by construction*, not by modesty. The payload media
+types are still in the unregistered `vnd.akson-dev` tree, and
+`.github/workflows/release.yml` refuses a stable tag while that is true; it also
+requires the tag to equal the workspace version exactly. `0.0.1-alpha.1` is the
+only version both gates accept. The tag exists in this repository; nothing has
+been published from it yet — [verifying a release](docs/verifying-a-release.md)
+is the consumer's side of that, and `design/a0-evidence.md` A0.1 records where it
+stands. Not yet fit for real use.
 
 The first product slice is a two-party code review:
 
@@ -61,9 +70,14 @@ the section).
 | **Inert evidence** | Rendered artifacts (SVG, HTML, Graphviz, Markdown, Mermaid) are scanned for active content — scripts, event handlers, external fetches — and refused before delivery. (§20.4) |
 | **Hardened parsing & storage** | Bounded, canonical inputs (I-JSON caps, JCS) fail closed at every gate, backed by fuzz and hostile-input suites; the durable store is envelope-encrypted at rest under a trusted-time floor. (§11.1, §15.1) |
 
-These are the properties akson is built to hold. Key custody is still interim and
-a few residual risks remain open — the
-[threat model](design/2026-07-19-threat-model.md) tracks each one, honestly.
+These are the properties akson is built to hold. The assurance they rest on is a
+**developer** one, and that is worth saying plainly: key custody is interim
+(ADR-0009), the local control sockets authenticate a caller by Unix UID
+(`SO_PEERCRED`) rather than by a key or an attested process identity, and the
+default profile runs everything under one UID — separate Unix identities per role
+are the opt-in fleet profile in [`deploy/`](deploy/README.md), not the default.
+Those and the rest of the open residuals are tracked, honestly, in the
+[threat model](design/2026-07-19-threat-model.md).
 
 ## Try it
 
@@ -295,6 +309,112 @@ export AKSON_ON_TASK='notify-send "akson: task $AKSON_TASK (auto=$AKSON_TASK_AUT
 Auto-approval enacts what a plain `task approve` would — never a processor grant,
 never artifact export — so a standing policy can never widen a task's authority.
 
+## The coordination surface — a second local principal
+
+Everything above is *your* authority: the CLI, an MCP harness, and the confined
+worker all reach the daemon over sockets that admit only the daemon's own UID. A
+sibling system that stages outbound payloads on your behalf needs something
+narrower — enough to stage bytes, to spend a consent you already gave, and to
+read coordination state, with **no** path to admin authority at all. That is a
+third control socket ([ADR-0016](spec/adr/0016-coordination-surface.md), protocol
+`akson_byom_exchange_v1`).
+
+| Socket | Admits | For |
+|---|---|---|
+| `admin.sock` | the daemon's own UID | operator authority — everything in this README so far |
+| `worker.sock` | the daemon's own UID | the confined worker: submit a result, ask the broker for a model call |
+| `coord.sock` | the UID named by `AKSON_COORD_UID`, plus the daemon's own for diagnostics | stage, spend a consent, read coordination state |
+
+**Unset `AKSON_COORD_UID` and `coord.sock` is not created at all** — absent
+rather than guarded, so there is nothing to connect to and nothing to probe. When
+it is set, the driver runs as its own Unix user
+([`deploy/akson-coord.service`](deploy/akson-coord.service)), so the boundary is
+an OS access domain you can read off `ls -l`.
+
+Three properties carry the surface:
+
+- **Deny by absence.** Eight ops exist there — `coord_whoami`, `peer_show`,
+  `stage`, `stage_show`, `dispatch`, `task_status`, `events_read`,
+  `capability_evidence` — and everything else answers `forbidden-surface`. No
+  approve/deny of an inbound task, no pairing, no peer import, no processor or
+  credential op, no `task send`/`fulfill`/`deliver`, no configuration. A
+  compromised driver can stage inert bytes and burn receipts it was already
+  given; it cannot mint consent, reach a credential, or touch inbound authority.
+- **Staging is inert; consent is yours.** `stage` persists bytes (sealed) under a
+  reference derived from their content digest and does nothing else — no model,
+  no authority, no socket, and the same bytes yield the same reference rather
+  than a second record. Minting the one-shot consent receipt is an **admin**
+  operation, `akson stage consent <ref>`, which prints the risk card for that
+  exact staged digest first. §5.2's explicit decision, applied outbound.
+- **One consent, one disclosure.** `dispatch` spends the receipt and commits the
+  record in a single store transaction, then carries the staged bytes to the
+  pinned recipient over the same mutually-authenticated TLS every other
+  peer-to-peer byte uses. A retry under the same `execution_key` re-attempts
+  carriage and spends nothing; a *different* key against a spent receipt is
+  refused. Where the bytes got to is a durable column, not an inference:
+  `pending` (committed, nothing acknowledged — what a crash between the commit
+  and the send leaves, and the schema default), `sent` (the pinned recipient
+  echoed this exact staged digest — terminal), `failed` (attempted and refused,
+  and retryable). Every stage of the outbound POST is separately time-bounded, so
+  a recipient that accepts the connection and then says nothing ends the attempt
+  instead of holding the surface.
+
+A coordination dispatch is deliberately **not** a contract: akson's contract
+schema cannot carry an opaque payload without an objective, a deliverable and a
+deadline the operator never read, and synthesising them would make the consent
+receipt authorize more than was actually read. So the bytes ride their own
+envelope — [`spec/ext/coord-dispatch.v1.schema.json`](spec/ext/coord-dispatch.v1.schema.json),
+media type `application/vnd.akson-dev.coord-dispatch.v1+json`,
+`additionalProperties: false` — beside the raw payload. The receiver checks four
+things (the sender's root is the one mutual TLS authenticated; the recipient root
+is its own; the payload bytes hash to the digest; the staged digest re-derives
+from the envelope's own members) and answers one generic `422` otherwise.
+
+Watch the whole chain run across two processes and real sockets:
+
+~~~text
+./harness/interop/scenario-coord-dispatch.sh
+~~~
+
+~~~text
+INTRODUCED with endpoint-a (Committed)
+STAGED stage-3d9c998fa54e0cad… (digest "3d9c998fa54e0cad…")
+CONSENT REFUSED ON COORD urn:akson:error:forbidden-surface
+CONSENTED consent-79147be5470b71ac69e2a54e650724e8
+DISPATCHED sent receipt="dispatch-fc8fb6813da89aa1…" detail="acknowledged by Nps-JjcO…"
+REPLAY REFUSED urn:akson:error:consent-spent
+SCENARIO OK — a consented coordination payload crossed two processes over mTLS
+~~~
+
+The scenario asks the *coordination* socket to mint the consent first and
+requires the refusal, so the surface gate is a thing it can fail on rather than a
+thing it asserts.
+
+### What this surface does not give you
+
+Each of these is a real limit today, so it is here rather than in a footnote:
+
+- **The envelope is authenticated, not non-repudiable.** It is unsigned. There is
+  no key purpose for a coordination dispatch, and borrowing the
+  `contract-proposal` key to sign a non-contract would break one-key-one-role.
+  Authenticity is the channel's and integrity is the digest chain — so a
+  recipient cannot prove to a third party who sent it.
+- **The receiver verifies and acknowledges but does not retain the payload.**
+  Deliberately: reading one back would need an inbound coordination op the
+  registry does not have, and storage without a reader is an unbounded liability.
+  Arrival is still not execution — an admitted disclosure creates no task, no
+  contract head, no work order, and nothing to approve.
+- **Admission is a UID, not an attested process identity.** `SO_PEERCRED` says
+  which *user* connected, not which program; anything running as that UID reaches
+  the surface. The default profile has no UID separation at all — `coord.sock` is
+  simply absent until you configure one.
+- **The envelope's media type is in the unregistered `vnd.akson-dev` tree**
+  (A0.4b), the same reason the release tooling refuses a stable tag.
+
+The op-by-op reference — arguments, replies, and every refusal — is in the
+[control protocol](spec/control-protocol.md); the decision and its threat cases
+are [ADR-0016](spec/adr/0016-coordination-surface.md).
+
 ## Acknowledgments
 
 Akson's founding idea comes from **c2c**, a prior agent-communication system:
@@ -320,8 +440,14 @@ c2c for the groundwork.
   and decisions for the v1 build.
 - [Threat model](design/2026-07-19-threat-model.md) — assets, actors, and how each
   defense is realized in the build.
-- [Control protocol](spec/control-protocol.md) — the local socket the `akson` CLI
-  speaks to a running `aksond` (framing, surfaces, operations).
+- [Control protocol](spec/control-protocol.md) — the three local sockets a client
+  speaks to a running `aksond` (framing, surfaces, operations, refusals).
+- [Coordination surface](spec/adr/0016-coordination-surface.md) — ADR-0016: the
+  third socket, its deny-by-absence op registry, admin-only consent, and the
+  unsigned dispatch envelope, with the design note it decides in
+  [`design/2026-07-25-byom-exchange-coordination-surface.md`](design/2026-07-25-byom-exchange-coordination-surface.md).
+- [Verifying a release](docs/verifying-a-release.md) — what a consumer runs
+  against a published asset set, and what each check does and does not establish.
 - [MCP server](crates/akson-mcp/README.md) — expose the daemon to an agent harness
   as tools, so the harness's permission prompt is the trust decision.
 - [ADRs](spec/adr/) — recorded decisions.
@@ -350,6 +476,14 @@ than a claim:
   `proof/conformance`, a workspace member — so `cargo test --workspace` above
   already fails if the model and the code disagree. Checking the models
   themselves needs Java: `make -C proof full`.
+
+`./harness/run-checks.sh` is the wider on-demand suite: format, clippy, the whole
+test workspace, the independent vector re-derivation, and both two-process
+interop scenarios (pairing, and the coordination dispatch above). It says which
+sections it **skipped** and why — a host without unprivileged user namespaces,
+or without the `rfc8785` package, cannot run every check — and its closing line
+distinguishes the two outcomes, `ALL ON-DEMAND CHECKS PASSED` versus
+`CHECKS PASSED, WITH N SKIPPED`. `FAST=1` skips clippy.
 
 ## License
 

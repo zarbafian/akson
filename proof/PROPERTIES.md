@@ -153,7 +153,7 @@ other fails the suite.
 > silently diverge from the transcribed relation," which is the drift that
 > actually bit c2c (codex review).
 
-### specs/PairingLedgerInd.tla + specs/RollbackAdversaryInd.tla — inductive proofs (Apalache)
+### specs/IntroductionInd.tla + specs/RollbackAdversaryInd.tla — inductive proofs (Apalache)
 
 `make inductive` discharges, per module, the three obligations of an
 inductive proof (base `Init ⇒ IndInv`, consecution `IndInv ∧ Next ⇒ IndInv′`,
@@ -165,8 +165,6 @@ run-length bound entirely:
   natural (ConstInit) and induction removes the run-length bound. The
   symbolic handshake set is size-capped (Gen(4)); its contents stay
   arbitrary, and handshakes never interact.
--   steps. The strengthening pins `peers`/`consumedWrites` to `everConsumed`
-  and threads `dead ⇒ ¬active ⇒ ¬everConsumed`.
 - **RollbackAdversaryInd**: `OneShotNonceForever` holds for **arbitrary
   `MaxGen`** (`ConstInit == MaxGen ∈ Nat`) and any number of
   snapshot/restore cycles. The inductive chain: normal mode ⇒ `gen = ext`
@@ -197,9 +195,23 @@ vacuity guards, 1 induction-collapse mutant.
    same body under a new message id overwrite the shared task's A2A context
    id (observed while modeling; low-stakes metadata, but worth an upstream
    look).
-3. **Coverage upstream.** The akson workspace still has no property-based
-   tests of its own; the conformance crate here could migrate into the akson
-   repo's CI if wanted.
+3. **Coverage upstream.** The akson workspace still has no property-based tests
+   of its own (no `proptest`/`quickcheck` anywhere in it); hostile-input coverage
+   is `fuzz/` plus the hand-written hostile suites. The conformance crate is
+   *already* wired in — `proof/conformance` is a workspace member, so
+   `cargo test --workspace` fails on model/code drift — so what remains here is
+   property-based testing, not the wiring.
+
+4. **No model of the coordination surface.** ADR-0016's one-shot consent — spend
+   the receipt and commit the dispatch in one transaction, retry under the same
+   execution key, refuse a different key forever — is exactly the shape
+   `OneShotWorkOrder` and `AtMostOnceEffect` model for work orders, and it has no
+   TLA+ model of its own. Today it rests on a schema `UNIQUE` constraint, a
+   `uses < max_uses` compare-and-set, and integration tests
+   (`crates/aksond/tests/coord_dispatch.rs`, `coord_egress_e2e.rs`), including one
+   that restarts the daemon. Modeling the egress state machine (`pending` /
+   `sent` / `failed`, with `sent` terminal) against a crashing daemon and an
+   at-least-once carrier is the natural next spec.
 
 ## What model checking does not cover
 

@@ -26,6 +26,12 @@ that implements them.
 - **A worker / adapter running peer work** — *untrusted for that work*. It may be
   prompt-injected by peer input or simply hostile; it must hold no authority the
   operator did not grant for the task.
+- **A coordination driver** — a *separate local principal* under a different Unix
+  UID, reaching the daemon only over `coord.sock` (ADR-0016). Trusted to stage
+  bytes it wants disclosed and to spend consent an operator already granted;
+  **untrusted for everything else**, and structurally unable to reach it. This is
+  the one actor that is neither the operator nor a remote peer, and the surface
+  exists so that it can be bounded by an OS access domain rather than by a token.
 - **A model / processor** — semi-trusted plaintext boundary (§15.2). It sees only
   what the task discloses and never the raw credential.
 - **The network** — *untrusted*. Assume an active MITM.
@@ -52,6 +58,10 @@ authority is never touched by Akson; a **separate, additive** layer governs only
 | T12 | Hijack a peer identity at pairing / silent key swap | Identity is committed **out of band before contact**: the imported token pins the root key (ADR-0013), and the introduction proves possession of every advertised key over a transcript bound to both roots, both TLS fps, the key-binding digest, and the live session's RFC 9266 exporter (ADR-0015). Commit is a CAS on (root, epoch); removal tombstones the epoch so a racing introduction cannot resurrect a peer; changed material for an active peer suspends for review (§8.4), never re-pins. (§8.1–8.4; ADR-0013/0015) |
 | T13 | Rollback the encrypted state to replay consumed nonces | State-generation counter vs. an external checkpoint (§15.5). **Residual:** interim custody (ADR-0009) has no external counter, so rollback is *undetectable* and the daemon degrades to operate-but-flagged rather than block. |
 | T14 | Steal the identity root key → impersonate the endpoint at first contact | The root (Agent Card JWS) key is the token's sole commitment, so its private half **alone** lets an attacker introduce as that identity to any token holder — minting fresh subkeys and a fresh TLS certificate. A deliberate concentration (ADR-0013), accepted for v1 under the same interim sealed custody as every other key (see residuals); recovery is a new root plus out-of-band token re-exchange (§8.4 re-pair). Post-activation, an unexpected root-signed change still suspends (§8.4, T12). |
+| T15 | Compromised coordination driver → reach operator authority (approve an inbound task, pair, read a credential, send a task) | The coordination surface is **deny by absence**: eight ops exist on it, and every other control op returns `403 forbidden-surface` — unaddressable, not merely unauthorized. `Surface::Coord` dominates nothing, including `Worker`, so the dominance relation cannot be walked upward. Admission is `SO_PEERCRED` against a configured UID, checked **before the request line is read**; with `AKSON_COORD_UID` unset the socket is not created at all, so there is nothing to probe. The matrix is asserted over a real socket for every op, not just the ones under test. (ADR-0016 §1–2; `control.rs::authorize`, `socket.rs`, `coord_boundary.rs`) |
+| T16 | Compromised coordination driver → disclose bytes no human approved, or disclose twice | `stage` is **inert** — bytes and a content-derived reference, no model, no authority, no socket — and minting the one-shot consent receipt is an **admin** op that shows the operator the risk card for that exact staged digest first. `dispatch` spends the receipt and commits its record in one store transaction, guarded by a `uses < max_uses` compare-and-set *and* a `UNIQUE` receipt id in the dispatch ledger; a different execution key against a spent receipt is `409 consent-spent`, and the refusal survives a restart because it is in the schema, not in memory. Routing and envelope construction run **before** the spend, so a disclosure that provably cannot leave never burns consent. (ADR-0016 §3–4, §6; `coord.rs`) |
+| T17 | Tampered or misrouted coordination disclosure → admit bytes at the wrong peer, or bytes no one consented to | The receiver checks four things and admits nothing otherwise: `sender_root` equals the root the mutual-TLS handshake authenticated, `recipient_root` equals its own, SHA-256 over the payload bytes it actually read equals `payload_sha256`, and the §4 derivation reproduces `staged_digest`. One generic `422`; the reason is recorded locally and never returned. **Arrival is still not execution** — an admitted disclosure creates no Task, no contract head, no work order, and nothing to approve, and the payload is not retained. (ADR-0016 §5; `coord_egress.rs`, `receive_http.rs`) |
+| T18 | Remote recipient stalls the carrier, or a peer re-sends a refused dispatch forever → deny the local coordination surface, or grow its store without bound | Every stage of the outbound POST is separately bounded (resolve 5s, connect 10s, handshake 10s, exchange 30s), so a recipient that accepts the connection and then says nothing ends the attempt; the control sockets serve connections concurrently (up to 16), so one slow carriage delays only itself. A timed-out attempt is `failed`, never `sent`, and is retryable. Inbound, a **refusal** is committed through the same §9.2 idempotency record as an admission under its own response class, so a re-sent refused dispatch replays the same `422` and appends no second event — a peer pays one durable row per *distinct* request, exactly as an accepted dispatch does. The coordination request line is capped at 1 MiB (a separate principal must not be able to make the daemon buffer without limit). (ADR-0016 §6; `a2a_client.rs`, `socket.rs`, `receive_http.rs`) |
 
 ## Assumptions and residual risks
 
@@ -62,6 +72,36 @@ authority is never touched by Akson; a **separate, additive** layer governs only
 - **Same-UID processes are in the TCB** in the personal profile. Isolation from
   other same-UID software is out of scope there; the isolated profile (separate
   service identity) narrows this.
+- **Local principals are authenticated by UID, not by an attested process
+  identity.** `SO_PEERCRED` says which *user* connected, never which program. That
+  is the whole admission rule for all three control sockets, so anything running
+  as the coordination UID reaches the coordination surface, and anything running
+  as the daemon's UID reaches admin. The default profile has no UID separation at
+  all: `coord.sock` is simply absent until `AKSON_COORD_UID` is configured, and
+  the one-identity-per-role arrangement is the opt-in fleet profile in `deploy/`.
+  Read every claim in this document at that assurance level.
+- **A coordination dispatch is authenticated, not non-repudiable.** The ADR-0016
+  envelope is **unsigned**: its authenticity is the channel's (pinned mutual TLS
+  on both sides) and its integrity is the digest chain over the payload and the
+  staged digest. There is no key purpose for a coordination dispatch, and
+  borrowing `contract-proposal` to sign a non-contract would break the
+  one-key-one-role rule this codebase holds elsewhere. The consequence: a
+  recipient can be certain *which pinned peer* sent a disclosure, but cannot prove
+  it to a third party. A future ADR that needs that adds an eighth paired purpose;
+  nothing here forecloses it.
+- **The receiving side of a coordination dispatch retains nothing.** It verifies,
+  acknowledges, and records one `dispatch_received` event with the digests, the
+  sender's root, and the byte length — never the payload. This is deliberate
+  (reading one back would need an inbound coordination op ADR-0016's registry does
+  not have, and storage without a reader is an unbounded liability), but it means
+  an operator on the receiving side cannot audit *what* was disclosed to them from
+  akson's own records, only that something was, and under which consent receipt.
+- **The deployment profile's hardening has no score.** `systemd-analyze security`
+  needs the units installed as root, which has not happened on any host, so no
+  numeric exposure level is claimed for `deploy/akson-daemon.service` or
+  `deploy/akson-coord.service`. What *is* verified is narrower and stated as such
+  in `design/a0-evidence.md` A0.5: both units parse under `systemd-analyze verify`,
+  and no sandbox-hostile directive is active in the daemon unit.
 - **The TLS stack is `rustls-rustcrypto`** (ADR-0011): pure-Rust but community-
   maintained and less audited than aws-lc-rs. The `CryptoProvider` is the swap seam
   if it proves insufficient.

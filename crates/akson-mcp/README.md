@@ -53,5 +53,16 @@ decision and type no commands.
 - It is a thin bridge, not a second authority: every call goes to the daemon,
   which enforces the grant, signs the manifest, and records the audit exactly as
   it does for the CLI.
-- Being notified the moment a task arrives (rather than checking the inbox) needs
-  a daemon-side task-arrival signal — a tracked follow-up.
+- **It is on the admin socket, so it is not a bounded surface.** Every tool here
+  is an admin op; the gate is the harness's permission prompt, not the daemon.
+  If what you want is a *program* with a narrow, deny-by-absence surface and no
+  path to admin authority, that is the coordination socket
+  ([ADR-0016](../../spec/adr/0016-coordination-surface.md)), which this server
+  does not use.
+- **Being notified the moment a task arrives is half-built.** The daemon side
+  exists: its reactor runs `AKSON_ON_TASK` detached when a task lands, with
+  `AKSON_TASK` and `AKSON_TASK_AUTO` in the environment, so a shell command can
+  be poked instead of polling. What is missing is the MCP half — this server
+  answers requests and never sends an unsolicited notification, so a session
+  still learns about a task by calling `akson_inbox`. Wiring the hook through to
+  a session is the tracked follow-up.

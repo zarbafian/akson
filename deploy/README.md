@@ -67,3 +67,20 @@ The units are the profile A0.5 asks for and `verify.sh` is the evidence
 mechanism. Recorded honestly in `design/a0-evidence.md`: they are verified on
 this development host, not yet on a fleet host — that happens when I2
 provisions droplets and runs `verify.sh` there.
+
+**No hardening score is claimed for either unit.** `systemd-analyze security`
+only inspects units systemd has *loaded*, so it needs them installed as root,
+which has not happened anywhere yet — it has never produced a number for
+`akson-daemon.service` or `akson-coord.service`, and none is quoted here or in
+`design/a0-evidence.md`. What has been verified off a fleet host is narrower and
+should be read as exactly that: both units parse under `systemd-analyze verify`,
+no sandbox-hostile directive is active in the daemon unit, and `akson doctor`
+still reports its usual verdict. `verify.sh` prints that distinction rather than
+hiding it.
+
+**And the profile is opt-in.** Nothing here is the default: a plain
+`aksond serve` runs everything under one UID, and `coord.sock` is not created at
+all unless `AKSON_COORD_UID` is set. The separate identities below are the fleet
+arrangement, not what a laptop gets. Admission on every socket is `SO_PEERCRED`
+— which *user* connected, never which program — so this profile buys an OS access
+domain per role, not an attested process identity.

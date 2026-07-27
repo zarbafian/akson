@@ -20,8 +20,9 @@
 # acknowledgement rather than from its own optimism. The replay check at the end
 # is the one-shot property over a real relationship.
 #
-# Runs locally with no containers (two processes) — the containerised form is
-# harness/interop/compose.yaml. FOSS only.
+# Runs locally with no containers (two processes). There is no containerised
+# form of THIS scenario: harness/interop/compose.yaml covers scenario 1 (first
+# contact) only. FOSS only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

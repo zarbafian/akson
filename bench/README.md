@@ -87,12 +87,16 @@ akson peer ping bob
 Single-provider, per-phase timing:
 
 ```
-REQUESTER_SSH=alice PERFORMER_SSH=bob \
-  ALICE_IP=10.0.0.1 BOB_IP=10.0.0.2 ITERS=20 ./run-bench.sh
+REQUESTER_SSH=alice PERFORMER_SSH=bob ITERS=20 ./run-bench.sh
 ```
 
-Times `send → approve → run → deliver` for `ITERS` iterations and prints per-phase
-p50/p95/max plus the whole-loop total.
+Those three are the only variables `run-bench.sh` reads — the addresses are
+already baked into each daemon by `serve.sh`'s `SELF_IP`, so there is no
+`ALICE_IP`/`BOB_IP` here.
+
+Times `send → approve → run → deliver` for `ITERS` iterations and prints one row
+per phase with `p50 p95 max mean`, plus a `loop` row — the same four statistics
+over each iteration's *whole* round trip, not a sum.
 
 **Matrix** — every back-end × every scenario in `scenarios/`, run *on alice*:
 
@@ -109,8 +113,13 @@ re-enters), then times the full round trip for every scenario, and prints a
 Two more drivers share the same provisioned pair: `keepalive.sh` (many
 exchanges over ONE mutual-TLS connection, exercising connection reuse) and
 `cooperate.sh` (six alternating rounds where each side takes its turn
-performing — start both with `ROLE=alice` / `ROLE=bob` so each gets a worker).
-Each script's header documents its variables.
+performing — start both with `ROLE=alice` / `ROLE=bob` so each gets a worker;
+`serve.sh`'s `alice`/`bob` role arms exist precisely for this, and are the only
+two that give *both* hosts a worker). Each script's header lists most of its
+variables, but not all: `keepalive.sh` also reads `PERFORMER_RECV` (default
+`18444`), `cooperate.sh` also reads `PROCESSOR` (default `openai`), and
+`bench-matrix.sh` hard-codes the ssh key `$HOME/.ssh/bench_key` and the remote
+user `bench@`. Read the body, not only the header.
 
 ## Reading the numbers
 
@@ -132,3 +141,43 @@ The delta between the OpenAI pass and the local pass is roughly the model latenc
 what remains is akson's protocol + sandbox + signing overhead. Add `tc netem` on one
 NIC (or put the droplets in different regions) to see how the loop behaves under WAN
 latency/loss.
+
+Two practical notes on that local pass: a bare `ssh bob 'akson …'` gets a
+non-interactive shell with neither the release binaries on `PATH` nor
+`XDG_RUNTIME_DIR` set, so prefix it the way the drivers do
+(`export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; export PATH=$HOME/.cargo/bin:$HOME/akson/target/release:$PATH`).
+And `serve.sh` builds `AKSON_WORKER_EXEC` itself, hard-coding the processor id to
+the provider name — `OPENAI_MODEL`/`ANTHROPIC_MODEL`/`GEMINI_MODEL` override the
+model, but pointing the adapter at a processor called `local` means editing
+`serve.sh`'s `worker_exec()`.
+
+## Known mismatches in these scripts
+
+Recorded rather than papered over — each is a line in a bench script that does
+not agree with what it drives. None is exercised by `cargo test` or
+`harness/run-checks.sh`, which is why they survived:
+
+- **`run-bench.sh` approves with `--processor gpt`** (line 52), but `serve.sh`
+  only ever registers processors named `openai`, `anthropic` and `gemini`, and
+  the adapter it launches asks for the provider-named one. The broker requires an
+  exact match, so the `run` phase this script is timing answers `403
+  processor-mismatch`. `bench-matrix.sh` gets it right (`--processor "$prov"`).
+- **`keepalive.sh`'s last step runs `akson inbox`** (line 51). That verb does not
+  exist — it is `akson task inbox` — so the CLI prints its usage banner and exits
+  2, and `set -euo pipefail` takes the script down with it *after* the measured
+  run has finished.
+- **`provision.sh` does not install `jq`**, which `cooperate.sh` needs to build
+  each round's task spec.
+- **`run-bench.sh`'s header** still shows `ALICE_IP=… BOB_IP=…` in its usage
+  example; the body never reads either. (`cooperate.sh` had the same pair and its
+  header was corrected on 2026-07-28.)
+
+## What is not here
+
+There is no coordination-surface (ADR-0016) scenario in `bench/`. Everything in
+this directory drives the *contract* path — `task send`/`approve`/`run`/`deliver`
+— and nothing exercises `stage`, `stage consent` or `dispatch`. The coordination
+carrier's end-to-end evidence is
+`harness/interop/scenario-coord-dispatch.sh` (two processes, one host, real
+mutual TLS) plus `crates/aksond/tests/coord_egress_e2e.rs`; a two-machine
+equivalent does not exist.

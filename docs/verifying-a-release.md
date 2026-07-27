@@ -7,13 +7,37 @@ does not establish.
 The release side of this is `.github/workflows/release.yml`; A0.1 in
 `design/a0-evidence.md` records its status.
 
-> **No release has been cut yet.** The workflow exists and CI walks its first
-> steps on every pull request (`provenance-dry-run` in
-> `.github/workflows/ci.yml`), but nothing has been published, so there is
-> nothing to download today. The commands below are what will apply to the
-> first tag. Until the payload media types leave the unregistered
-> `vnd.akson-dev` tree (A0.4b / milestone M15) the workflow refuses stable
-> tags, so the first release will be a prerelease.
+> **`v0.0.1-alpha.1` is tagged. Nothing has been published from it yet.** The
+> tag is an annotated tag in this repository, on the commit whose workspace
+> version it names — but it has **not been pushed**, and `release.yml` triggers
+> on a *tag push*. So the workflow has not run, no assets exist, and the
+> `gh release download` below has nothing to fetch today. CI still walks the
+> release path's first steps on every push and pull request
+> (`provenance-dry-run` in `.github/workflows/ci.yml`), which is what keeps it
+> from rotting. `design/a0-evidence.md` A0.1 is the ledger entry for exactly
+> where this stands.
+
+Two things about that tag are deliberate, and they change what you should
+expect to find:
+
+- **The version is a prerelease by construction, not by modesty.** The workflow
+  refuses a stable tag while `MEDIA_TYPES_ARE_PROVISIONAL` is `true` — the
+  payload media types are still in the unregistered `vnd.akson-dev` tree
+  (A0.4b / milestone M15) — and it separately requires the tag to equal the
+  workspace version *exactly*. `0.0.1-alpha.1` is the only version both gates
+  accept. Every release cut under those conditions is marked `--prerelease`, and
+  its notes say so: the wire types may change.
+- **The workflow creates a *draft* release.** A tag push therefore does not make
+  assets downloadable; publishing is a separate, deliberate maintainer act after
+  checking the asset set. The provenance attestation is public as soon as the
+  workflow runs, though — it is bound to the artifacts, not to the release object
+  — so `gh attestation verify` can succeed on a file before any release page
+  exists. (A maintainer can also exercise the whole path with a
+  `workflow_dispatch` run, which builds, SBOMs and attests without publishing
+  anything.)
+
+Substitute your own tag below if you are verifying a later one; nothing on this
+page is specific to `v0.0.1-alpha.1` beyond the name.
 
 ## Short version
 

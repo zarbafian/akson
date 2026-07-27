@@ -19,10 +19,16 @@
 #
 # Unlike run-bench.sh this needs BOTH hosts to be performers — each must have a
 # worker and a processor with a key, and each must pin the other's task-result
-# key. Run serve.sh with ROLE=performer (and a provider key) on BOTH hosts.
+# key. Run serve.sh with ROLE=alice on one host and ROLE=bob on the other (with a
+# provider key each): those are the two role arms that give BOTH sides a worker.
+# ROLE=performer would make both hosts orgB/bob on port 18444, which is not this
+# scenario.
 #
-#   ALICE_SSH=bench@1.2.3.4 BOB_SSH=bench@5.6.7.8 \
-#     ALICE_IP=10.0.0.1 BOB_IP=10.0.0.2 ./cooperate.sh
+# Variables: ALICE_SSH and BOB_SSH are required; PROCESSOR (default openai) names
+# the processor id `task approve` grants, and must match the one serve.sh
+# registered on each host. Needs `jq` on the machine running this script.
+#
+#   ALICE_SSH=bench@1.2.3.4 BOB_SSH=bench@5.6.7.8 ./cooperate.sh
 set -euo pipefail
 
 ALICE_SSH="${ALICE_SSH:?ssh target for alice (the web-UI agent)}"
