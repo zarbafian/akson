@@ -38,7 +38,7 @@ if [ -x xcheck/.venv/bin/python ]; then
 elif python3 -c 'import rfc8785' 2>/dev/null; then
   run python3 xcheck/run.py spec/vectors
 else
-  skipped=1
+  skipped=$((skipped + 1))
   cat <<'EOF'
 SKIPPED — the rfc8785 canonicalizer is not installed, so the independent
   rederivation cannot run on this host. The vectors are still enforced by the
