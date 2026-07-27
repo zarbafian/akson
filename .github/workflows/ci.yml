@@ -218,6 +218,6 @@ jobs:
           # This constant is a second copy of the family manifest digest. The
           # program's plan/check-dag.py asserts it equals the manifest, so a
           # re-pin that forgets this file fails there rather than here.
-          test "$pin_sha" = "90cfcfdca35542af7b330ecefdb052cd8801ded4a9b4b32add1ffca48d3ed100" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
+          test "$pin_sha" = "a5ceb7c99b9792796a3888ddadd875210bf6d0071fd3de0163b52beeb5cc2b77" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
           test "$(git rev-parse HEAD)" = "b3a8f4ad96c6992e029080faec93837a1fedeb40" || { echo "checked-out byom tree is not the locked commit"; exit 1; }
       - run: python3 family-vectors/xcheck.py
