@@ -153,22 +153,51 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true && echo "user namespaces available"
+      # The clean worker launches through bubblewrap, which the runner image does
+      # not ship — every live launcher test died on "spawning bwrap: No such file
+      # or directory" rather than on anything about isolation.
+      - name: Install bubblewrap (the clean worker's launcher)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          bwrap --version
+      # cgroup confinement needs a delegated subtree this user owns; a runner
+      # gives none. The script carves one out with sudo, proves it works, and —
+      # if it cannot — reports which tests will therefore be SKIPPED rather than
+      # let them report green without running. See harness/ci/delegate-cgroup.sh.
+      - name: Delegate a cgroup v2 subtree (or say what will not run)
+        id: cgroup
+        run: bash harness/ci/delegate-cgroup.sh
       - name: seccomp + Landlock enforcement
         run: cargo test -p akson-sandbox --locked
+      # $CGROUP_SKIP is empty when a subtree was delegated, and the two
+      # `--skip <test>` flags naming the cgroup-dependent tests when it was not.
+      # Left unquoted deliberately: it is a flag list, not one argument.
       - name: live namespace/mount checklist (#[ignore] tests)
-        run: cargo test -p akson-sandbox --locked -- --ignored
+        env:
+          CGROUP_SKIP: ${{ steps.cgroup.outputs.test_skip_args }}
+        run: bash harness/ci/in-cgroup.sh cargo test -p akson-sandbox --locked -- --ignored $CGROUP_SKIP
       - name: clean-worker end-to-end (work order → sandbox → gate)
-        run: cargo test -p akson-harness --locked --test clean_worker_e2e -- --ignored --nocapture
+        run: bash harness/ci/in-cgroup.sh cargo test -p akson-harness --locked --test clean_worker_e2e -- --ignored --nocapture
       - name: daemon worker-run (receive → approve → run in sandbox → manifest)
-        run: cargo test -p aksond --locked --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
+        run: bash harness/ci/in-cgroup.sh cargo test -p aksond --locked --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
       - name: build the OpenAI adapter (for the confined e2e)
         run: cargo build -p akson-adapter-openai --locked
       - name: confined OpenAI adapter e2e (adapter → broker → mock model)
-        run: cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
+        run: bash harness/ci/in-cgroup.sh cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh
       - name: interop — coordination dispatch over mTLS (two processes)
         run: bash harness/interop/scenario-coord-dispatch.sh
+      # harness/run-checks.sh's rule, applied to the job: a run with a skipped
+      # check does not get to print the same sentence as a complete one.
+      - name: Isolation verdict (a skip is not a pass)
+        run: |
+          if [ "${{ steps.cgroup.outputs.delegated }}" = "true" ]; then
+            echo "ALL SANDBOX ISOLATION CHECKS RAN — seccomp, Landlock, namespaces, mount, bwrap, cgroup"
+          else
+            echo "ISOLATION CHECKS PASSED, WITH THE CGROUP HALF SKIPPED — see the SKIPPED block above"
+          fi
 
   proof:
     name: machine-checked protocol models

@@ -40,7 +40,36 @@ Two complementary paths:
   `ubuntu-latest` runner, which has passwordless sudo, so it **enables unprivileged
   user namespaces itself** and runs the live namespace/mount checklist that a
   restricted local host cannot. This is the home for validating the namespace path
-  on every push.
+  on every push. Two things a runner does not hand you, and how the job gets them:
+
+  - **bubblewrap** is not in the runner image; the job `apt-get install`s it.
+    Without it every live launcher test fails on `spawning bwrap: No such file or
+    directory`, which says nothing about isolation.
+  - **A delegated cgroup v2 subtree** — `CgroupScope::create()` searches upward
+    from the caller's own cgroup for the nearest ancestor with `memory`+`pids` in
+    `cgroup.subtree_control` that this user can write. A systemd *user session*
+    gives a developer one for free; a runner gives none, because every step lives
+    in the runner service's root-owned cgroup. `harness/ci/delegate-cgroup.sh`
+    carves one out with sudo and chowns it to the job user — delegation by hand —
+    then *proves* it by creating a leaf, setting `memory.max`/`pids.max`, placing
+    a process and removing it, all unprivileged. Each step that needs it joins the
+    subtree through `harness/ci/in-cgroup.sh` (membership is per-process, so it
+    cannot be inherited from an earlier step).
+
+  If that fails, `delegate-cgroup.sh` exits 0 and reports `delegated=false` — a
+  missing kernel capability is an environment gap, not a failed check, the same
+  rule `run-checks.sh` follows. The job then passes libtest `--skip` flags naming
+  `cgroup_scope_applies_limits_and_confines_a_process` and
+  `live_confined_launch_composes_all_isolation` so they are visibly **not run**,
+  prints a `SKIPPED` block, raises a workflow warning annotation, writes the gap
+  to the run summary, and closes with a different sentence than a complete run:
+
+  ~~~text
+  ALL SANDBOX ISOLATION CHECKS RAN — seccomp, Landlock, namespaces, mount, bwrap, cgroup
+  ISOLATION CHECKS PASSED, WITH THE CGROUP HALF SKIPPED — see the SKIPPED block above
+  ~~~
+
+  A green tick for a test that did not run is the thing this job exists to avoid.
 
 **Open-source tools only.** Container scenarios use **Podman** (Apache-2.0,
 daemonless, rootless) as the reference runtime; the compose file and scripts are
