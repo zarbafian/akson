@@ -29,7 +29,12 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.1"
+# A prerelease version, and deliberately so. release.yml refuses a stable tag
+# while `MEDIA_TYPES_ARE_PROVISIONAL` is true (A0.4b/M15), and separately
+# requires the tag to equal this version exactly — so a stable "0.0.1" can
+# never be tagged, and only a prerelease version can satisfy both gates. The
+# version says what the artifact is: unregistered media types, pre-release.
+version = "0.0.1-alpha.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/zarbafian/akson"

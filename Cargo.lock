@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "akson-adapter-anthropic"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-adapter-sdk",
  "akson-evidence",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "akson-adapter-gemini"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-adapter-sdk",
  "akson-evidence",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "akson-adapter-openai"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-adapter-sdk",
  "akson-evidence",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "akson-adapter-sdk"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "hex",
  "serde",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "akson-authority"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-contract",
  "hex",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "akson-broker"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "hex",
  "json-canon",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "akson-cli"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-sandbox",
  "aksond",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "akson-contract"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-crypto",
  "akson-ext",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "akson-crypto"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "akson-evidence"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-contract",
  "akson-crypto",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "akson-ext"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-crypto",
  "base64",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "akson-harness"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-authority",
  "akson-contract",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "akson-mcp"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aksond",
  "base64",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "akson-model-conformance"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-authority",
  "akson-broker",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "akson-pairing"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-crypto",
  "akson-ext",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "akson-proto"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-crypto",
  "hex",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "akson-sandbox"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "landlock",
  "libc",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "akson-store"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-authority",
  "akson-broker",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "akson-transport"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-crypto",
  "akson-pairing",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "akson-worker"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-authority",
  "hex",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "aksond"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "akson-authority",
  "akson-broker",
