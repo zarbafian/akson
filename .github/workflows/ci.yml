@@ -198,6 +198,11 @@ jobs:
     name: family-vectors cross-check
     runs-on: ubuntu-latest
     steps:
+      # Both checkouts name their own directory. Without `path` the byom
+      # checkout landed on $GITHUB_WORKSPACE itself and actions/checkout cleans
+      # its target first — so it deleted `consumer/`, and every run of this job
+      # since it was added died on a missing consumer/spec/family-lock.pin.json.
+      # Sibling paths make the two trees independent of step order.
       - uses: actions/checkout@v4
         with:
           path: consumer
@@ -205,6 +210,7 @@ jobs:
         with:
           repository: zarbafian/byom
           ref: b3a8f4ad96c6992e029080faec93837a1fedeb40
+          path: byom
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -219,5 +225,12 @@ jobs:
           # program's plan/check-dag.py asserts it equals the manifest, so a
           # re-pin that forgets this file fails there rather than here.
           test "$pin_sha" = "a5ceb7c99b9792796a3888ddadd875210bf6d0071fd3de0163b52beeb5cc2b77" || { echo "manifest digest drifted from this repo's vendored pin"; exit 1; }
+      # The other half of the same claim, run inside the byom tree: the commit
+      # checked out above is the one the manifest's family-vectors row pins.
+      # check-dag.py holds this constant, the digest above, and the `ref:` to
+      # the manifest, so a re-pin that forgets this file fails there, locally.
+      - name: Verify the checked-out byom tree is the locked commit
+        working-directory: byom
+        run: |
           test "$(git rev-parse HEAD)" = "b3a8f4ad96c6992e029080faec93837a1fedeb40" || { echo "checked-out byom tree is not the locked commit"; exit 1; }
-      - run: python3 family-vectors/xcheck.py
+      - run: python3 byom/family-vectors/xcheck.py
