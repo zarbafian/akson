@@ -24,6 +24,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      # The published site hand-writes prose next to blocks generated from
+      # crates/ and spec/. Without this, a source change the pages did not
+      # follow ships silently — which is how docs/ came to tell readers the
+      # daemon requires the connecting UID to equal its own, long after
+      # admission became per-socket. Pure stdlib, so it needs no setup step.
+      - name: Docs match the code and the specs
+        run: python3 harness/check-docs.py
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: Test
