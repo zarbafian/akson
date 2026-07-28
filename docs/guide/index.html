@@ -64,7 +64,9 @@
     <a href="../">Overview</a>
     <a href="./" class="here" aria-current="page">Guide</a>
     <a href="../internals/">Internals</a>
+    <a href="../coordination/">Coordination</a>
     <a href="../proofs/">Proofs</a>
+    <a href="../release/">Release</a>
     <a href="https://github.com/zarbafian/akson">GitHub</a>
     <div class="grp">Start</div>
     <a href="#what">What it is</a>
@@ -78,6 +80,7 @@
     <a href="#model">Use a real model</a>
     <a href="#cooperate">Two agents cooperating</a>
     <a href="#delegate">Delegate to your agent</a>
+    <a href="#coordination">Let a driver dispatch</a>
     <div class="grp">In your agent</div>
     <a href="#mcp">The MCP server</a>
     <a href="#claude">From Claude Code</a>
@@ -115,10 +118,14 @@
 </header>
 
 <div class="note warn">
-  <span class="tag">Pre-release</span>
-  <p>Akson runs end to end today, but key custody is interim and the extension
-  namespaces are not final. Use it to explore and to build against — not yet to
-  protect anything that matters.</p>
+  <span class="tag">Pre-release v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></span>
+  <p>This guide describes akson
+  <strong>v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></strong>. It runs end to end
+  today, but key custody is interim — the master secret and the data-encryption key live
+  in a file, and store rollback is undetectable — and the extension media types are still
+  in an unregistered tree, which is what makes the release tooling
+  <a href="../release/">refuse a stable tag</a>. Use it to explore and to build against —
+  not yet to protect anything that matters.</p>
 </div>
 
 <h2 id="what">What it is</h2>
@@ -648,6 +655,72 @@ alice task output &lt;id&gt; --role response</code></pre>
   proof.
 </p>
 
+<h2 id="coordination">Let another local system dispatch — without giving it admin</h2>
+<p class="deck">
+  Everything above assumes <em>you</em> drive the daemon. If a sibling system on the same
+  machine needs to send payloads out through akson, it gets its own socket, its own Unix
+  identity, and a registry of
+  <!--gen:coord-op-count-->eight<!--/gen:coord-op-count--> operations — never your admin
+  authority.
+</p>
+
+<p>
+  The socket does not exist until you create it. Name the UID that may use it, and only
+  then is <code>coord.sock</code> bound at all:
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># unset (the default): coord.sock is NOT CREATED. There is nothing to connect to.</span>
+aksond serve
+
+<span class="c"># named: the socket is bound, and admits exactly that UID (plus the daemon's own,</span>
+<span class="c"># so you can diagnose the surface without a second account).</span>
+AKSON_COORD_UID="$(id -u akson-coord)" aksond serve
+
+<span class="c"># a value that is not a numeric UID is fatal at startup — a typo cannot</span>
+<span class="c"># silently remove the surface instead of creating it.</span></code></pre>
+</div>
+
+<p>
+  The driver on that socket can stage bytes, read coordination state, and call
+  <code>dispatch</code> — but a <code>dispatch</code> only succeeds when it presents a
+  one-shot consent receipt, and the driver has no operation that creates one. Minting it is
+  <strong>your</strong> move, on the admin socket, and it shows you the risk card for that
+  exact staged payload first:
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">you, on admin</span><button class="copy">Copy</button></div>
+<pre><code>akson stage show    &lt;stage-ref&gt;   <span class="c"># what the driver staged: type, recipient, digests</span>
+akson stage consent &lt;stage-ref&gt;   <span class="c"># the risk card for THAT digest, then a one-use receipt</span></code></pre>
+</div>
+
+<p>
+  Hand the receipt to the driver and it may dispatch once. The spend, the dispatch record
+  and the event commit together, so a second dispatch cannot happen even after a crash;
+  a retry under the same execution key re-carries byte-identical bytes and spends nothing.
+  What is absent from the driver's registry is the point: no approve or deny of an inbound
+  task, no pairing, no peer import, no processor or credential operation, no
+  <code>task send</code>, <code>fulfill</code> or <code>deliver</code>, and no
+  configuration. Those are not merely unauthorized there — they are unaddressable.
+</p>
+
+<div class="note warn">
+  <span class="tag">Know what you are granting</span>
+  <p>
+    Admission is a Unix UID via <code>SO_PEERCRED</code> — which <em>user</em> connected,
+    never which program. Anything running as the UID you name reaches this surface, and
+    the assurance profile is a <strong>developer</strong> one: the default profile has no
+    UID separation at all, and separate identities per role are an opt-in fleet
+    arrangement. The bytes that leave ride an <strong>unsigned</strong> envelope —
+    authenticated by the pinned mutual-TLS channel, but not non-repudiable — and the
+    receiving endpoint verifies and acknowledges without retaining the payload.
+    <a href="../coordination/">The coordination page</a> covers all of it, with each limit
+    stated beside the capability it bounds.
+  </p>
+</div>
+
 <h2 id="mcp" class="chapter-start">The MCP server: your harness is the console</h2>
 <p class="deck">
   So the human never types Akson commands, but still decides trust — the harness's
@@ -965,6 +1038,8 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>akson processor add …</code></td><td>Register a model endpoint the broker may reach.</td></tr>
   <tr><td><code>akson processor list</code></td><td>Configured processors.</td></tr>
   <tr><td><code>akson processor credential &lt;id&gt; &lt;key&gt;</code></td><td>Store its API key, sealed.</td></tr>
+  <tr><td><code>akson stage show &lt;ref&gt;</code></td><td>What a <a href="#coordination">coordination driver</a> staged: task type, recipient, digests, and whether it has been consented.</td></tr>
+  <tr><td><code>akson stage consent &lt;ref&gt;</code></td><td>The risk card for that exact staged digest, and the one-shot consent receipt — from one call. Admin only; the driver has no operation that mints this.</td></tr>
 </table>
 </div>
 
@@ -980,6 +1055,8 @@ echo "Delegate this and summarize the result" | codex exec -s workspace-write -<
   <tr><td><code>AKSON_WORKER_CMD</code></td><td>Worker as a shell command. Convenient; for demos.</td></tr>
   <tr><td><code>AKSON_WORKER_EXEC</code></td><td>Worker as a direct program. Stricter sandbox — use this in production.</td></tr>
   <tr><td><code>AKSON_ON_TASK</code></td><td>A command the daemon runs when a task arrives (with <code>AKSON_TASK</code> in its environment), so a harness is poked rather than polling.</td></tr>
+  <tr><td><code>AKSON_COORD_UID</code></td><td>The one UID admitted on the <a href="#coordination">coordination socket</a>. <strong>Unset ⇒ <code>coord.sock</code> is not created at all.</strong> A non-numeric value is fatal at startup.</td></tr>
+  <tr><td><code>AKSON_RUNTIME_DIR</code></td><td>Where the control sockets live, ahead of <code>XDG_RUNTIME_DIR/akson</code>. What the service units set so a second identity can reach <code>coord.sock</code>.</td></tr>
 </table>
 </div>
 

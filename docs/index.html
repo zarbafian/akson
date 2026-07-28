@@ -60,7 +60,9 @@
   <nav class="links" aria-label="Site">
     <a href="guide/">Guide</a>
     <a href="internals/">Internals</a>
+    <a href="coordination/">Coordination</a>
     <a href="proofs/">Proofs</a>
+    <a href="release/">Release</a>
     <a href="https://github.com/zarbafian/akson">GitHub</a>
     <button class="themer" id="themer" type="button" aria-label="Switch colour theme">theme</button>
   </nav>
@@ -87,7 +89,7 @@
     <span class="pill">No hosted account</span>
     <span class="pill">No relay server</span>
     <span class="pill">Open source</span>
-    <span class="pill">Pre-release</span>
+    <span class="pill"><a href="release/">Pre-release v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></a></span>
   </div>
 
   <div class="vignette">
@@ -260,6 +262,77 @@
   </div>
 </section>
 
+<section id="coordination">
+  <h2>Letting another system drive — without giving it admin</h2>
+  <p class="deck">
+    A sibling system on your own machine may need to send payloads out through akson. It
+    should not hold akson's operator authority to do it. So there is a third control
+    socket, with its own Unix identity, and it does not exist unless you create it.
+  </p>
+
+  <div class="wire" role="img" aria-label="A local driver stages bytes on the coordination socket; they sit inert. A human on the admin socket reads the risk card for that exact digest and mints a one-shot consent receipt. The driver dispatches once, burning the receipt, and the bytes are carried to a pinned peer.">
+    <div class="wire-row">
+      <div class="wire-end a">the driver · a different UID</div>
+      <div class="wire-line"></div>
+      <div class="wire-end b">you · on admin</div>
+    </div>
+    <div class="wire-steps">
+      <div class="wire-step to-right"><span class="ep-a">stage — bytes, inert</span><span class="arrow"></span><span class="ep-b">nothing starts</span></div>
+      <div class="wire-step none"><span class="ep-a"></span><span class="arrow"></span><span class="ep-b">consent — the risk card for that exact digest</span></div>
+      <div class="wire-step to-left"><span class="ep-a">dispatch — one shot, receipt burned</span><span class="arrow"></span><span class="ep-b">a one-use receipt, admin-only</span></div>
+      <div class="wire-step none"><span class="ep-a">carried to the pinned peer</span><span class="arrow"></span><span class="ep-b"></span></div>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <span class="k">absent by default</span>
+      <h3>No variable, no socket</h3>
+      <p>With <code>AKSON_COORD_UID</code> unset, <code>coord.sock</code> is not created at
+      all — absent rather than guarded. An endpoint that was never mounted cannot be
+      probed. Set it, and admission is that one UID (or the daemon's own, for
+      diagnostics), checked before the request line is read.</p>
+    </div>
+    <div class="card">
+      <span class="k">deny by absence</span>
+      <h3><!--gen:coord-op-count-->eight<!--/gen:coord-op-count--> operations, and no others</h3>
+      <p>The registry is the whole surface: no approve or deny, no pairing, no peer import,
+      no processor or credential op, no configuration. A compromised driver can stage inert
+      bytes and burn receipts it was already given — the rest is not unauthorized, it is
+      unaddressable.</p>
+    </div>
+    <div class="card">
+      <span class="k">consent</span>
+      <h3>A human still decides</h3>
+      <p>Dispatch requires a one-shot consent receipt it cannot create. Minting one is an
+      admin operation that shows the operator the risk card for that exact staged digest
+      first — so the outward disclosure is never automatic, and never the driver's to
+      authorize.</p>
+    </div>
+    <div class="card">
+      <span class="k">one shot</span>
+      <h3>Spent, committed, carried</h3>
+      <p>The receipt's spend, the dispatch record, and the event commit in one
+      transaction — under a compare-and-set <em>and</em> a uniqueness constraint. A retry
+      under the same execution key re-carries byte-identical bytes and spends nothing; a
+      different key on a spent receipt is refused.</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <span class="tag">And what it is not</span>
+    <p>The dispatch envelope is <strong>unsigned, deliberately</strong>: its authenticity
+    is the pinned mutual-TLS channel's and its integrity is a digest chain, so a
+    coordination dispatch is <em>authenticated, not non-repudiable</em>. The receiver
+    verifies and acknowledges but does <strong>not retain</strong> the payload. And
+    admission is a Unix UID, not an attested process identity — the assurance profile here
+    is a <strong>developer</strong> one, with no UID separation in the default profile at
+    all.</p>
+  </div>
+
+  <p><a href="coordination/">The coordination surface in full — the registry, the envelope, the receiver's four checks, and every limit →</a></p>
+</section>
+
 <section id="checked">
   <h2>Checked by machines, from two sides</h2>
   <p class="deck">
@@ -319,12 +392,27 @@
       layer by layer, the processor broker, evidence, and the wire.</p>
       <span class="go">internals →</span>
     </a>
+    <a class="card" href="coordination/">
+      <span class="k">the third socket</span>
+      <h3>Coordination</h3>
+      <p>How a different local principal stages, consents, and dispatches: the registry,
+      the unsigned envelope, the receiver's four checks, the egress states — and the
+      limits, beside what each one bounds.</p>
+      <span class="go">coordination →</span>
+    </a>
     <a class="card" href="proofs/">
       <span class="k">assurance</span>
       <h3>Proofs</h3>
       <p>The TLA+ models and their invariants, the conformance harness that pins them to
       the code, the independent cross-checker, and the stated limits.</p>
       <span class="go">proofs →</span>
+    </a>
+    <a class="card" href="release/">
+      <span class="k">provenance</span>
+      <h3>Release</h3>
+      <p>Which version this site documents, what its prerelease marking actually enforces,
+      and how to verify an asset — including what each check does not establish.</p>
+      <span class="go">release →</span>
     </a>
   </div>
   <p>
@@ -339,10 +427,15 @@
 
 <footer>
   <p>
-    Akson is open source and pre-release, under active development. It speaks
+    This site documents akson
+    <strong>v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></strong>, a
+    <a href="release/">prerelease</a> — the payload media types are still in an
+    unregistered tree, which is what makes a stable tag refuse rather than a judgement
+    about maturity. Akson is open source and under active development. It speaks
     <a href="https://a2a-protocol.org/latest/specification/">A2A 1.0</a> — today the
     <code>SendMessage</code> surface — with a small, versioned extension surface for
-    signed task contracts, durable delivery, and portable evidence.
+    signed task contracts, durable delivery, portable evidence, and the
+    <a href="coordination/#envelope">coordination dispatch envelope</a>.
   </p>
   <p>
     <a href="https://github.com/zarbafian/akson">github.com/zarbafian/akson</a> ·

@@ -18,6 +18,27 @@ run()  { "$@" || fail=1; }
 step "format"
 run cargo fmt --all --check
 
+step "docs: the site's claims vs. the code and the specs"
+# docs/ hand-copies operation names, counts, envelope members, timeouts and the
+# version out of the sources. That is how a false claim survives a change: the
+# source moves, the prose does not, and nothing fails. This regenerates every
+# mechanically-derivable claim from crates/ and spec/ and compares, then resolves
+# every internal link and checks each page's tags balance.
+# Pure stdlib, so a missing interpreter is the only way it cannot run.
+if command -v python3 >/dev/null 2>&1; then
+  run python3 harness/check-docs.py
+else
+  skipped=$((skipped + 1))
+  cat <<'EOF'
+SKIPPED — python3 is not on this host, so the site cannot be held to the code.
+  The claims on docs/ are hand-written prose next to generated blocks; without
+  this check a source change that the pages did not follow ships silently.
+  It needs no packages at all — any python3 will do:
+
+    sudo apt install -y python3
+EOF
+fi
+
 if [ "${FAST:-0}" != "1" ]; then
   step "clippy (deny warnings)"
   run cargo clippy --workspace --all-targets -- -D warnings

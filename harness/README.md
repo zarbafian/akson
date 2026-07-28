@@ -12,15 +12,16 @@ stand up two endpoints with deterministic keys and no operator state.
 Two complementary paths:
 
 - **Local, on demand** — `./harness/run-checks.sh` runs the whole suite in this
-  order: format, clippy, the unit + integration tests (including the seccomp and
-  Landlock enforcement tests), the golden-vector cross-check, **both** interop
-  scenarios (pairing, then the coordination dispatch), the public-processor CA
-  path, and the live namespace-isolation checks. `FAST=1` skips clippy for a
-  quicker loop.
+  order: format, the docs drift check, clippy, the unit + integration tests
+  (including the seccomp and Landlock enforcement tests), the golden-vector
+  cross-check, **both** interop scenarios (pairing, then the coordination
+  dispatch), the public-processor CA path, and the live namespace-isolation
+  checks. `FAST=1` skips clippy for a quicker loop.
 
-  **Three of those sections can be skipped by the host, and the script says so
-  out loud rather than passing quietly.** The cross-check needs the third-party
-  `rfc8785` canonicalizer (the whole point is an *independent* rederivation, so
+  **Four of those sections can be skipped by the host, and the script says so
+  out loud rather than passing quietly.** The docs check needs `python3` (nothing
+  else — it is pure stdlib); the cross-check needs the third-party `rfc8785`
+  canonicalizer (the whole point is an *independent* rederivation, so
   substituting our own would defeat it); the CA path needs outbound TCP 443; and
   the namespace-isolation checks need **unprivileged user namespaces** — where a
   host restricts them (e.g. Ubuntu's `apparmor_restrict_unprivileged_userns`) the
@@ -93,6 +94,43 @@ crates into a runnable endpoint (keys and the store KEK are derived from a
 - `akson-harness serve --state <db> --seed <n> [--host H] [--advertise A] [--port P] --token-out <f> [--import <token-file> --label <l>] [--agent NAME]`
 - `akson-harness introduce --state <db> --seed <n> --token <token-file> [--agent NAME]`
 - `akson-harness coord-dispatch --state <db> --seed <n> --token <token-file> [--agent NAME] [--label <l>] [--payload <text>]` — introduce, then drive the whole ADR-0016 coordination chain over **real control sockets**
+
+## Docs drift check
+
+`harness/check-docs.py` holds the published site (`docs/`) to the code and the
+specs. The pages state operation names, counts, envelope members, timeouts and a
+version — all hand-copied out of sources that move. That is how a false claim
+survives a change: the source moves, the prose does not, and nothing fails.
+
+Every mechanically-derivable claim lives inside a marked region of the HTML, so
+it can be regenerated and compared rather than eyeballed:
+
+```html
+<!--gen:coord-op-count-->eight<!--/gen:coord-op-count-->
+```
+
+```sh
+python3 harness/check-docs.py           # check; non-zero and a named block on drift
+python3 harness/check-docs.py --write   # regenerate every block from the sources
+```
+
+- **What you write** is ordinary prose, plus a `<!--gen:NAME-->…<!--/gen:NAME-->`
+  wherever a fact belongs to a source rather than to you.
+- **The plumbing** is the script: it parses `ControlRequest` and
+  `ControlOp::required_surface` for the registry, the envelope schema and the
+  `spec/vectors/coordination/` goldens for the wire, `a2a_client.rs` for the
+  per-stage carriage timeouts, `akson-store` for the egress states, and
+  `Cargo.toml` for the version — then cross-checks code against vectors, resolves
+  every internal link and fragment, and parses each page for balanced tags.
+
+The one-line purposes beside each operation and envelope member are editorial, so
+they live in the script keyed by the name the source produces. A **new** op or
+member therefore fails the check with "no description for it" rather than being
+silently omitted from the site: the registry cannot grow without the docs being
+told.
+
+Pure stdlib — no packages, so `python3` is the only requirement, and its absence
+is a loud `SKIPPED` rather than a quiet pass.
 
 ## Scenarios
 

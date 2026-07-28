@@ -64,7 +64,9 @@
     <a href="../">Overview</a>
     <a href="../guide/">Guide</a>
     <a href="./" class="here" aria-current="page">Internals</a>
+    <a href="../coordination/">Coordination</a>
     <a href="../proofs/">Proofs</a>
+    <a href="../release/">Release</a>
     <a href="https://github.com/zarbafian/akson">GitHub</a>
     <div class="grp">The shape</div>
     <a href="#map">The system, drawn</a>
@@ -141,7 +143,7 @@
     <polyline class="ln" points="590,66 590,88 420,88 420,154"/>
     <polygon class="ar" points="420,160 415.5,151 424.5,151"/>
     <text class="mut" x="600" y="84">unix socket</text>
-    <text class="mut" x="600" y="98">same UID only</text>
+    <text class="mut" x="600" y="98">UID admitted per socket</text>
 
     <!-- lanes -->
     <text class="mut" x="60" y="151">receive</text>
@@ -377,13 +379,15 @@
         <code>ambiguous</code>, not to a second execution.</td>
   </tr>
   <tr>
-    <td>Two control sockets, one broker channel</td>
+    <td>Three control sockets, one broker channel</td>
     <td>The <strong>admin</strong> socket carries operator authority; the
-        <strong>worker</strong> socket carries only "submit a result". Brokered model
-        calls travel a third, even narrower channel — the pre-opened socketpair the
-        confined worker inherits as a file descriptor. A compromised worker holding
-        both still cannot approve, send, or pair — those ops are not on any surface it
-        can reach.</td>
+        <strong>worker</strong> socket carries only "submit a result"; the
+        <strong>coordination</strong> socket carries a different local principal's
+        <a href="../coordination/">staging and dispatch</a>, and is absent unless
+        configured. Brokered model calls travel a narrower channel still — the pre-opened
+        socketpair the confined worker inherits as a file descriptor. A compromised worker
+        holding both still cannot approve, send, or pair; neither can a compromised
+        coordination driver — those ops are not on any surface either can reach.</td>
   </tr>
   <tr>
     <td>Explicit outward grants</td>
@@ -651,19 +655,23 @@ reported to the operator, and never silently retried.</code></pre>
           send, configure processors, and mint a coordination consent receipt.</td></tr>
   <tr><td><code>worker.sock</code></td>
       <td>the daemon's own UID</td>
-      <td>The narrow surface the worker uses to submit its result. Nothing else — a
-          compromised worker cannot approve a contract or send a task, because those
-          ops do not exist on its socket. (Brokered processor calls do not travel here
-          at all: the confined worker uses the pre-opened broker fd it inherited.)</td></tr>
+      <td>The narrow surface the worker uses:
+          <!--gen:worker-op-count-->two<!--/gen:worker-op-count--> ops,
+          <!--gen:worker-op-names--><code>submit_result</code> and <code>request_processor_call</code><!--/gen:worker-op-names-->.
+          Nothing else — a compromised worker cannot approve a contract or send a task,
+          because those ops do not exist on its socket. (The brokered call's <em>bytes</em>
+          do not travel here at all: the confined worker uses the pre-opened broker fd it
+          inherited.)</td></tr>
   <tr><td><code>coord.sock</code></td>
       <td>the UID named by <code>AKSON_COORD_UID</code>, plus the daemon's own for
           diagnostics</td>
-      <td>The coordination surface (ADR-0016): a <em>different</em> local principal
-          stages outbound payloads, spends a consent an operator already granted, and
-          reads coordination state. Eight ops exist here and everything else answers
-          <code>forbidden-surface</code> — no approve, no pairing, no credential op.
-          Consent is not on it. <strong>With <code>AKSON_COORD_UID</code> unset the
-          socket is not created at all.</strong></td></tr>
+      <td>The <a href="../coordination/">coordination surface</a> (ADR-0016): a
+          <em>different</em> local principal stages outbound payloads, spends a consent an
+          operator already granted, and reads coordination state.
+          <!--gen:coord-op-count-->eight<!--/gen:coord-op-count--> ops exist here and
+          everything else answers <code>forbidden-surface</code> — no approve, no pairing,
+          no credential op. Consent is not on it. <strong>With
+          <code>AKSON_COORD_UID</code> unset the socket is not created at all.</strong></td></tr>
 </table>
 </div>
 
@@ -672,12 +680,25 @@ reported to the operator, and never silently retried.</code></pre>
   surfaces' ops (so an operator can diagnose them without a second account), while
   worker and coord dominate nothing — including each other. And admission is a
   <em>UID</em>, never an attested process identity: <code>SO_PEERCRED</code> says which
-  user connected, not which program.
+  user connected, not which program. That is the developer assurance profile, and the
+  default profile has no UID separation in it at all — separate identities per role are an
+  opt-in fleet arrangement.
+</p>
+
+<p>
+  Because a different principal sits on the coordination socket, its request line is
+  bounded at 1 MiB; admin and worker are the daemon's own UID and stay unbounded.
+  Connections on each socket are served concurrently, up to 16 at a time — beyond that the
+  next is served on the accept thread, so the socket serialises rather than refusing
+  anyone. Within the ceiling, an op that blocks on the network — <code>dispatch</code>
+  carries bytes to a pinned peer — delays only itself rather than the whole surface.
 </p>
 
 <p>
   The framing, problem shapes, and operation tables:
   <a href="https://github.com/zarbafian/akson/blob/main/spec/control-protocol.md">spec/control-protocol.md</a>.
+  The coordination surface in full — the registry, the envelope, the receiver's checks,
+  and its limits — is <a href="../coordination/">its own page</a>.
 </p>
 
 <h2 id="crates">The crate map</h2>
@@ -721,7 +742,7 @@ reported to the operator, and never silently retried.</code></pre>
 
 <nav class="pagenav" aria-label="Document sequence">
   <a href="../guide/"><span class="k">previous</span>Guide</a>
-  <a class="next" href="../proofs/"><span class="k">next</span>Proofs</a>
+  <a class="next" href="../coordination/"><span class="k">next</span>Coordination</a>
 </nav>
 
 <footer>

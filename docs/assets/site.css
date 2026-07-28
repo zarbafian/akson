@@ -345,7 +345,8 @@ code {
 }
 .vignette .pa { color: var(--ep-a); font-weight: 700; }
 .vignette .pb { color: var(--ep-b); font-weight: 700; }
-.vignette .hi { color: var(--code-fg); }
+/* The highlight line also marks the risk-card sentence in a .cmd transcript. */
+.vignette .hi, .cmd .hi { color: var(--code-fg); font-weight: 700; }
 
 /* ---------- the direction diagram ---------- */
 

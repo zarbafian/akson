@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The coordination surface — Akson</title>
+<meta name="description" content="Akson's third control socket: a different local principal stages outbound payloads, spends a consent a human minted, and dispatches once — with the envelope, the receiver's checks, and the limits stated where they apply.">
+<link rel="canonical" href="https://akson.cc/coordination/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="The coordination surface — Akson">
+<meta property="og:description" content="A third socket with its own Unix identity, absent by default: eight ops, admin-only consent, and a one-shot dispatch that burns it.">
+<meta property="og:url" content="https://akson.cc/coordination/">
+<meta property="og:site_name" content="Akson">
+<meta property="og:image" content="https://akson.cc/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Akson — private, reliable connections between agents">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "headline": "The Akson coordination surface — a third socket for a different principal",
+      "description": "The coordination control socket: absent by default, deny-by-absence registry, inert staging, admin-only consent, one-shot dispatch, and the unsigned dispatch envelope.",
+      "url": "https://akson.cc/coordination/",
+      "dateModified": "2026-07-28",
+      "isPartOf": { "@id": "https://akson.cc/#website" }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Akson", "item": "https://akson.cc/" },
+        { "@type": "ListItem", "position": 2, "name": "Coordination", "item": "https://akson.cc/coordination/" }
+      ]
+    }
+  ]
+}
+</script>
+<script>
+/* Apply a saved theme before first paint; site.js wires the toggle. */
+(function (root) {
+  try {
+    var saved = localStorage.getItem("akson-theme");
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+})(document.documentElement);
+</script>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<div class="shell">
+<aside class="rail">
+  <div class="rail-head">
+    <a class="rail-mark" href="../">aks<span class="a">o</span><span class="b">n</span></a>
+    <button class="themer" id="themer" type="button" aria-label="Switch colour theme">theme</button>
+  </div>
+  <div class="rail-sub">coordination</div>
+  <nav id="nav">
+    <div class="grp">Site</div>
+    <a href="../">Overview</a>
+    <a href="../guide/">Guide</a>
+    <a href="../internals/">Internals</a>
+    <a href="./" class="here" aria-current="page">Coordination</a>
+    <a href="../proofs/">Proofs</a>
+    <a href="../release/">Release</a>
+    <a href="https://github.com/zarbafian/akson">GitHub</a>
+    <div class="grp">The surface</div>
+    <a href="#socket">A third socket</a>
+    <a href="#registry">What is on it</a>
+    <a href="#consent">Consent stays on admin</a>
+    <div class="grp">Sending</div>
+    <a href="#stage">Staging is inert</a>
+    <a href="#dispatch">One-shot dispatch</a>
+    <a href="#envelope">The envelope</a>
+    <a href="#receiver">The receiver's checks</a>
+    <a href="#egress">Where the bytes are</a>
+    <div class="grp">Honestly</div>
+    <a href="#limits">What this is not</a>
+  </nav>
+</aside>
+
+<main id="top">
+
+<header class="hero">
+  <p class="eyebrow">Coordination · ADR-0016</p>
+  <h1>A third socket, for a different principal.</h1>
+  <p class="lede">
+    A sibling system needs to stage outbound payloads, dispatch them once a human has
+    consented, and read coordination state — without ever holding akson's admin
+    authority. That is a separate Unix identity on a separate socket with its own small
+    registry of operations, and it does not exist on your machine unless you create it.
+  </p>
+  <div class="pills">
+    <span class="pill">akson_byom_exchange_v1</span>
+    <span class="pill"><!--gen:coord-op-count-->eight<!--/gen:coord-op-count--> ops, deny-by-absence</span>
+    <span class="pill">absent by default</span>
+    <span class="pill">consent is admin-only</span>
+    <span class="pill">v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></span>
+  </div>
+</header>
+
+<div class="note warn">
+  <span class="tag">Read this first</span>
+  <p>
+    The assurance this surface rests on is a <strong>developer</strong> one. Admission is
+    a Unix UID via <code>SO_PEERCRED</code> — which <em>user</em> connected, never which
+    program — so there is no attested process identity and no asymmetric endpoint
+    identity here; anything running as the configured UID reaches the surface. The
+    default profile has <strong>no UID separation at all</strong>: it runs everything
+    under one user, and this socket is simply absent. Separate identities per role are an
+    opt-in fleet profile in
+    <a href="https://github.com/zarbafian/akson/tree/main/deploy">deploy/</a>, not what a
+    laptop gets. Each of these limits is repeated below where the capability it bounds is
+    described.
+  </p>
+</div>
+
+<p>
+  This page describes the surface the way the rest of this site describes akson: what the
+  running code does, with the residuals named next to the thing they qualify. The
+  decision and its threat cases are
+  <a href="https://github.com/zarbafian/akson/blob/main/spec/adr/0016-coordination-surface.md">ADR-0016</a>;
+  the op-by-op reference — every argument, every reply field, every refusal — is
+  <a href="https://github.com/zarbafian/akson/blob/main/spec/control-protocol.md">spec/control-protocol.md</a>,
+  which is normative where this page is descriptive.
+</p>
+
+<h2 id="socket">A third socket, with its own Unix identity</h2>
+<p class="deck">
+  Akson had two control sockets, both admitting only the daemon's own UID. A different
+  local principal needs a third — and it is created only when you name the identity that
+  may use it.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Socket</th><th>Admits</th><th>Mode</th><th>For</th></tr>
+  <tr>
+    <td><code>admin.sock</code></td>
+    <td>the daemon's own UID</td>
+    <td><code>0600</code></td>
+    <td>Authority-bearing operator ops — pairing, approval, run, deliver, send,
+        configuration, and minting a coordination consent receipt.</td>
+  </tr>
+  <tr>
+    <td><code>worker.sock</code></td>
+    <td>the daemon's own UID</td>
+    <td><code>0600</code></td>
+    <td>The narrow surface the sandboxed worker uses:
+        <!--gen:worker-op-count-->two<!--/gen:worker-op-count--> ops,
+        <!--gen:worker-op-names--><code>submit_result</code> and <code>request_processor_call</code><!--/gen:worker-op-names-->.</td>
+  </tr>
+  <tr>
+    <td><code>coord.sock</code></td>
+    <td>the UID named by <code>AKSON_COORD_UID</code>, <strong>or</strong> the daemon's
+        own (so an operator can diagnose the surface without a second account)</td>
+    <td><code>0660</code></td>
+    <td>The coordination surface: a <em>different</em> local principal stages outbound
+        payloads, spends a consent an operator already granted, and reads coordination
+        state.</td>
+  </tr>
+</table>
+</div>
+
+<figure class="fig" tabindex="0">
+  <svg viewBox="0 0 760 300" role="img" aria-label="Three Unix sockets on one daemon. The admin and worker sockets admit only the daemon's own UID. The coordination socket admits the configured UID or the daemon's own, and is not created at all when AKSON_COORD_UID is unset. Admin dominates both narrow surfaces; worker and coordination dominate nothing, including each other.">
+    <rect class="bx" x="250" y="30" width="260" height="240" rx="4"/>
+    <text class="lbl b700" x="268" y="54">aksond</text>
+    <text class="mut" x="268" y="72">one process, one daemon UID</text>
+
+    <rect class="bx2" x="268" y="92" width="224" height="42" rx="3"/>
+    <text class="lbl" x="284" y="110">admin.sock</text>
+    <text class="mut" x="284" y="126"><!--gen:admin-op-count-->26<!--/gen:admin-op-count--> ops · dominates both</text>
+
+    <rect class="bx2" x="268" y="150" width="224" height="42" rx="3"/>
+    <text class="lbl" x="284" y="168">worker.sock</text>
+    <text class="mut" x="284" y="184">2 ops · dominates nothing</text>
+
+    <rect class="bx2 ba" x="268" y="208" width="224" height="42" rx="3"/>
+    <text class="lbl" x="284" y="226">coord.sock</text>
+    <text class="mut" x="284" y="242">8 ops · dominates nothing</text>
+
+    <rect class="bx2" x="30" y="92" width="180" height="42" rx="3"/>
+    <text class="lbl" x="46" y="110">the operator</text>
+    <text class="mut" x="46" y="126">uid = the daemon's</text>
+    <line class="ln" x1="210" y1="113" x2="262" y2="113"/>
+    <polygon class="ar" points="268,113 259,108.5 259,117.5"/>
+
+    <rect class="bx2" x="30" y="150" width="180" height="42" rx="3"/>
+    <text class="lbl" x="46" y="168">the confined worker</text>
+    <text class="mut" x="46" y="184">uid = the daemon's</text>
+    <line class="ln" x1="210" y1="171" x2="262" y2="171"/>
+    <polygon class="ar" points="268,171 259,166.5 259,175.5"/>
+
+    <rect class="bx2 ba" x="30" y="208" width="180" height="42" rx="3"/>
+    <text class="lbl" x="46" y="226">the driver</text>
+    <text class="mut" x="46" y="242">uid = AKSON_COORD_UID</text>
+    <line class="ln" x1="210" y1="229" x2="262" y2="229"/>
+    <polygon class="ar" points="268,229 259,224.5 259,233.5"/>
+
+    <line class="ln dash" x1="510" y1="113" x2="560" y2="113"/>
+    <polygon class="ar" points="566,113 557,108.5 557,117.5"/>
+    <text class="mut" x="574" y="108">admin may invoke</text>
+    <text class="mut" x="574" y="122">a coord op — diagnostics</text>
+
+    <line class="ln dash" x1="510" y1="229" x2="552" y2="229"/>
+    <line class="wall" x1="556" y1="216" x2="556" y2="242"/>
+    <text class="mut" x="566" y="224">a coord connection reaches</text>
+    <text class="mut" x="566" y="238">no admin op, ever</text>
+
+    <text class="mut" x="30" y="286">with AKSON_COORD_UID unset, the third box does not exist — nothing to connect to, nothing to probe</text>
+  </svg>
+  <figcaption class="fig-cap">Dominance is deliberately asymmetric, and stated case by case in
+  <code>Surface::satisfies</code> rather than inferred. Admin dominates both narrow surfaces;
+  worker and coordination dominate nothing — <em>including each other</em>.</figcaption>
+</figure>
+
+<p>
+  <strong>Absent rather than guarded.</strong> With <code>AKSON_COORD_UID</code> unset,
+  <code>coord.sock</code> is not created at all — the same posture that removed the
+  pairing bootstrap listener. An endpoint that was never mounted cannot be probed,
+  fingerprinted, or misconfigured open. A value that is <em>not</em> a numeric UID is
+  fatal at startup, so a typo cannot quietly delete the surface instead of creating it.
+</p>
+<p>
+  The <code>0660</code> mode is <em>not</em> the boundary — <code>SO_PEERCRED</code> is.
+  What the mode and the runtime directory decide is only whether a separate identity can
+  <em>reach</em> the socket file, and that is a deliberate act with two halves. A plain
+  single-user run keeps its runtime directory at <code>0700</code>, where no other identity
+  can traverse to the socket in the first place. The fleet profile opens exactly that path
+  and no more: <code>RuntimeDirectoryMode=0710</code> on the daemon unit, plus
+  <code>SupplementaryGroups=akson</code> on the driver's, so the driver's identity may
+  traverse the directory. <strong>Traversal is not authorization.</strong> Having reached
+  the socket, an unadmitted UID is refused before the request line is even read, with a
+  generic <code>unauthorized</code> problem carrying no detail — so a UID mismatch and an
+  unreadable credential are indistinguishable to the caller.
+</p>
+<p>
+  Because a different principal is on the other end, the coordination surface bounds its
+  request line at <strong>1 MiB</strong> (<code>413 request-too-large</code>); admin and
+  worker are the daemon's own UID and stay unbounded. A staged payload is separately
+  capped at <strong>512 KiB</strong> (<code>413 payload-too-large</code>). Connections on
+  each socket are served concurrently, up to 16 at a time — and beyond that ceiling the
+  next connection is served on the accept thread, so the socket <em>serialises</em> rather
+  than refusing anyone. Within the ceiling, one slow <code>dispatch</code> carriage delays
+  only itself; past it, a backlog of slow carriages does hold up the accept loop, which is
+  the bound worth knowing rather than the one worth omitting.
+</p>
+
+<div class="note warn">
+  <span class="tag">The limit here</span>
+  <p>
+    <code>SO_PEERCRED</code> authenticates a <em>UID</em>, not an attested process
+    identity and not a key: anything running as that UID reaches this surface. This is the
+    developer assurance profile, and the default profile has no UID separation in it at
+    all. Separately, <strong>no hardening score is claimed</strong> for the service units
+    that would give you that separation: <code>systemd-analyze security</code> only
+    inspects units systemd has loaded, so it needs them installed as root — it has never
+    produced a number for <code>akson-daemon.service</code> or
+    <code>akson-coord.service</code>, and none is quoted anywhere. What has been verified
+    is narrower and should be read as exactly that: both units parse under
+    <code>systemd-analyze verify</code>, and no sandbox-hostile directive is active in the
+    daemon unit.
+  </p>
+</div>
+
+<h2 id="registry">What is on it — a registry that denies by absence</h2>
+<p class="deck">
+  Not "an op the driver is not authorized for". An op that does not exist on this surface
+  at all, and therefore cannot be reached, mistyped into, or gradually widened.
+</p>
+
+<p>
+  These <!--gen:coord-op-count-->eight<!--/gen:coord-op-count--> operations are the whole
+  surface:
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th><code>op</code></th><th>What it does</th></tr>
+<!--gen:coord-op-rows-->
+  <tr><td><code>coord_whoami</code></td><td>This endpoint's identity and the protocol/feature versions — the driver's own handshake. Narrower than admin's <code>who_am_i</code> on purpose: no <code>data_dir</code>, no <code>receive_addr</code>.</td></tr>
+  <tr><td><code>peer_show</code></td><td>One named peer's verified identity tuple and card claims. It answers about the peer asked for and never enumerates; an unknown or malformed label gets the same <code>404 unknown-peer</code>.</td></tr>
+  <tr><td><code>stage</code></td><td>Inert, idempotent staging of outbound bytes. Nothing starts, no authority is minted, no socket opens. The same bytes return the same reference and write no second record.</td></tr>
+  <tr><td><code>stage_show</code></td><td>A staged payload's status and digests, plus its consent once an operator has minted one.</td></tr>
+  <tr><td><code>dispatch</code></td><td>The one op with an effect. One-shot: it spends a consent receipt it cannot create, commits the dispatch, and carries the bytes to the pinned recipient.</td></tr>
+  <tr><td><code>task_status</code></td><td>Whether a dispatch this surface committed was acknowledged. Scoped to those dispatches — an inbound task in the operator's inbox is the same <code>404 unknown-task</code>.</td></tr>
+  <tr><td><code>events_read</code></td><td>The durable cursored coordination feed. Cursors are opaque: one that did not come from a reply is refused <code>400 bad-cursor</code>.</td></tr>
+  <tr><td><code>capability_evidence</code></td><td>A DSSE-signed in-toto Statement of what this endpoint can federate with a peer, signed with the same <code>evidence</code> key result evidence uses.</td></tr>
+<!--/gen:coord-op-rows-->
+</table>
+</div>
+
+<p>
+  Everything else returns <code>403 forbidden-surface</code>, with a detail that names only
+  the surface and never which ops exist elsewhere. Worth naming explicitly, because what is
+  <em>absent</em> is the actual security property: there is no approve or deny of an inbound
+  task, no pairing, no peer import, no processor or credential operation, no
+  <code>task send</code> / <code>fulfill</code> / <code>deliver</code>, and no
+  configuration. A compromised driver can stage inert bytes and burn consent receipts it
+  was already given. It cannot mint consent, reach a credential, or touch inbound authority
+  — those operations are not merely unauthorized here, they are unaddressable.
+</p>
+<p>
+  For contrast, the admin socket carries
+  <!--gen:admin-op-count-->26<!--/gen:admin-op-count--> operations. A coordination
+  connection reaches none of them, and reaches neither of the worker's:
+  <code>Coord</code> dominates nothing.
+</p>
+<p>
+  A driver does not have to guess which of these it is talking to.
+  <code>coord_whoami</code> reports the registry as its <code>features</code> list —
+  <!--gen:coord-op-names--><code>coord_whoami</code>, <code>peer_show</code>, <code>stage</code>, <code>stage_show</code>, <code>dispatch</code>, <code>task_status</code>, <code>events_read</code> and <code>capability_evidence</code><!--/gen:coord-op-names-->
+  — beside <code>unimplemented</code> and <code>partial</code>, which are both
+  <strong>empty</strong> now that <code>dispatch</code> has its outbound carrier. Both
+  fields stay present rather than disappearing when they empty: a driver parses them, and
+  "the list is empty" is an answer while "the field is gone" is a parse change.
+</p>
+
+<h2 id="consent">Consent stays on admin</h2>
+<p class="deck">
+  <code>dispatch</code> requires a receipt it cannot create. Minting one is an operator
+  act on the admin socket, after the operator has read the risk card for that exact
+  staged digest.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">the operator, on admin</span><button class="copy">Copy</button></div>
+<pre><code><!--gen:consent-transcript-->$ akson stage show stage-2deacff5c7b26955f15c16c8e05cf978
+stage-2deacff5c7b26955f15c16c8e05cf978
+  status:     staged
+  task type:  https://byom.example/task/exchange/v1
+  recipient:  partner
+  bytes:      16
+  payload:    sha256:2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb
+  staged as:  2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896
+  consent:    none — `akson stage consent stage-2deacff5c7b26955f15c16c8e05cf978`
+
+$ akson stage consent stage-2deacff5c7b26955f15c16c8e05cf978
+<span class="hi">You are about to allow ONE outbound disclosure to your peer "partner": 16 bytes of https://byom.example/task/exchange/v1.</span>
+
+What leaves this machine
+  task type:   https://byom.example/task/exchange/v1
+  bytes:       16
+  payload:     sha256:2c7777f9dd4529ce821d7e5450aaf7972642011fecdabbecaf49b86dacc269eb
+  staged as:   2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896
+Who receives it
+  recipient label: partner
+  root thumbprint: fpekQ8923WNzVDB-gyv-ZRFyLFGPbHSJcsqY0sTKRcQ
+  relationship: imported, not yet introduced
+  endpoint hint: 127.0.0.1:18444
+What this consent allows
+  exactly one dispatch of the staged digest above, once (max_uses 1)
+  nothing else: it grants no model call, no credential, and no inbound authority
+  akson does not interpret these bytes — it discloses them as staged
+Who staged it
+  the coordination surface (akson_byom_exchange_v1), at unix time 1753574400
+  staging was inert: nothing has left this machine yet
+
+consent receipt: consent-6f1c2d5b9a084e37b1c0d2e4f5a6b7c8
+  binds:      2deacff5c7b26955f15c16c8e05cf97816bd3d105e5e3dd80db9cf91a0fc6896
+  uses:       0/1<!--/gen:consent-transcript--></code></pre>
+</div>
+
+<p class="fig-cap">
+  That session is not a mock-up: it is rendered from the golden vectors
+  <code>coordination/stage-show-staged</code> and <code>coordination/stage-consent</code>,
+  in the field order <code>akson-cli</code> prints, by the same script that checks this
+  site. Be precise about what that pins, though. The vectors are asserted against the
+  running daemon for the reply's <em>key set</em>, the risk card's opening
+  <em>sentence</em>, and its <em>section headings</em> — so those cannot drift here
+  unnoticed. The card's individual lines are reproduced from the vector but are not
+  separately asserted against the daemon, so they are accurate rather than enforced.
+</p>
+
+<p>
+  The card and the receipt come from a single call over the row the receipt is minted
+  against, so what the operator read and what the receipt authorizes cannot drift apart.
+  A second consent is refused while an unconsumed receipt exists
+  (<code>409 already-consented</code>), and refused permanently once the dispatch ledger
+  holds a dispatch for that staging (<code>409 already-dispatched</code>) — a second
+  consent could only authorize a second disclosure of the same digest. The card's closing
+  claim about what has already left this machine is read off that same ledger rather than
+  asserted, so it can never say "nothing has left yet" over bytes that have.
+</p>
+
+<h2 id="stage" class="chapter-start">Staging is inert</h2>
+<p class="deck">
+  <code>stage</code> writes bytes and returns a reference. It starts no model, mints no
+  authority, touches no workspace, invokes no tool, and opens no socket — "arrival is not
+  execution", applied to the outbound direction.
+</p>
+
+<p>
+  The reference is a function of the content, so a client cannot choose it and two stagings
+  of the same content cannot disagree about it. The <strong>staged digest</strong> is
+  SHA-256 over the RFC 8785 canonical JSON of exactly three fields — the payload by its own
+  digest, the recipient, and the task type:
+</p>
+
+<div class="file">
+  <div class="cmd-head"><span class="path">the staged-digest preimage — spec/vectors/coordination/dispatch-envelope.json</span></div>
+<pre><code><!--gen:staged-digest-example-->the three fields, canonicalized — RFC 8785 emits one line, no whitespace
+  {"payload_sha256":"cb039a35e2bcb613d0feca64b1ec06e10bae0bf83be9d9f539c3455ee69dc325","performer":"partner","task_type":"https://byom.example/task/exchange/v1"}
+
+sha256 of those bytes   253d90e8a70eb7462395571eb37d0c486de8ee77ce1b0434274bce8e9a3c62e8   the staged digest — what the consent binds
+its first 128 bits      stage-253d90e8a70eb7462395571eb37d0c48                             the stage_ref the driver is handed<!--/gen:staged-digest-example--></code></pre>
+</div>
+
+<p>
+  So "the same bytes" is a precise claim: same payload, same recipient, same type ⇒ same
+  reference, <code>already_staged: true</code>, and no second record. The preimage names
+  the recipient <code>performer</code>; the same value travels the wire as
+  <code>recipient_label</code>, which is why the receiver can re-derive this digest from
+  the envelope alone.
+</p>
+<p>
+  What may be staged is decided by the dispatch envelope's <em>own</em> schema rather than
+  by a rule written out a second time. "Acceptable to stage" and "acceptable to send" have
+  one definition and cannot drift into a gap, so no consent receipt can ever be minted
+  against bytes that turn out to be unsendable.
+</p>
+
+<h2 id="dispatch">One-shot dispatch</h2>
+<p class="deck">
+  The only operation on this surface with an effect. Read its three arguments as three
+  separate jobs.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Argument</th><th>Its job</th></tr>
+  <tr><td><code>stage_ref</code></td><td>Which bytes.</td></tr>
+  <tr><td><code>consent_receipt</code></td><td>The operator's authority for exactly those bytes. Spendable once.</td></tr>
+  <tr><td><code>execution_key</code></td><td>Names <strong>one attempt</strong>, which is what makes a retry distinguishable from a replay.</td></tr>
+</table>
+</div>
+
+<p>
+  The spend and its record commit in one store transaction, guarded by a
+  <code>uses &lt; max_uses</code> compare-and-set <em>and</em> a <code>UNIQUE</code>
+  constraint on the receipt in the dispatch ledger — so a second dispatch cannot commit
+  even if that compare-and-set were wrong, and the refusal survives a daemon restart.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>What the driver does</th><th>What it gets</th></tr>
+  <tr><td>Re-sends the <strong>same</strong> <code>execution_key</code></td>
+      <td>A <em>retry</em>: the same <code>dispatch_receipt</code> with
+          <code>replayed: true</code>, and nothing spent again. Carriage is re-attempted
+          only if the row is not already <code>sent</code> — a terminal row has nothing
+          left to carry, so the retry just returns what happened.</td></tr>
+  <tr><td>Sends a <strong>different</strong> key against a spent receipt</td>
+      <td>A <em>replay</em>: <code>409 consent-spent</code>.</td></tr>
+  <tr><td>Dispatches with no live receipt for that staging</td>
+      <td><code>409 consent-required</code>.</td></tr>
+  <tr><td>Reuses a key already committed to other arguments</td>
+      <td><code>409 execution-key-conflict</code>.</td></tr>
+</table>
+</div>
+
+<p>
+  <strong>Everything that decides "this cannot leave" runs before the spend.</strong> A
+  staging whose recipient is unnamed, un-introduced, suspended, or has no usable
+  <code>https</code> endpoint is refused <code>409 unroutable-recipient</code>; one whose
+  members cannot form a conforming envelope is refused <code>500 bad-envelope</code>. Both
+  leave the consent receipt live. Burning a one-shot consent on a disclosure that provably
+  cannot leave is the worst failure available to this surface, so it is closed by ordering
+  rather than by care.
+</p>
+
+<h2 id="envelope" class="chapter-start">The envelope: a coordination dispatch is not a contract</h2>
+<p class="deck">
+  The risk card the operator read named a payload, a recipient, and a task type. Akson's
+  closed contract schema cannot carry that without contract terms the operator never saw —
+  so the contract schema is not reused, and no terms are invented.
+</p>
+
+<p>
+  The bytes ride a dedicated object,
+  <a href="https://github.com/zarbafian/akson/blob/main/spec/ext/coord-dispatch.v1.schema.json"><code>spec/ext/coord-dispatch.v1.schema.json</code></a>,
+  carried as an A2A Part of media type
+  <code><!--gen:envelope-media-type-->application/vnd.akson-dev.coord-dispatch.v1+json<!--/gen:envelope-media-type--></code>
+  beside the raw payload Part (<code>application/octet-stream</code>), over the same pinned
+  mutual-TLS <code>SendMessage</code> POST every other peer-to-peer byte in akson already
+  uses. Its members are
+  <!--gen:envelope-members--><code>schema_version</code>, <code>protocol</code>, <code>task_type</code>, <code>recipient_label</code>, <code>recipient_root</code>, <code>sender_root</code>, <code>payload_sha256</code>, <code>staged_digest</code> and <code>consent_receipt</code><!--/gen:envelope-members-->
+  — <!--gen:envelope-member-count-->nine<!--/gen:envelope-member-count--> of them, all
+  required, and every one either something the operator consented to or something the
+  receiver needs in order to verify that fact:
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Member</th><th>Why it is there</th></tr>
+<!--gen:envelope-member-rows-->
+  <tr><td><code>schema_version</code></td><td>So a receiver refuses rather than guesses.</td></tr>
+  <tr><td><code>protocol</code></td><td>The coordination protocol this envelope belongs to; a receiver that does not speak it refuses.</td></tr>
+  <tr><td><code>task_type</code></td><td>Consented to — the byom-owned type, carried uninterpreted.</td></tr>
+  <tr><td><code>recipient_label</code></td><td>Consented to, <strong>and</strong> one of the three preimages of the staged digest: without it the receiver could check the bytes but not the digest the consent binds.</td></tr>
+  <tr><td><code>recipient_root</code></td><td>So a misrouted disclosure is refused even over a good channel.</td></tr>
+  <tr><td><code>sender_root</code></td><td>So a claimed sender can never differ from the pinned one.</td></tr>
+  <tr><td><code>payload_sha256</code></td><td>The payload, by the digest the receiver recomputes over what it actually read.</td></tr>
+  <tr><td><code>staged_digest</code></td><td>The exact value the consent receipt binds.</td></tr>
+  <tr><td><code>consent_receipt</code></td><td>The identity of the authorization — the id only, never the sealed body, and it confers nothing on the receiver.</td></tr>
+<!--/gen:envelope-member-rows-->
+</table>
+</div>
+
+<p>
+  The protocol member is the constant <code>akson_byom_exchange_v1</code>, and
+  <code>additionalProperties</code> is <strong>false</strong> — a contract term cannot be
+  added later without changing the ADR and the golden vectors. The vector proves that by
+  presenting the exact terms a contract would have smuggled in and requiring the refusal:
+  <!--gen:envelope-forbidden--><code>contract_id</code>, <code>deadline</code>, <code>deliverables</code>, <code>limits</code>, <code>objective</code> and <code>requested_capabilities</code><!--/gen:envelope-forbidden-->.
+</p>
+
+<div class="note warn">
+  <span class="tag">The limit here</span>
+  <p>
+    <strong>The envelope is not signed, and that is deliberate.</strong> Its authenticity
+    is the channel's — mutual TLS pinned to the peer record on both sides — and its
+    integrity is the digest chain above. Signing it would need a purpose key, and there is
+    no key purpose for a coordination dispatch; borrowing the
+    <code>contract-proposal</code> key to sign a non-contract is the one-key-one-role
+    violation this codebase refuses everywhere else. The residual is named rather than
+    hidden: <strong>a coordination dispatch is authenticated, not non-repudiable</strong>
+    — a recipient cannot prove to a third party who sent it. A future decision that needs
+    that adds the purpose; nothing here forecloses it.
+  </p>
+  <p>
+    The media type above is in the unregistered <code>vnd.akson-dev</code> tree. That is a
+    development placeholder, and it is exactly why the release tooling
+    <a href="../release/">refuses a stable tag</a> and this is a prerelease: the wire types
+    may still change.
+  </p>
+</div>
+
+<h2 id="receiver">The receiver checks four things</h2>
+<p class="deck">
+  And answers one generic <code>422 coordination-refused</code> otherwise. The reason is
+  recorded locally — an operator has to be able to tell a tampered disclosure from a lost
+  one — and never returned.
+</p>
+
+<p>
+  Before any of the four, the envelope is validated against its schema, so a malformed
+  object is refused without a single member being interpreted. The four checks are what
+  the specification enumerates, and they are what runs once the object is known to be an
+  envelope at all:
+</p>
+
+<ol>
+  <li><code>sender_root</code> equals the root the mutual-TLS handshake actually
+      authenticated, so a claimed sender can never differ from the pinned one.</li>
+  <li><code>recipient_root</code> equals its own root, so a misrouted disclosure is refused
+      even over a good channel.</li>
+  <li>SHA-256 over the payload bytes <em>it actually read</em> equals
+      <code>payload_sha256</code>.</li>
+  <li>The staged-digest derivation over <code>{payload_sha256, recipient_label,
+      task_type}</code> reproduces <code>staged_digest</code> — which is why
+      <code>recipient_label</code> is on the wire at all.</li>
+</ol>
+
+<p>
+  Swap the payload bytes under a consented digest and checks 3 and 4 both fail; aim a
+  consented disclosure at a different peer and the sender's own pinned handshake means an
+  impostor never receives the bytes, while a peer that <em>is</em> pinned refuses an
+  envelope whose <code>recipient_root</code> is not its own.
+</p>
+<p>
+  <strong>Arrival is still not execution.</strong> An admitted disclosure creates no Task,
+  no contract head, no work order, and nothing to approve. What it does create is an
+  acknowledgement, one <code>dispatch_received</code> event, and the idempotency record
+  that makes the acknowledgement replayable — nothing that can become work. A refusal is
+  bounded the same way an admission is: it is committed through that same idempotency
+  record under its own response class, so a peer re-sending a refused dispatch replays the
+  identical <code>422</code> and appends no second event. Either way a peer pays one
+  durable row per <em>distinct</em> request, which is exactly what an admitted dispatch
+  costs.
+</p>
+
+<div class="note warn">
+  <span class="tag">The limit here</span>
+  <p>
+    <strong>The receiver verifies and acknowledges, but does not retain the payload.</strong>
+    Reading one back would require an inbound coordination operation that the registry
+    deliberately does not have, and storage without a reader is an unbounded liability. So
+    the inbound half of this surface waits for the decision that gives it a shape, and
+    until then a disclosure that arrives here is checked, acknowledged, counted — and not
+    kept.
+  </p>
+</div>
+
+<h2 id="egress">Where the bytes are is a durable column</h2>
+<p class="deck">
+  Not an inference from what happened, and not a guess after a crash. One column, whose
+  value is <!--gen:egress-states--><code>pending</code>, <code>sent</code> or <code>failed</code><!--/gen:egress-states-->,
+  defaulted so that the honest answer is the one you get for free.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th><code>egress.state</code></th><th>What it means</th></tr>
+<!--gen:egress-state-rows-->
+  <tr><td><code>pending</code></td><td>Committed, nothing acknowledged. The schema <strong>default</strong>, so a crash between the commit and the send is honest by construction rather than by remembering to write something.</td></tr>
+  <tr><td><code>sent</code></td><td>The pinned recipient echoed this exact staged digest. <strong>Terminal</strong> — and the only state that claims delivery.</td></tr>
+  <tr><td><code>failed</code></td><td>Attempted and refused, or timed out. Retryable: re-presenting the same <code>execution_key</code> re-attempts carriage and spends nothing.</td></tr>
+<!--/gen:egress-state-rows-->
+</table>
+</div>
+
+<figure class="fig" tabindex="0">
+  <svg viewBox="0 0 760 250" role="img" aria-label="The egress state machine. A committed dispatch starts pending by schema default. Carriage that is acknowledged goes to sent, which is terminal. Carriage that is refused or times out goes to failed, which is retryable and returns to a new attempt. There is no fourth state for attempted-with-unknown-outcome.">
+    <rect class="bx2" x="40" y="40" width="150" height="44" rx="3"/>
+    <text class="lbl" x="115" y="60" text-anchor="middle">pending</text>
+    <text class="mut" x="115" y="76" text-anchor="middle">schema default</text>
+
+    <rect class="bx2 aa" x="540" y="40" width="180" height="44" rx="3"/>
+    <text class="lbl" x="630" y="60" text-anchor="middle">sent</text>
+    <text class="mut" x="630" y="76" text-anchor="middle">terminal — digest echoed</text>
+
+    <rect class="bx2" x="290" y="150" width="180" height="44" rx="3" style="stroke: var(--warn);"/>
+    <text class="lbl" x="380" y="170" text-anchor="middle">failed</text>
+    <text class="mut" x="380" y="186" text-anchor="middle">retryable</text>
+
+    <line class="ln" x1="190" y1="62" x2="534" y2="62"/>
+    <polygon class="ar" points="540,62 531,57.5 531,66.5"/>
+    <text class="mut" x="362" y="52" text-anchor="middle">the pinned recipient acknowledged this staged digest</text>
+
+    <line class="ln" x1="150" y1="84" x2="296" y2="144"/>
+    <polygon class="ar" points="302,147 291,147 296,137"/>
+    <text class="mut" x="152" y="126">refused · timed out</text>
+
+    <path class="ln" d="M 460,152 C 520,110 300,96 176,86"/>
+    <polygon class="ar" points="170,85 179,81 178,90"/>
+    <text class="mut" x="470" y="126">retry: same execution_key,</text>
+    <text class="mut" x="470" y="140">nothing spent</text>
+
+    <text class="mut" x="40" y="228">no fourth state for "attempted, outcome unknown": sent is the only state that claims delivery,</text>
+    <text class="mut" x="40" y="242">and everything short of it is re-attemptable — precisely what the driver needs to know</text>
+  </svg>
+  <figcaption class="fig-cap">A timed-out attempt is <code>failed</code>, never <code>sent</code>:
+  nothing echoed the staged digest, and this endpoint does not report bytes as having left when
+  that is unknown.</figcaption>
+</figure>
+
+<p>
+  <strong>Carriage is bounded at every stage, and a bounded carriage does not deny the
+  surface.</strong> A recipient that accepts the connection and then stays silent would
+  otherwise hold the control-socket thread <code>dispatch</code> runs on. So each stage of
+  the outbound POST has its own ceiling —
+  <!--gen:carriage-timeouts-->name resolution 5s, the TCP connect 10s, the TLS handshake 10s, and the request/response exchange 30s<!--/gen:carriage-timeouts-->,
+  bounding one attempt at <!--gen:carriage-total-->55<!--/gen:carriage-total-->s. A timed-out
+  attempt lands in <code>failed</code> with <code>egress.detail</code> naming the stage
+  (<code>urn:akson:error:peer-timeout</code>), which is a state the ordinary retry resumes.
+  The timeout bounds how long an attempt lasts; the socket's concurrency bounds who waits
+  for it.
+</p>
+<p>
+  Recovery is the driver's retry, not a background sweeper — and a re-send is
+  <strong>byte-identical</strong>. The recipient's idempotency covers the body digest as
+  well as the message id, so the A2A body is emitted as RFC 8785 canonical JSON;
+  serialising the request struct directly would not have that property, and the retry would
+  arrive as a different request under the same message id and be refused. One consent
+  therefore yields exactly one dispatch record and at-least-once carriage of it,
+  deduplicated at the recipient by the dispatch receipt.
+</p>
+
+<h2 id="limits" class="chapter-start">What this surface does not give you</h2>
+<p class="deck">
+  Each of these is a real limit today, which is why it is stated beside the capability it
+  bounds above as well as collected here.
+</p>
+
+<div class="note warn">
+  <span class="tag">Named, not rounded away</span>
+  <p>
+    <strong>The assurance profile is developer.</strong> There is no UID separation in the
+    default profile, no attested process identity, and no asymmetric endpoint identity on
+    this surface. Admission is <code>SO_PEERCRED</code> — which user connected, never which
+    program. The separate-identity fleet profile is opt-in, and no
+    <code>systemd-analyze security</code> score is claimed for its units because that tool
+    has never produced a number for them.
+  </p>
+  <p>
+    <strong>The envelope is authenticated but not non-repudiable.</strong> It is unsigned,
+    deliberately: authenticity is the pinned channel's and integrity is the digest chain,
+    but a recipient cannot prove to a third party who sent it.
+  </p>
+  <p>
+    <strong>The receiver does not retain the payload.</strong> It verifies, acknowledges,
+    records one event, and keeps nothing — because the registry has no inbound op to read
+    one back with, and storage without a reader is an unbounded liability.
+  </p>
+  <p>
+    <strong>The payload media types are unregistered</strong> (<code>vnd.akson-dev</code>).
+    That is why a stable release is refused and
+    <a href="../release/">this is a prerelease</a>.
+  </p>
+  <p>
+    <strong>Key custody is interim.</strong> The master secret and the data-encryption key
+    live in a file, and store rollback is undetectable today. That bounds every durable
+    claim on this page — the consent ledger and the dispatch ledger included.
+  </p>
+  <p>
+    <strong>An unrouted staging is still stageable and consentable.</strong> It simply
+    cannot be dispatched, and that is caught before the spend rather than after it.
+  </p>
+  <p>
+    <strong>And the plain ceilings, since a driver hits them.</strong> A staged payload is
+    at most 512 KiB (<code>413 payload-too-large</code>) and a request line at most 1 MiB
+    (<code>413 request-too-large</code>); <code>events_read</code> returns 64 events by
+    default and 256 at most. This surface moves coordination bytes, not bulk data.
+  </p>
+</div>
+
+<p>
+  The two-process interop scenario
+  <code>harness/interop/scenario-coord-dispatch.sh</code> runs this whole chain across real
+  sockets between two daemons: stage, refuse consent <em>on coord</em>, consent on admin,
+  dispatch, and refuse the replay. Each step is a request on the socket that owns it, so
+  the surface gate is something the scenario can fail on rather than something it asserts.
+  Golden vectors for every op — request wire, reply field set, the staged digest and its
+  idempotency, the envelope's wire shape, the cursor encoding, and every refusal body —
+  live in <code>spec/vectors/coordination/</code> and are
+  <a href="../proofs/#xcheck">re-derived independently</a>.
+</p>
+
+<nav class="pagenav" aria-label="Document sequence">
+  <a href="../internals/"><span class="k">previous</span>Internals</a>
+  <a class="next" href="../proofs/"><span class="k">next</span>Proofs</a>
+</nav>
+
+<footer>
+  <p>
+    Normative sources for this page:
+    <a href="https://github.com/zarbafian/akson/blob/main/spec/adr/0016-coordination-surface.md">ADR-0016</a>
+    for the decision and its threat cases,
+    <a href="https://github.com/zarbafian/akson/blob/main/spec/control-protocol.md">spec/control-protocol.md</a>
+    for the op-by-op reference, and
+    <a href="https://github.com/zarbafian/akson/blob/main/spec/ext/coord-dispatch.v1.schema.json">the envelope schema</a>
+    for the wire. The operation names, counts, envelope members, egress states, timeouts
+    and version on this page are generated from those sources by
+    <code>harness/check-docs.py</code>, which fails when the page and the code disagree —
+    honestly scoped: it runs in the on-demand suite
+    <code>harness/run-checks.sh</code>, not yet in CI, so it catches drift for whoever runs
+    that suite rather than blocking a merge.
+  </p>
+  <p>Akson is pre-release and under active development.</p>
+</footer>
+
+</main>
+</div>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>This release — Akson</title>
+<meta name="description" content="Which version of Akson this site documents, what its prerelease marking actually means, and how a release asset is verified — including what verification does not establish.">
+<link rel="canonical" href="https://akson.cc/release/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="This release — Akson">
+<meta property="og:description" content="v0.0.1-alpha.1: what a prerelease means here, and how to verify an asset — including what verification does not establish.">
+<meta property="og:url" content="https://akson.cc/release/">
+<meta property="og:site_name" content="Akson">
+<meta property="og:image" content="https://akson.cc/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Akson — private, reliable connections between agents">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "headline": "Akson releases — the version this site documents, and how to verify an asset",
+      "description": "Which version this site documents, what its prerelease marking means, and the verification path for a release asset.",
+      "url": "https://akson.cc/release/",
+      "dateModified": "2026-07-28",
+      "isPartOf": { "@id": "https://akson.cc/#website" }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Akson", "item": "https://akson.cc/" },
+        { "@type": "ListItem", "position": 2, "name": "Release", "item": "https://akson.cc/release/" }
+      ]
+    }
+  ]
+}
+</script>
+<script>
+/* Apply a saved theme before first paint; site.js wires the toggle. */
+(function (root) {
+  try {
+    var saved = localStorage.getItem("akson-theme");
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+})(document.documentElement);
+</script>
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<div class="shell">
+<aside class="rail">
+  <div class="rail-head">
+    <a class="rail-mark" href="../">aks<span class="a">o</span><span class="b">n</span></a>
+    <button class="themer" id="themer" type="button" aria-label="Switch colour theme">theme</button>
+  </div>
+  <div class="rail-sub">release</div>
+  <nav id="nav">
+    <div class="grp">Site</div>
+    <a href="../">Overview</a>
+    <a href="../guide/">Guide</a>
+    <a href="../internals/">Internals</a>
+    <a href="../coordination/">Coordination</a>
+    <a href="../proofs/">Proofs</a>
+    <a href="./" class="here" aria-current="page">Release</a>
+    <a href="https://github.com/zarbafian/akson">GitHub</a>
+    <div class="grp">This version</div>
+    <a href="#version">What this site documents</a>
+    <a href="#prerelease">What "prerelease" means</a>
+    <a href="#published">What has been published</a>
+    <div class="grp">Verifying</div>
+    <a href="#verify">The checks</a>
+    <a href="#establishes">What each one establishes</a>
+  </nav>
+</aside>
+
+<main id="top">
+
+<header class="hero">
+  <p class="eyebrow">Release · Provenance</p>
+  <h1>Which akson this is.</h1>
+  <p class="lede">
+    Documentation that does not name its version documents nothing in particular. This
+    site describes the workspace at
+    <strong>v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></strong> — a prerelease by
+    construction rather than by modesty, for a reason the tooling actually enforces.
+  </p>
+  <div class="pills">
+    <span class="pill">v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></span>
+    <span class="pill">prerelease, gated</span>
+    <span class="pill">Apache-2.0</span>
+    <span class="pill">Linux · Rust</span>
+  </div>
+</header>
+
+<h2 id="version">What this site documents</h2>
+<p>
+  The version above is the <code>[workspace.package]</code> version in
+  <code>Cargo.toml</code>, and it is the same string the tag
+  <code>v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></code> names. It appears on
+  this page because a generator reads it out of the workspace manifest — so it cannot
+  quietly describe a version the code has moved past.
+</p>
+<p>
+  Everything else on this site is written against that commit: the
+  <a href="../guide/">guide</a>'s commands, the <a href="../internals/">internals</a>'
+  architecture, the <a href="../coordination/">coordination surface</a>'s operation names
+  and envelope members, and the <a href="../proofs/">proofs</a>' model list.
+</p>
+
+<h2 id="prerelease">What "prerelease" means here</h2>
+<p class="deck">
+  Four gates run before the workflow builds anything, and one of them is the reason this
+  version carries an <code>-alpha</code>. None of them is advisory.
+</p>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Gate</th><th>What it does</th></tr>
+  <tr>
+    <td>Provisional media types</td>
+    <td><strong>This is the one that makes it a prerelease.</strong> While
+        <code>MEDIA_TYPES_ARE_PROVISIONAL</code> is <code>true</code>, the workflow
+        <strong>refuses a stable tag</strong> and marks every release it does cut as a
+        prerelease. Akson's payload media types are still in the unregistered
+        <code>vnd.akson-dev</code> tree — the contract envelope, the result manifest, and
+        the <a href="../coordination/#envelope">coordination dispatch envelope</a> among
+        them. Unregistered means the names may change, so anything written against them
+        may have to move.</td>
+  </tr>
+  <tr>
+    <td>Tag equals version</td>
+    <td>The tag must equal the workspace version <em>exactly</em>, so a release asset can
+        never be labelled with a version its binaries were not built from.</td>
+  </tr>
+  <tr>
+    <td><code>ci</code> green for this commit</td>
+    <td>The workflow reads this commit's completed <code>ci</code> conclusions and refuses
+        unless they are all <code>success</code>. A tag cannot outrun the tests by being
+        pushed at a commit CI never approved.</td>
+  </tr>
+  <tr>
+    <td>The active toolchain is the pinned one</td>
+    <td><code>rustc --version</code> must equal the channel <code>rust-toolchain.toml</code>
+        names — <em>asserted</em> at run time rather than assumed, so a runner-image change
+        cannot silently build a release with a different compiler.</td>
+  </tr>
+</table>
+</div>
+
+<p>
+  The first gate is what the <code>-alpha</code> records: not a guess about maturity, but a
+  fact about the wire types. While it holds,
+  <code><!--gen:version-->0.0.1-alpha.1<!--/gen:version--></code> is the version the tag
+  gate and it both accept. When the media types are registered that gate opens and a stable
+  version becomes possible — and only then.
+</p>
+
+<div class="note warn">
+  <span class="tag">What a prerelease means for you</span>
+  <p>
+    Akson runs end to end today, but the wire types may change, key custody is interim —
+    the master secret and the data-encryption key live in a file, and store rollback is
+    undetectable — and the assurance profile is a
+    <a href="../coordination/#limits">developer</a> one. Use this release to explore and to
+    build against. Don't protect anything that matters with it yet. The
+    <a href="https://github.com/zarbafian/akson/blob/main/design/2026-07-19-threat-model.md">threat
+    model</a> names each residual rather than rounding it away.
+  </p>
+</div>
+
+<h2 id="published">What has actually been published</h2>
+<p class="deck">
+  A page about verifying releases should be honest about whether there is anything to
+  verify.
+</p>
+<div class="note warn">
+  <span class="tag">Nothing, yet</span>
+  <p>
+    <strong>The tag has not been pushed, so the release workflow has never run.</strong>
+    There are no built artifacts, no SBOMs, no attestation, and <strong>no release
+    object — not even a draft</strong>. The commands further down have nothing to fetch
+    today; they are here because they are what you should run once there is, and because a
+    verification page written only after assets appear is a page nobody has read by the
+    moment it matters.
+  </p>
+</div>
+
+<p>
+  <code>v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--></code> is an annotated tag in
+  the repository, on the commit whose workspace version it names. What tagging establishes
+  is exactly one thing: which commit is the intended prerelease. Everything else waits on
+  a push, which is a deliberate maintainer act rather than an oversight — a tag push
+  publishes to a public repository and starts the workflow.
+</p>
+<p>
+  And when it does run, it stops one step short of publishing: the workflow creates a
+  <strong>draft</strong> release, so a push builds, SBOMs and attests, while making the
+  assets downloadable stays a second deliberate act after the asset set has been checked.
+  The provenance attestation is public as soon as the workflow runs, though — it binds to
+  the artifacts, not to the release object — so <code>gh attestation verify</code> can
+  succeed on a file before any release page exists.
+</p>
+<p>
+  CI still walks the first steps of the release path on every push and pull request, which
+  is what keeps it from rotting: the same pinned toolchain (asserted at runtime, not
+  assumed), a <code>--locked --release</code> build of <em>one</em> artifact with
+  <code>RUSTFLAGS</code> cleared to mirror the release rather than CI's own
+  <code>-D warnings</code>, and an assertion that the artifact list accounts for every
+  binary the workspace produces — so a new or renamed binary cannot silently fall out of a
+  release.
+</p>
+
+<h2 id="verify" class="chapter-start">Verifying an asset</h2>
+<p class="deck">
+  Every release asset is meant to be checked, not trusted. Four checks, in the order that
+  makes each one worth running.
+</p>
+
+<div class="cmd host">
+  <div class="cmd-head"><span class="who">any host</span><button class="copy">Copy</button></div>
+<pre><code><span class="c"># nothing to download yet — the tag is unpushed, so this fetches nothing today</span>
+gh release download v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--> --repo zarbafian/akson --dir akson-release
+cd akson-release
+
+<span class="c"># 1. the download is intact</span>
+sha256sum --check --ignore-missing SHA256SUMS
+
+<span class="c"># 2. GitHub built these artifacts, from this repo, in this workflow — the trust anchor</span>
+gh attestation verify aksond --repo zarbafian/akson \
+  --signer-workflow zarbafian/akson/.github/workflows/release.yml
+
+<span class="c"># 3. what is inside the binary you are about to run</span>
+jq -r '.components[] | "\(.name) \(.version) \(.licenses[0].expression // "?")"' aksond.cdx.json
+
+<span class="c"># 4. rebuild it yourself, from the commit and lockfile BUILD-INFO.txt names</span>
+cat BUILD-INFO.txt                 <span class="c"># tag, commit, toolchain, Cargo.lock digest, build command</span>
+git checkout v<!--gen:version-->0.0.1-alpha.1<!--/gen:version--> &amp;&amp; sha256sum Cargo.lock
+env -u RUSTFLAGS cargo build --locked --release --bins \
+  -p aksond -p akson-cli -p akson-mcp \
+  -p akson-adapter-openai -p akson-adapter-anthropic -p akson-adapter-gemini
+sha256sum target/release/aksond &amp;&amp; grep '  aksond$' SHA256SUMS</code></pre>
+</div>
+
+<p>
+  Step 2 is the trust anchor. Steps 1, 3 and 4 are only as strong as step 2 unless you
+  obtained the assets over a channel you already trust. <code>env -u RUSTFLAGS</code>
+  matters in step 4: the release build sets no <code>RUSTFLAGS</code> at all, unlike CI,
+  which builds with <code>-D warnings</code> — and a different <code>RUSTFLAGS</code> is a
+  different build.
+</p>
+
+<h2 id="establishes">What each check establishes — and what it does not</h2>
+
+<div class="tw" tabindex="0">
+<table>
+  <tr><th>Check</th><th>Establishes</th><th>Does <em>not</em> establish</th></tr>
+  <tr>
+    <td><code>sha256sum --check</code></td>
+    <td>The download is internally consistent.</td>
+    <td>Anything about origin — the file is unsigned on its own.</td>
+  </tr>
+  <tr>
+    <td><code>gh attestation verify</code></td>
+    <td>These exact bytes came out of <code>release.yml</code> in this repository, at a
+        named commit.</td>
+    <td>That the code or its dependencies are safe. And note the trust path: this is
+        GitHub-native Sigstore provenance, <strong>not</strong> a project-held signing key,
+        so GitHub's OIDC issuer and Sigstore instance are in it.</td>
+  </tr>
+  <tr>
+    <td>SBOM inspection</td>
+    <td>Which crate versions and declared licenses the lockfile resolved, with registry
+        checksums for crates.io crates.</td>
+    <td>What the linker actually kept — feature-pruned and dead-stripped crates still
+        appear. It is a dependency inventory derived from <code>Cargo.lock</code>, not a
+        scan of the binary, and not an audit of those licenses.</td>
+  </tr>
+  <tr>
+    <td>Local rebuild</td>
+    <td>The source and lockfile are the ones described, and usually that the bytes follow
+        from them.</td>
+    <td>Bit-for-bit reproducibility, which is <strong>not claimed</strong>: the build does
+        not pin build paths or normalise the environment. If the dependency graphs agree
+        and the attestation verifies, a byte difference is an environment difference.</td>
+  </tr>
+</table>
+</div>
+
+<div class="note">
+  <span class="tag">The full walkthrough</span>
+  <p>
+    The command-by-command version — offline attestation verification with a bundle and a
+    custom trusted root, the <code>jq</code> recipes over the SBOM, the exact rebuild
+    comparison, and what to do when a check fails — is
+    <a href="https://github.com/zarbafian/akson/blob/main/docs/verifying-a-release.md">verifying-a-release.md</a>
+    in the repository, where GitHub renders it. A copy is also served from this site at
+    <a href="/verifying-a-release.md">/verifying-a-release.md</a> — that link is honest
+    rather than pretty: it is Markdown, and this site has no Jekyll layer to render it, so
+    your browser will show it as plain text.
+  </p>
+</div>
+
+<p>
+  If a check fails, report it through
+  <a href="https://github.com/zarbafian/akson/blob/main/SECURITY.md">SECURITY.md</a> rather
+  than a public issue, and say which check failed, the tag, the asset, and the digest you
+  computed. A failing <code>gh attestation verify</code> on an asset downloaded from a
+  release page is the serious case — do not run the binary.
+</p>
+
+<nav class="pagenav" aria-label="Document sequence">
+  <a href="../proofs/"><span class="k">previous</span>Proofs</a>
+  <a class="next" href="../guide/"><span class="k">next</span>Guide</a>
+</nav>
+
+<footer>
+  <p>
+    The release side of this is
+    <a href="https://github.com/zarbafian/akson/blob/main/.github/workflows/release.yml">.github/workflows/release.yml</a>;
+    the version on this page is generated from the workspace manifest by
+    <code>harness/check-docs.py</code>, which fails when the two disagree. That check runs
+    in the on-demand suite <code>harness/run-checks.sh</code>, not yet in CI.
+  </p>
+  <p>Akson is pre-release and under active development.</p>
+</footer>
+
+</main>
+</div>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>
