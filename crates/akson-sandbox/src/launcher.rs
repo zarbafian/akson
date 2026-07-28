@@ -854,6 +854,7 @@ mod tests {
     #[test]
     #[ignore = "needs bwrap + userns + delegated cgroup subtree; runs in CI's isolation job"]
     fn live_confined_launch_composes_all_isolation() {
+        crate::cgroup::refuse_to_run_as_root();
         use crate::cgroup::{CgroupLimits, CgroupScope};
         use crate::seccomp::{DenyAction, SeccompPolicy};
         let spec = SandboxSpec::clean_worker("/")

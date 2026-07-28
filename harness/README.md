@@ -53,22 +53,39 @@ Two complementary paths:
     in the runner service's root-owned cgroup. `harness/ci/delegate-cgroup.sh`
     carves one out with sudo and chowns it to the job user — delegation by hand —
     then *proves* it by creating a leaf, setting `memory.max`/`pids.max`, placing
-    a process and removing it, all unprivileged. Each step that needs it joins the
-    subtree through `harness/ci/in-cgroup.sh` (membership is per-process, so it
-    cannot be inherited from an earlier step).
+    a process and removing it, all unprivileged.
 
-  If that fails, `delegate-cgroup.sh` exits 0 and reports `delegated=false` — a
-  missing kernel capability is an environment gap, not a failed check, the same
-  rule `run-checks.sh` follows. The job then passes libtest `--skip` flags naming
-  `cgroup_scope_applies_limits_and_confines_a_process` and
-  `live_confined_launch_composes_all_isolation` so they are visibly **not run**,
-  prints a `SKIPPED` block, raises a workflow warning annotation, writes the gap
-  to the run summary, and closes with a different sentence than a complete run:
+    Each step then joins the subtree through `harness/ci/in-cgroup.sh`, because
+    cgroup membership is per-process and cannot be inherited from an earlier
+    step. **Joining needs sudo, and `[ -w ]` cannot tell you so.** cgroup v2
+    *delegation containment* lets an unprivileged process migrate a process only
+    if it can write both the destination's `cgroup.procs` **and** the
+    `cgroup.procs` of the **common ancestor** of source and destination. On a
+    runner the step starts inside the runner service's cgroup, so that ancestor
+    is at or near the hierarchy root and stays root-owned however much is chowned
+    beneath it — `access(2)` reads permission bits and sees none of this.
+    Entering the subtree is the *only* privileged act: `exec` keeps the uid, so
+    everything the tests then do runs as the job user, and
+    `cgroup::refuse_to_run_as_root()` makes the two live cgroup tests panic
+    rather than report a meaningless pass if they ever run as root.
+
+  **A gap can be discovered late, and that must not turn the job red.**
+  `harness/ci/isolation-env.sh` owns which live tests depend on which capability
+  and what a skip looks like, and every discovery routes through it: bubblewrap
+  failing to install, no delegated subtree, or a subtree that builds cleanly and
+  then refuses to be entered. Each one exits 0, passes libtest `--skip` flags
+  naming the affected tests so they are visibly **not run**, prints a `SKIPPED`
+  block, raises a workflow warning annotation, writes the gap to the run summary,
+  and steps that cannot run at all (the bwrap e2e demos) are `if:`-gated so the
+  run's step list shows them skipped. The job closes with a different sentence
+  than a complete run:
 
   ~~~text
   ALL SANDBOX ISOLATION CHECKS RAN — seccomp, Landlock, namespaces, mount, bwrap, cgroup
-  ISOLATION CHECKS PASSED, WITH THE CGROUP HALF SKIPPED — see the SKIPPED block above
+  ISOLATION CHECKS PASSED, WITH GAPS — cgroup-join — see the SKIPPED block(s) above
   ~~~
+
+  The job is red only when an isolation check actually fails.
 
   A green tick for a test that did not run is the thing this job exists to avoid.
 

@@ -14,12 +14,18 @@
 # job user: delegation, done by hand instead of by systemd.
 #
 # This never fails the job. A missing kernel capability is an environment gap,
-# not a failed check — the same rule harness/run-checks.sh follows. It reports:
+# not a failed check — the same rule harness/run-checks.sh follows, routed here
+# through isolation-env.sh so every gap in this job produces the same visible
+# skip whenever it is found. It reports:
 #
 #   delegated=true|false   did we get one?
-#   test_skip_args=...     libtest `--skip` flags the caller MUST pass when we
-#                          did not, so the cgroup-dependent tests are visibly
-#                          NOT RUN rather than silently reported green.
+#   skip_args=...          the libtest `--skip` flags for the tests that need a
+#                          subtree. ALWAYS the same string, even on success:
+#                          whether they get used is decided at the moment of
+#                          truth by harness/ci/in-cgroup.sh, because a subtree
+#                          that builds cleanly here can still refuse to be
+#                          entered there, and that discovery must be able to
+#                          reach the skip path too.
 #
 # Local dry run — no sudo, borrowing the systemd user session's own delegated
 # subtree as the stand-in hierarchy root:
@@ -28,52 +34,20 @@
 #     harness/ci/delegate-cgroup.sh
 set -uo pipefail
 
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=harness/ci/isolation-env.sh
+. "$here/isolation-env.sh"
+
 # The hierarchy root to carve the subtree out of, and the subtree itself. Both
 # are overridable so the whole script can be exercised without root (above).
 root="${AKSON_CGROUP_ROOT:-/sys/fs/cgroup}"
 subtree="${AKSON_CGROUP_SUBTREE:-$root/akson-ci}"
 job="$subtree/job"
 
-# The two #[ignore] tests that cannot run without a delegated subtree. Named
-# here, once: the caller passes them to libtest verbatim.
-skips="--skip cgroup_scope_applies_limits_and_confines_a_process"
-skips="$skips --skip live_confined_launch_composes_all_isolation"
-
-emit() { # emit <delegated> <skip-args>
-	if [ -n "${GITHUB_OUTPUT:-}" ]; then
-		printf 'delegated=%s\n' "$1" >>"$GITHUB_OUTPUT"
-		printf 'test_skip_args=%s\n' "$2" >>"$GITHUB_OUTPUT"
-	fi
-}
-
-# A skip is not a pass. Say why, name what will not run, and put it where a
-# reader of the run summary sees it without opening the log.
 give_up() {
-	emit false "$skips"
-	cat <<EOF
-
-SKIPPED — no delegated cgroup v2 subtree on this runner ($1).
-  cgroup enforcement (§13.1) cannot be exercised here, so these two live tests
-  will NOT run and must not be read as passing:
-
-    akson-sandbox  cgroup_scope_applies_limits_and_confines_a_process
-    akson-sandbox  live_confined_launch_composes_all_isolation
-
-  The end-to-end demos (clean_worker_e2e, receive_e2e) will run their non-cgroup
-  half and print "[skip] no delegated cgroup subtree" for the confined launch.
-  Everything else in this job — seccomp, Landlock, namespaces, mount, bwrap —
-  is unaffected and still enforced.
-EOF
-	echo "::warning title=cgroup confinement not exercised::$1 — 2 live cgroup tests skipped, not passed"
-	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-		{
-			echo "### sandbox isolation: cgroup confinement SKIPPED"
-			echo
-			echo "No delegated cgroup v2 subtree on this runner ($1)."
-			echo "\`cgroup_scope_applies_limits_and_confines_a_process\` and"
-			echo "\`live_confined_launch_composes_all_isolation\` did **not** run."
-		} >>"$GITHUB_STEP_SUMMARY"
-	fi
+	isolation_emit delegated false
+	isolation_emit skip_args "$(isolation_skip_args cgroup)"
+	isolation_report_skip cgroup "$1"
 	exit 0
 }
 
@@ -127,21 +101,35 @@ kill "$probe_pid" 2>/dev/null
 wait "$probe_pid" 2>/dev/null
 rmdir "$probe" 2>/dev/null || true
 
-# 4. And prove the one thing the *test steps* still need root for: moving their
-#    own shell into $job. (A plain user cannot: cgroup v2 delegation requires
-#    write access to cgroup.procs of the common ancestor of source and
-#    destination, which here is the hierarchy root.)
+# 4. And prove the join the test steps actually perform — the same way, in the
+#    same order in-cgroup.sh does it. The first version of this script probed
+#    the migration with a helper that fell back to sudo, while in-cgroup.sh
+#    decided on `[ -w ]` and never tried sudo at all: the probe passed and every
+#    step then failed to enter the subtree it had just declared ready. The
+#    layout printed here is the evidence for why (delegation containment cares
+#    about the common ancestor, which chowning below $subtree cannot change).
+echo "cgroup v2 delegation facts for the join:"
+isolation_cgroup_layout "$job"
 sleep 30 &
 move_pid=$!
-maybe_root sh -c "echo $move_pid > '$job/cgroup.procs'" || {
+if (echo "$move_pid" >"$job/cgroup.procs") 2>/dev/null; then
+	how=unprivileged
+elif sudo -n sh -c "echo $move_pid > '$job/cgroup.procs'" 2>/dev/null; then
+	how=sudo
+else
 	kill "$move_pid" 2>/dev/null
-	give_up "cannot migrate a process into $job"
+	give_up "a process cannot be migrated into $job with or without sudo (cgroup v2 delegation containment)"
+fi
+grep -qx "$move_pid" "$job/cgroup.procs" || {
+	kill "$move_pid" 2>/dev/null
+	give_up "a migrated process did not appear in $job/cgroup.procs"
 }
 kill "$move_pid" 2>/dev/null
 wait "$move_pid" 2>/dev/null
 
-emit true ""
+isolation_emit delegated true
+isolation_emit skip_args "$(isolation_skip_args cgroup)"
 echo "delegated cgroup v2 subtree ready: $subtree"
 echo "  controllers: $(cat "$subtree/cgroup.subtree_control")"
 echo "  owner:       $(stat -c '%U:%G' "$subtree")"
-echo "  job leaf:    $job (steps join it via harness/ci/in-cgroup.sh)"
+echo "  join:        $how (steps enter $job via harness/ci/in-cgroup.sh)"

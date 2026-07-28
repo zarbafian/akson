@@ -240,6 +240,25 @@ fn writable(dir: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// The live cgroup tests must demonstrate confinement *without privilege*.
+/// Root can create cgroups and set ceilings whatever the delegation says, so a
+/// pass as root would establish nothing — CI hands the job a delegated subtree
+/// and enters it with sudo, but the tests themselves must run as the job user.
+/// Panics rather than skips: this is a broken invocation, not a missing kernel
+/// capability.
+#[cfg(test)]
+pub(crate) fn refuse_to_run_as_root() {
+    // SAFETY: geteuid() reads the calling process's effective uid; it takes no
+    // arguments, touches no memory, and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    assert_ne!(
+        euid, 0,
+        "this test ran as root; a pass would not demonstrate unprivileged \
+         cgroup confinement. Run it as an ordinary user with a delegated \
+         cgroup v2 subtree (see harness/ci/delegate-cgroup.sh)."
+    );
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -263,6 +282,7 @@ mod tests {
     #[test]
     #[ignore = "needs a writable delegated cgroup v2 subtree; runs in CI's isolation job"]
     fn cgroup_scope_applies_limits_and_confines_a_process() {
+        super::refuse_to_run_as_root();
         let limits = CgroupLimits {
             max_memory_bytes: Some(64 * 1024 * 1024),
             max_pids: Some(16),

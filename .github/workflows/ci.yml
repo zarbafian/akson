@@ -160,50 +160,83 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true && echo "user namespaces available"
+      # This job goes red when an isolation check FAILS, and only then. Anything
+      # the runner will not grant is an environment gap: it makes named checks
+      # visibly not run (harness/ci/isolation-env.sh owns which tests need what,
+      # and what a skip looks like), rather than pass quietly or fail the job.
+      #
       # The clean worker launches through bubblewrap, which the runner image does
       # not ship — every live launcher test died on "spawning bwrap: No such file
       # or directory" rather than on anything about isolation.
-      - name: Install bubblewrap (the clean worker's launcher)
+      - name: Install bubblewrap (or say what will not run)
+        id: bwrap
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          bwrap --version
+          . harness/ci/isolation-env.sh
+          if sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap && command -v bwrap >/dev/null; then
+            bwrap --version
+            isolation_emit available true
+            isolation_emit skip_args ""
+          else
+            isolation_emit available false
+            isolation_emit skip_args "$(isolation_skip_args bwrap)"
+            isolation_report_skip bwrap "bubblewrap could not be installed on this runner"
+          fi
       # cgroup confinement needs a delegated subtree this user owns; a runner
-      # gives none. The script carves one out with sudo, proves it works, and —
-      # if it cannot — reports which tests will therefore be SKIPPED rather than
-      # let them report green without running. See harness/ci/delegate-cgroup.sh.
+      # gives none. The script carves one out with sudo, proves the job user can
+      # use it, and proves the join the test steps will perform. Entering the
+      # subtree is the only privileged act — the tests themselves run as the job
+      # user and assert it, because a pass as root would establish nothing.
       - name: Delegate a cgroup v2 subtree (or say what will not run)
         id: cgroup
         run: bash harness/ci/delegate-cgroup.sh
       - name: seccomp + Landlock enforcement
         run: cargo test -p akson-sandbox --locked
-      # $CGROUP_SKIP is empty when a subtree was delegated, and the two
-      # `--skip <test>` flags naming the cgroup-dependent tests when it was not.
-      # Left unquoted deliberately: it is a flag list, not one argument.
+      # AKSON_CGROUP_SKIP_ARGS is the flag list for the cgroup-dependent tests;
+      # in-cgroup.sh appends it only if it could not actually enter the subtree,
+      # so a gap found at join time still lands in the skip path. $BWRAP_SKIP is
+      # decided for good by the step above and is applied here.
       - name: live namespace/mount checklist (#[ignore] tests)
         env:
-          CGROUP_SKIP: ${{ steps.cgroup.outputs.test_skip_args }}
-        run: bash harness/ci/in-cgroup.sh cargo test -p akson-sandbox --locked -- --ignored $CGROUP_SKIP
+          AKSON_CGROUP_SKIP_ARGS: ${{ steps.cgroup.outputs.skip_args }}
+          BWRAP_SKIP: ${{ steps.bwrap.outputs.skip_args }}
+        run: bash harness/ci/in-cgroup.sh cargo test -p akson-sandbox --locked -- --ignored $BWRAP_SKIP
+      # These three cannot self-skip a missing bwrap the way they self-skip a
+      # missing cgroup, so without it the step does not run at all — which the
+      # run's step list shows as skipped.
       - name: clean-worker end-to-end (work order → sandbox → gate)
+        if: steps.bwrap.outputs.available == 'true'
         run: bash harness/ci/in-cgroup.sh cargo test -p akson-harness --locked --test clean_worker_e2e -- --ignored --nocapture
       - name: daemon worker-run (receive → approve → run in sandbox → manifest)
+        if: steps.bwrap.outputs.available == 'true'
         run: bash harness/ci/in-cgroup.sh cargo test -p aksond --locked --test receive_e2e the_daemon_runs_the_approved -- --ignored --nocapture
       - name: build the OpenAI adapter (for the confined e2e)
+        if: steps.bwrap.outputs.available == 'true'
         run: cargo build -p akson-adapter-openai --locked
       - name: confined OpenAI adapter e2e (adapter → broker → mock model)
+        if: steps.bwrap.outputs.available == 'true'
         run: bash harness/ci/in-cgroup.sh cargo test -p aksond --locked --test receive_e2e the_openai_adapter -- --ignored --nocapture
       - name: interop — pairing over mTLS (two processes)
         run: bash harness/interop/scenario-pairing.sh
       - name: interop — coordination dispatch over mTLS (two processes)
         run: bash harness/interop/scenario-coord-dispatch.sh
       # harness/run-checks.sh's rule, applied to the job: a run with a skipped
-      # check does not get to print the same sentence as a complete one.
+      # check does not get to print the same sentence as a complete one. `always`
+      # so the verdict is recorded even when a real check failed above.
       - name: Isolation verdict (a skip is not a pass)
+        if: always()
         run: |
-          if [ "${{ steps.cgroup.outputs.delegated }}" = "true" ]; then
+          gaps=""
+          [ "${{ steps.bwrap.outputs.available }}" = "true" ] || gaps="$gaps bwrap"
+          [ "${{ steps.cgroup.outputs.delegated }}" = "true" ] || gaps="$gaps cgroup"
+          # in-cgroup.sh leaves this behind if the subtree existed but no step
+          # could enter it — a gap that only shows up after delegation succeeds.
+          if [ -e "${RUNNER_TEMP:-/tmp}/akson-cgroup-join-skip" ]; then gaps="$gaps cgroup-join"; fi
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "SOME ISOLATION CHECKS FAILED — any gaps listed below are context, not the cause:$gaps"
+          elif [ -z "$gaps" ]; then
             echo "ALL SANDBOX ISOLATION CHECKS RAN — seccomp, Landlock, namespaces, mount, bwrap, cgroup"
           else
-            echo "ISOLATION CHECKS PASSED, WITH THE CGROUP HALF SKIPPED — see the SKIPPED block above"
+            echo "ISOLATION CHECKS PASSED, WITH GAPS —$gaps — see the SKIPPED block(s) above"
           fi
 
   proof:
