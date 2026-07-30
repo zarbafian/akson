@@ -48,3 +48,5 @@ Index:
 | [0013](0013-identity-token-container.md) | Identity-token container — key-only bech32m | proposed |
 | [0014](0014-contract-identity-root-thumbprint.md) | Contract identity carries the root-key thumbprint | proposed |
 | [0015](0015-introduction-protocol.md) | The introduction protocol | proposed |
+| [0016](0016-coordination-surface.md) | Coordination surface — the third control socket | proposed |
+| [0017](0017-key-custody.md) | Key custody — sealed keystore, key agent, rollback checkpoint | proposed |
