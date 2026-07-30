@@ -139,9 +139,12 @@ dependencies = [
 name = "akson-cli"
 version = "0.0.1-alpha.1"
 dependencies = [
+ "akson-crypto",
+ "akson-evidence",
  "akson-sandbox",
  "aksond",
  "base64",
+ "hex",
  "rand",
  "serde_json",
 ]
@@ -186,6 +189,7 @@ dependencies = [
  "akson-contract",
  "akson-crypto",
  "akson-ext",
+ "base64",
  "hex",
  "serde",
  "serde_json",

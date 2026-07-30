@@ -7,15 +7,24 @@
 //! - slot checking (§14.3) — required slots with orthogonal result × disclosure:
 //!   redaction can never turn a failure into a pass.
 //!
+//! - [`ResultBundle`] — the versioned `akson-result-bundle` export: the signed
+//!   manifest plus the exact output bytes it names, verifiable offline
+//!   (`akson task export` / `akson verify`).
+//!
 //! Everything here is pure/crypto logic; the durable staged-then-atomic completion
-//! and the `akson evidence validate|export` CLI are wired at daemon assembly.
+//! and the `akson task export` assembly are wired at the daemon.
 
+mod bundle;
 mod intoto;
 mod outcome;
 mod result_manifest;
 mod sarif;
 mod slots;
 
+pub use bundle::{
+    BundleError, BundleOutput, ResultBundle, SarifCheck, SignerHint, VerifiedBundle,
+    MAX_BUNDLE_BYTES, RESULT_BUNDLE_FORMAT, RESULT_BUNDLE_VERSION, SARIF_MEDIA_TYPE,
+};
 pub use intoto::{
     DigestSet, Statement, StatementError, Subject, INTOTO_PAYLOAD_TYPE, PREDICATE_AUTHORIZATION_V1,
     PREDICATE_EXECUTION_V1, PREDICATE_FEDERATION_CAPABILITY_V1, STATEMENT_TYPE_V1,

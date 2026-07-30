@@ -14,6 +14,10 @@
 //! - `akson task deny <id> <reason>` — sign a reject decision (§10.2).
 //! - `akson task deliver <id>` — deliver a completed Task's result to the requester (§7.2).
 //! - `akson task send <spec.json>` — send a task to a performer (§10.2).
+//! - `akson task export <id>` — export a completed Task's signed result as a
+//!   portable bundle: the DSSE-signed manifest plus the exact output bytes (§14.1).
+//! - `akson verify <bundle>` — check an exported bundle offline, printing what each
+//!   check does and does not establish. No daemon needed.
 //! - `akson processor {add|list|credential}` — configure processors + credentials (§13.1/§15.2).
 //! - `akson token` — this endpoint's identity token (§8.2).
 //! - `akson peer add <token> <label>` — import a peer's token, the trust act (§8.2).
@@ -30,6 +34,8 @@ use aksond::{
     admin_socket_path, send_request, ControlRequest, ControlResponse, FulfillOutput, TaskSpec,
 };
 
+mod verify;
+
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(OsStr::to_str) {
@@ -38,6 +44,7 @@ fn main() -> ExitCode {
         Some("whoami") => whoami(),
         Some("token") => token(),
         Some("task") => task(&mut args),
+        Some("verify") => verify_bundle(&mut args),
         Some("stage") => stage(&mut args),
         Some("processor") => processor(&mut args),
         Some("peer") => peer(&mut args),
@@ -45,7 +52,7 @@ fn main() -> ExitCode {
         Some("service") => service(&mut args),
         Some("demo") => demo(),
         _ => {
-            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, stage {{show|consent}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}, mcp install <claude|codex>, service install, demo");
+            eprintln!("akson: commands: doctor, status, whoami, token, task {{…}}, verify <bundle>, stage {{show|consent}}, processor {{…}}, peer {{add|list|label|remove|knocks|ping|auto-approve}}, mcp install <claude|codex>, service install, demo");
             ExitCode::from(2)
         }
     }
@@ -1111,6 +1118,18 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
         },
         Some("sent") => task_sent(),
         Some("outcomes") => task_outcomes(),
+        Some("export") => match next_arg(args) {
+            Some(id) => {
+                let mut out = None;
+                while let Some(flag) = next_arg(args) {
+                    if flag == "--out" {
+                        out = next_arg(args);
+                    }
+                }
+                task_export(&id, out.as_deref())
+            }
+            None => usage("akson task export <task-id> [--out <path>]"),
+        },
         Some("output") => match next_arg(args) {
             Some(id) => {
                 // `--role <role>` narrows to one output; with it, the bytes are
@@ -1127,9 +1146,83 @@ fn task(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
             None => usage("akson task output <task-id> [--role <role>]"),
         },
         _ => usage(
-            "akson task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|fulfill <id> --file <path>|deliver <id>|send <spec>|sent|outcomes|output <id>}",
+            "akson task {inbox|show <id>|approve <id>|deny <id> <reason>|run <id>|fulfill <id> --file <path>|deliver <id>|send <spec>|sent|outcomes|output <id>|export <id>}",
         ),
     }
+}
+
+/// `akson verify <bundle> [--signer <64-hex key>]` — the offline consumer check
+/// of an exported result bundle. Runs entirely in this process: no daemon.
+fn verify_bundle(args: &mut impl Iterator<Item = OsString>) -> ExitCode {
+    let Some(path) = next_arg(args) else {
+        return usage("akson verify <bundle-path> [--signer <64-hex task-result public key>]");
+    };
+    let mut signer = None;
+    while let Some(flag) = next_arg(args) {
+        if flag == "--signer" {
+            signer = next_arg(args);
+        }
+    }
+    verify::run(&path, signer.as_deref())
+}
+
+/// Export a completed task's signed result as a portable bundle
+/// (`akson task export`): the DSSE-signed manifest plus the exact output bytes
+/// it names, written as one JSON file that `akson verify` checks offline.
+fn task_export(task_id: &str, out: Option<&str>) -> ExitCode {
+    let result = match call(&ControlRequest::TaskExport {
+        task_id: task_id.to_owned(),
+    }) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let Some(bundle) = result.get("bundle") else {
+        eprintln!("akson: the daemon returned no bundle");
+        return ExitCode::from(1);
+    };
+    let text = match serde_json::to_string_pretty(bundle) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("akson: the bundle could not be serialized: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let path = out
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("akson-bundle-{}.json", sanitize_file_stem(task_id)));
+    if let Err(e) = write_atomic(std::path::Path::new(&path), &(text + "\n")) {
+        eprintln!("akson: {e}");
+        return ExitCode::from(1);
+    }
+    let s = |k: &str| result[k].as_str().unwrap_or("?").to_owned();
+    println!("exported {task_id}");
+    println!("  bundle:        {path}");
+    println!("  bundle digest: sha256:{}", s("bundle_digest"));
+    println!(
+        "  signed by:     task-result key {}",
+        s("signer_task_result_thumbprint")
+    );
+    println!("verify it anywhere — no daemon needed:");
+    println!(
+        "  akson verify {path} --signer {}",
+        s("signer_task_result_public_key_hex")
+    );
+    println!("hand that key line over a channel you trust — the bundle alone cannot prove who signed it.");
+    ExitCode::SUCCESS
+}
+
+/// A filesystem-safe default file stem: anything outside `[A-Za-z0-9._-]`
+/// becomes `-`, so a hostile task id cannot steer the default path.
+fn sanitize_file_stem(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// Tasks this daemon sent as requester (`akson task sent`).

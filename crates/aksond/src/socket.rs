@@ -182,6 +182,12 @@ pub enum ControlRequest {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Export a completed task's signed result as a portable
+    /// `akson-result-bundle` (`akson task export`, admin only): the DSSE-signed
+    /// manifest plus the exact output bytes it names, verifiable offline with
+    /// `akson verify`. Performer side only — the requester does not retain the
+    /// performer's envelope after delivery-time validation.
+    TaskExport { task_id: String },
     /// Approve a submitted Task: accept it and issue the one-shot work order
     /// (`akson task approve`, admin only). `processor`, when set, additionally grants
     /// `processor_use` bound to that configured processor — the explicit,
@@ -331,6 +337,7 @@ impl ControlRequest {
             ControlRequest::TaskApprove { .. } | ControlRequest::TaskDeny { .. } => {
                 ControlOp::ApproveContract
             }
+            ControlRequest::TaskExport { .. } => ControlOp::Export,
             ControlRequest::TaskRun { .. } => ControlOp::RunWorker,
             ControlRequest::TaskFulfill { .. } => ControlOp::FulfillTask,
             ControlRequest::TaskDeliver { .. } => ControlOp::DeliverResult,
