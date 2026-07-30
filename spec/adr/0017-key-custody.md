@@ -1,11 +1,20 @@
 # ADR-0017: Key custody — sealed keystore, key agent, rollback checkpoint
 
 Status: proposed
-Date: 2026-07-30 (v2 — revised after independent adversarial review; see the
-program record `reviews/2026-07-30-adr0017-codex-review.md`. v1's checkpoint
-and eviction claims overreached, its socket registry could not boot a daemon,
-and its migration state machine omitted reachable states; this revision
-narrows the claims to what the design delivers and completes the protocols.)
+Date: 2026-07-31 (v3. The review record, dispositions, and confirmation
+review are **external artifacts** — they live in the private program
+repository `akb-program` (`reviews/2026-07-30-adr0017-codex-review.md`,
+`reviews/2026-07-30-adr0017-dispositions.md`,
+`reviews/2026-07-31-adr0017-confirmation.md`), not in this repository, and
+reviewers of this repository cannot resolve them; they are cited as context,
+and nothing normative below depends on reading them. v2 revised after the
+independent adversarial review: v1's checkpoint and eviction claims
+overreached, its socket registry could not boot a daemon, and its migration
+state machine omitted reachable states. v3, after the confirmation round,
+completes the agent-mode lifecycle the round proved missing: executable
+lineage/checkpoint provisioning, a crash-total root-proven `provision`, an
+offline quiescent `to-agent`, certificate renewal, exact-manifest signing, a
+bounded reservation ledger, and an operator exit from Recovery.)
 
 ## Context
 
@@ -37,10 +46,11 @@ file, so the failure shape depends on which file is missing):
   then the store's authenticated DEK unwrap fails. Noisy failure — but only
   *after* replacement key material was already generated on disk.
 
-The program repo's plan (`AKB-SOTA-PLAN.md`, Phase 1 "Trust track
-(primary)" — an artifact outside this repository) requires: "Replace interim
-key custody (ADR-0009) with real custody; make per-role UID separation the
-documented recommended profile, not a footnote." This repo's own
+The program plan — `AKB-SOTA-PLAN.md` at the root of the private program
+repository `akb-program`, an **external artifact** reviewers of this
+repository cannot resolve — requires, under Phase 1 "Trust track (primary)":
+"Replace interim key custody (ADR-0009) with real custody; make per-role UID
+separation the documented recommended profile, not a footnote." This repo's own
 implementation plan names the sandbox launcher (M9) its hardest milestone;
 no priority superlative is claimed here. `deploy/` already has the
 two-identity fleet arrangement this ADR extends.
@@ -78,7 +88,9 @@ Evaluated:
   passphrase *source* or an at-rest backend where present — never as a
   silent fallback — and that is ergonomics, not this ADR.
 - **(c) TPM2** — machine-binding for the sealed material and a real NV
-  monotonic counter, with narrowed claims (its section below).
+  monotonic counter. **Deferred, not selected**: this ADR reserves the axis
+  values and defers the entire composition to its own future ADR; nothing in
+  this ADR's implementation plan builds or ships it (its section below).
 - **(d) a key-agent process under its own UID** (the ssh-agent model) — the
   daemon never holds long-term private keys; typed operations over a narrow
   socket.
@@ -105,16 +117,22 @@ axes** — not a ladder, because no mode dominates the others on every axis:
 | at-rest custody | `plaintext` \| `passphrase` \| `tpm` |
 | rollback anchor | `none` \| `agent-file` \| `tpm-nv` |
 
-`file` is daemon/plaintext/none. `sealed` is daemon/passphrase/none (tpm-nv
-composable). `agent` moves the process boundary; the agent's *own* keystore
+The `tpm` and `tpm-nv` values are **reserved**: nothing in this ADR ships
+them (the deferred-composition section below). Consequently, in this ADR
+only `agent` mode has a rollback anchor.
+
+`file` is daemon/plaintext/none. `sealed` is daemon/passphrase/none.
+`agent` moves the process boundary; the agent's *own* keystore
 is independently plaintext, passphrase, or TPM-wrapped, and is reported
 separately — `agent` with a plaintext inner keystore protects long-term keys
 from the daemon process but **not** from a copied whole-host disk, and
 `sealed` without an agent protects the copied disk but not against a running
 daemon compromise. Neither subsumes the other; `doctor` reports all three
 axes so the operator sees which properties actually hold. **No mode ever
-silently degrades to a weaker one** — a locked keystore, an unreachable
-agent, or a checkpoint disagreement refuses, it does not fall back.
+silently degrades to a weaker one** — a locked keystore or an unreachable
+agent refuses to serve, and a checkpoint disagreement opens the store in
+`Recovery` (process up, authority off — the Recovery section); none of them
+falls back.
 
 ### The keystore file (all modes)
 
@@ -153,9 +171,16 @@ Rules — every violation refuses with a named problem, none regenerates:
   costs can be raised without a format change — within the bounds.
 - **Sealing**: ADR-0005's versioned seal (XChaCha20-Poly1305). The AAD is
   `"akson.keystore.v1" ‖ 0x00 ‖` the canonical I-JSON of the file *minus*
-  `sealed_secrets` — so every non-ciphertext byte (mode, schema version, all
-  KDF parameters, the salt) is authenticated, and tampering with metadata
-  fails the tag, not merely strict parsing.
+  `sealed_secrets`. This authenticates the **semantic metadata in canonical
+  form** — mode, schema version, every KDF parameter, the salt: changing any
+  *value* fails the tag. It does not (and cannot) authenticate raw file
+  bytes: whitespace or member-order changes canonicalize identically and are
+  accepted, because they alter nothing the parser yields. And the tag is not
+  the first line of defense: an unknown `custody` value, a wrong
+  `schema_version`, or an out-of-bounds KDF cost is refused by the closed
+  union and the bounds *before* any KDF run or AEAD open — those are
+  structural refusals, not tag failures (the PR2 tests are split
+  accordingly).
 - **Inner plaintext** (the `file` variant's `secrets`, and the sealed
   variant's decrypted content): the canonical I-JSON object
   `{"kek": …, "master": …}`, keys sorted, both values exactly 32 bytes.
@@ -190,8 +215,12 @@ in order: `$CREDENTIALS_DIRECTORY/akson.keystore-passphrase` (systemd
 stdin is a TTY. None available → the daemon refuses to serve, with the fix
 in the message. Fail closed, never regenerate.
 
-Closes: theft of **future logical copies** — the powered-off disk, a copied
-data dir, backups taken after sealing. **Does not close, and we say so:**
+Closes: theft of **future logical copies** — a data dir copied after
+sealing, backups taken after sealing. Not the physical disk as such: the
+same powered-off disk that holds the sealed keystore may also still hold
+pre-seal plaintext in freed blocks (next bullet), so the claim is scoped to
+copies made after sealing, never to the medium. **Does not close, and we
+say so:**
 
 - same-UID malware while the daemon runs (master, KEK, and DEK are in
   daemon memory); a keylogged passphrase; a passphrase file on the same
@@ -211,9 +240,15 @@ data dir, backups taken after sealing. **Does not close, and we say so:**
 A new `akson-keyd` (crate `crates/akson-keyd`) runs under its own Unix
 identity `akson-key` (third row in `deploy/sysusers.d`), owns its own
 directory, and holds four things: the custody artifact **entire** (master
-*and* KEK, in its own inner keystore — itself `file`, `sealed`, or
-TPM-wrapped; composition, not a fourth mode), the **external checkpoint**,
-the **store lineage id**, and the **public manifest**. The daemon's
+*and* KEK, in its own inner keystore — itself `file` or `sealed` now,
+TPM-wrapped under the future ADR; composition, not a fourth mode), the
+**checkpoint record** `{lineage_id, generation, trusted_time_floor,
+adopted}` (lineage: random 16 bytes; `adopted` is the one-way flag that
+closes fresh-database adoption, below), the **reservation ledger** (bounded,
+below), and the **public manifest**. All of keyd's durable state lives in
+**one journaled file** written atomically (temp + rename + dir fsync) — one
+commit either happens entirely or not at all, which is what makes
+provisioning and reservation crash-total below. The daemon's
 `keystore.json` is the third variant, `{"custody":"agent"}` — the mode
 marker lives in the same single artifact as every other mode.
 
@@ -250,7 +285,8 @@ to an impostor agent.
 - **Errors** are RFC 9457 problems; no refusal names key material or
   reveals which keys exist.
 - **Golden wire vectors** in `spec/vectors/keyd/` for every op, every
-  refusal, and the reserve/provision idempotency matrix, re-derived by
+  refusal, the reserve/provision idempotency matrix, the reservation
+  retention matrix, and the provisioning crash matrix, re-derived by
   `xcheck/`.
 
 #### The operation registry (closed, deny by absence — and typed)
@@ -278,15 +314,36 @@ are therefore *manifest-validated*:
   `PurposeKey` does; the socket cannot pull a key across roles. (This is
   the online oracle — named honestly under "what agent mode does not
   close" — but it cannot mint identity.)
-- `sign-card {card}` — keyd verifies that every key thumbprint and the TLS
-  certificate digest the card advertises match its **own manifest** before
-  signing with the agent-card key. A card advertising any key keyd does not
-  own refuses with `binding-mismatch`.
-- `sign-introduction {transcript, key_binding}` — keyd recomputes the
-  key-binding digest, verifies every key entry and the record's
-  `tls_certificate_sha256` against the manifest, and only then returns the
+- `sign-card {card}` — specified against what a card actually is today: the
+  A2A Agent Card (`introduce.rs::signed_card`) carries name, interfaces,
+  capabilities, and security schemes — **no key bindings and no TLS
+  digest**; those live in the separate key-binding record of
+  `IntroMaterial`, not in the card. So there is nothing key-shaped in a
+  card for keyd to check against its manifest (v2 claimed such a check; it
+  was vacuous), and this op is honestly what it is: keyd validates the
+  presented card against the closed introduction profile
+  (`profile::validate_agent_card` — required Akson extensions, mTLS-only,
+  streaming/push off, extended card) and signs it with the agent-card key;
+  a card failing the profile refuses (`card-profile`). Should a future card
+  representation embed key bindings or a certificate digest, the
+  exact-manifest rule below extends to it before keyd may sign.
+- `sign-introduction {transcript, key_binding}` — **exact manifest, set
+  equality, not subset**: the presented record's `keys` must equal keyd's
+  manifest exactly — all six statement purposes (`agent-card`,
+  `contract-proposal`, `contract-decision`, `task-result`, `evidence`,
+  `requester-outcome`), each entry's JWK and thumbprint byte-equal to the
+  manifest's, **no purpose absent and none extra** — and its
+  `tls_certificate_sha256` must equal the manifest DER's digest. A missing
+  entry refuses exactly as a mismatched one does (`binding-mismatch`); v2
+  checked only what was *presented*, which let an omission through. Only
+  then does keyd recompute the key-binding digest and return the
   per-purpose proofs over the bound transcript. Attacker-supplied bindings
-  refuse; the v1 takeover is structurally unavailable.
+  refuse; the v1 takeover is structurally unavailable. **Named spec
+  change** (PR3): `spec/ext/key-binding.v1.schema.json` tightens `keys`
+  from `minProperties: 1` to `required` = the full six-purpose set — every
+  conforming producer already emits all six
+  (`introduce.rs::statement_keys`), so no compatible producer breaks — with
+  the introduction and schema vectors updated in the same PR.
 - `sign-tls {message}` — the rustls `SigningKey` bridge for the TLS
   endpoint key; handshake transcripts by construction of use.
 - `unwrap-dek {wrapped_dek}` / `wrap-dek {dek}` — the KEK **never crosses
@@ -301,16 +358,71 @@ are therefore *manifest-validated*:
   {canonical_bytes, mac}` — the work-order MAC key (derived from the master
   under a fixed label: a stable long-term authority, the other secret v1
   mislabeled) never crosses the socket.
-- `checkpoint-reserve {reservation_id}` / `checkpoint-read` — the §15.5
-  monotonic generation plus trusted time, persisted under keyd's UID.
-  Reserve is **idempotent**: keyd durably records (reservation_id →
-  generation) before replying, so a lost response retried with the same id
-  returns the same generation and burns nothing. Read is naturally
-  idempotent.
-- `provision {keystore, endpoint_der}` / `provision-status` — the
-  `keys to-agent` import (Migration below). Idempotent by content:
-  re-provisioning byte-identical material is `ok`; different material while
-  provisioned refuses.
+- `checkpoint-reserve {reservation_id}` / `checkpoint-commit
+  {reservation_id}` / `checkpoint-read` — the §15.5 monotonic generation
+  plus trusted time, persisted under keyd's UID. Reserve is **idempotent**:
+  keyd durably records (reservation_id → generation) in the journal before
+  replying, so a lost response retried with the same id returns the same
+  generation and burns nothing. **The ledger is bounded by a reservation
+  lifecycle**, not append-forever (v2 grew it without bound): a reservation
+  is *consumed* either by the next successful `checkpoint-reserve` with a
+  new id — which acknowledges the prior generation — or by an explicit
+  `checkpoint-commit {reservation_id}`; keyd retains the single active
+  reservation plus at most the last **N = 32** consumed records (retry of a
+  retained consumed id is idempotent; retry of an evicted id refuses
+  `reservation-unknown`, which is safe because consumption means a later
+  reservation was already acted on). The first successful reserve also
+  flips the checkpoint's `adopted` flag (the lineage rule below). Read
+  returns the full checkpoint record — generation, trusted-time floor,
+  **lineage id**, `adopted` — and is naturally idempotent.
+- `renew-certificate {}` — **certificate generation moves into keyd in
+  agent mode.** Today the daemon mints the 365-day endpoint certificate at
+  bootstrap (`bootstrap.rs::load_or_init_endpoint_cert`,
+  `ENDPOINT_CERT_VALIDITY`) and peers enforce expiry at every handshake
+  (`tls.rs::check_cert_time`) — a manifest that fixes the exact DER forever
+  is therefore a scheduled outage. keyd generates a fresh DER over the
+  **same** tls-endpoint key (the shared `self_signed_endpoint` path; SPKI
+  unchanged), updates its manifest atomically in the same journal commit,
+  and returns the new DER for the daemon to persist as `endpoint.der` and
+  serve. **The peer-facing consequence, honestly**: peers pin the DER
+  digest via the introduction key-binding (`tls_certificate_sha256`), so
+  renewal moves the pinned digest and every peer must accept the new one
+  through the only path that exists — the explicit §8.4 re-pair
+  (`Store::remove_peer` then a fresh, operator-confirmed pairing;
+  `akson-store/src/lib.rs`'s documented re-pair flow). No in-band
+  certificate-rotation announcement exists in the protocol; that is a
+  **named systemic gap** (`cert-rotation-unannounced`) affecting every
+  custody mode, which this ADR does not solve. `doctor` warns starting 30
+  days before `notAfter` (and the daemon logs the same warning at startup
+  in that window), so the operator schedules re-pairs instead of
+  discovering an expired fleet.
+- `provision-challenge {}` — returns a single-use random nonce (TTL 5
+  minutes, one outstanding at a time), the freshness half of the
+  provisioning proof below.
+- `provision {keystore, endpoint_der, lineage?, generation?,
+  trusted_time?, nonce, root_signature}` / `provision-status` — the
+  `keys to-agent` import and fresh agent-mode init (Migration below).
+  **Verifiable without a root oracle**: the prover is the migration tool,
+  which at that moment legitimately holds the master — it derives the root
+  child through the shared derivation module and signs
+  `"akson.keyd.provision.v1" ‖ nonce` **directly, with no keyd operation
+  involved**; the signature is an *input* to `provision`, never the output
+  of any keyd op, so no root-signing oracle re-enters the registry. keyd
+  verifies the nonce is the outstanding one and the signature verifies
+  under the root public key it derives from the submitted master —
+  proving the submitter holds the root matching the material, freshly.
+  Lineage and checkpoint seeding: a migration from an existing store
+  carries the store's lineage id, current generation, and trusted time
+  (keyd persists them with `adopted: true`); a fresh init carries none and
+  keyd mints lineage, generation 0, trusted-time floor = provisioning
+  time, `adopted: false`, returning all three. **Crash-total**: keyd
+  persists the *entire* provisioned set — inner keystore, DER, manifest,
+  lineage, checkpoint seed, provisioning status — in **one atomic journal
+  commit** before replying `ok` with the manifest; after any interruption
+  the set is either fully present or fully absent, and `provision-status`
+  never reports a partial state. Idempotent by content: re-provisioning
+  byte-identical material is `ok` (a fresh nonce is still required);
+  different material while provisioned refuses.
 
 #### What `agent` mode closes — and what it does not
 
@@ -345,14 +457,38 @@ claim it does: the database's generation is an unauthenticated `meta` row
 the daemon UID can rewrite, `checkpoint-read` tells that adversary the
 expected value, and no blind external scalar can distinguish legitimate
 current state from a relabeled old state. Two hardenings close the
-*accidental* corners: keyd holds a **store lineage id** (random, minted at
-provision or first init, persisted on both sides), and a database that is
-fresh or carries a foreign lineage id beside an initialized checkpoint
-**refuses instead of adopting** the external generation — today a deleted
-`state.db` would silently adopt the current counter on first open. The
-adversarial gap — same-generation relabelling by the daemon UID — is a
-**named residual with a claim-pinning test**, so the claim can never
-silently inflate. Actually closing it requires replay-sensitive state
+*accidental* corners — and, unlike v2, which asserted a lineage "persisted
+on both sides" while no operation established it on either, both are now
+executable:
+
+- **keyd's side**: the checkpoint record carries the lineage id, seeded by
+  `provision` (carried from an existing store, or minted at fresh init)
+  and returned by `checkpoint-read` (the registry above).
+- **the store's side**: a new **`store_lineage` meta row**. No DDL — the
+  existing `meta` key/value table (`schema.rs`) takes new keys without a
+  `user_version` bump; the named schema change is `ExternalCheckpoint`
+  gaining `lineage` plus a fresh-adoption flag, and the adoption/refusal
+  rules in `Store::open`, landing in **PR5**. `keys to-agent` writes the
+  row into the existing database (fsynced) *before* provisioning keyd
+  with the same id, and a re-run re-reads it rather than re-minting, so a
+  crash can never leave the two sides holding different ids.
+- **the handshake at every open**: the daemon reads keyd's full checkpoint
+  record and passes lineage into `Store::open`. A database whose
+  `store_lineage` differs from keyd's refuses (`lineage-mismatch` — a
+  foreign database). A **fresh** database (no wrapped DEK) adopts the
+  external checkpoint and lineage **only while keyd's `adopted` flag is
+  false** — only a genuinely fresh provisioning that has never reserved
+  authority; the first successful `checkpoint-reserve` flips `adopted`
+  one-way, after which a fresh or lineage-less database beside the
+  initialized checkpoint refuses (`lineage-missing`) instead of adopting —
+  today a deleted `state.db` silently adopts the current counter on first
+  open (`lib.rs`'s first-init arm). Losing a database that never reserved
+  is harmless by construction: no authority state exists to roll back.
+
+The adversarial gap — same-generation relabelling by the daemon UID, whose
+reach includes rewriting the plaintext `store_lineage` row — is a **named
+residual with a claim-pinning test**, so the claim can never silently
+inflate. Actually closing it requires replay-sensitive state
 transitions validated *outside* the daemon (the agent authenticating state
 digests, not holding a counter); that is future work in its own ADR.
 
@@ -365,9 +501,30 @@ time-uncertain recovery) is exhaustive and lives at one chokepoint:
 - **Refused in Recovery**: introduction dial and accept, peer import and
   removal, contract acceptance and every work-order issue (manual *and*
   automatic), processor calls, coordination consent mint and dispatch,
-  certificate renewal. Each refusal names the recovery path.
+  certificate renewal. Each refusal names the recovery path: `akson
+  recover ack`, below.
 - **Allowed in Recovery**: `doctor`/`status`/`diagnose`, read-only
-  listing, export.
+  listing, export — and `akson recover ack`, the one authority-adjacent
+  mutation allowed, because it *is* the exit.
+
+**The exit is an explicit operator acknowledgement — `akson recover ack`**
+(v2 said "re-reserve converges" with no transition that performs it; this
+is that transition). The operator inspects (`doctor`/`diagnose` name the
+disagreement: external generation, database generation, lineage), decides
+the restored state is the state they want, and runs `akson recover ack`.
+The flow: verify lineage matches (a `lineage-mismatch` is not
+acknowledgeable — that is a foreign database, and the fix is restoring the
+right one); `checkpoint-reserve` with a fresh reservation id, obtaining
+generation G strictly above both the external and database values; write G
+into the database's `state_generation` row; `checkpoint-commit` the
+reservation; append an audit row (`recovery.acknowledged`, carrying both
+prior values). The next open compares equal and is `Normal`. Its own
+refusal matrix row: `recover ack` refuses in `Normal` (`nothing-to-ack`),
+refuses on `lineage-mismatch`, and refuses when the checkpoint anchor is
+unreachable — it never edits the checkpoint side, only re-reserves through
+it. Crash between the reserve and the database write re-enters `Recovery`
+and the ack is re-run — the same conservative funnel, never a
+silently-current older database.
 
 Enforcement is central — the store refuses authority-issuing mutations in
 `Recovery` at its own transaction boundary, and every listener path
@@ -379,25 +536,30 @@ capability evidence and enforced nowhere. PR1 fixes this with a break-first
 test (a store in `Recovery` plus an auto-approvable task must issue
 nothing; on main it issues).
 
-### `tpm` composition (feature `tpm`, CI-gated separately — ADR-0009's stance)
+### `tpm` composition — explicitly deferred; nothing here ships it
 
-Where hardware exists, `tss-esapi` seals the keystore's wrapping secret to
-the TPM and backs the checkpoint with an NV monotonic counter (usable from
-`sealed` mode too, where it is the only checkpoint option). **The claim is
-narrow**: TPM sealing protects the keystore blob **moved off the machine**
-— a copied directory, a backup, a pulled disk — with no passphrase to type.
-It does not, without a measured-boot PCR policy and an authorization value
-this ADR does not yet specify, protect a stolen *whole machine* that can
-boot into an allowed state and ask its own TPM to unseal. The NV counter
-gives the scalar hardware monotonicity — which changes nothing about the
-relabelling residual above, since a hardware-honest counter does not make
-the database's claim of it authentic. Ed25519 signing residency on target
-hardware is **not assumed** (asserted in v1; unverified). Before the `tpm`
-feature ships, its own ADR must specify the object and PCR policies, boot
-and user-presence assumptions, NV lifecycle (provisioning, TPM-clear,
-lockout, write endurance), failure recovery, and a supported-hardware
-survey. Until then: seal + NV counter, behind the feature, with these
-stated limits.
+**This ADR does not build, gate, or ship any TPM support.** v2 kept TPM
+selected in present tense while deferring its entire design; that was not
+an enforceable decision, and this revision makes the deferral itself the
+decision: the `tpm` (at-rest) and `tpm-nv` (rollback-anchor) axis values
+are *reserved*, no PR in the implementation plan touches them, no `tpm`
+feature or `tss-esapi` dependency is added, and no assurance involving a
+TPM is claimed. Until the future ADR lands, `sealed` mode's rollback
+anchor is `none` — in this ADR only `agent` mode has one.
+
+What the composition *would* be — recorded so the axis values mean
+something — is machine-binding: sealing the keystore's wrapping secret to
+the TPM protects the blob **moved off the machine** (a copied directory, a
+backup, a pulled disk) with no passphrase to type; without a measured-boot
+PCR policy and an authorization value it does not protect a stolen whole
+machine that can boot into an allowed state and ask its own TPM to unseal;
+an NV monotonic counter gives the checkpoint scalar hardware monotonicity —
+which changes nothing about the relabelling residual above. Ed25519
+signing residency on target hardware is **not assumed** (asserted in v1;
+unverified). The gate is the composition's **own future ADR**, which must
+specify the object and PCR policies, boot and user-presence assumptions,
+NV lifecycle (provisioning, TPM-clear, lockout, write endurance), failure
+recovery, and a supported-hardware survey before any of it is built.
 
 ### Migration
 
@@ -412,21 +574,35 @@ delete `kek`.
 
 Bootstrap resolves the artifact state by **one total precedence table**
 (K = `keystore.json`, T = `keystore.json.tmp`, S = `identity.seed`,
-E = `kek`, D = store present). A leftover T is never read — it is removed
-and the row below applies:
+E = `kek`, D = store present, C = `endpoint.der` present — v2 omitted C,
+so an `endpoint.der`-only directory matched "truly fresh" and auto-inited,
+contradicting the continuity rule; C is now a table variable). A leftover
+T is never read — it is removed and the row below applies:
 
 | on disk | verdict |
 |---|---|
-| no K, no S, no E, no D | auto-init `file` (truly fresh) |
+| no K, no S, no E, no D, no C | auto-init `file` (truly fresh) |
+| no K, no S, no E, C present (with or without D) | refuse `identity-missing` — `endpoint.der` is continuity state; restore the identity it belongs to, or remove it deliberately |
 | no K, no S, no E, D present | refuse `identity-missing` |
 | no K, S+E | legacy: run migration |
 | no K, exactly one of S/E | refuse `identity-incomplete` (the Context defect, now fail-closed) |
 | K only | open by K's variant |
 | K + S + E | crash before deletions: K's secrets must equal S/E → delete both (fsync dir); unequal → refuse `migration-ambiguous` |
 | K + exactly one of S/E | crash between the two unlinks: the survivor must equal K's copy → delete it (fsync dir); unequal → refuse `migration-ambiguous` |
-| K = `agent`, keyd ready | open over the socket |
+| K = `agent`, keyd ready, lineage agrees | open over the socket |
+| K = `agent`, keyd ready, store lineage absent or foreign | refuse `lineage-missing` / `lineage-mismatch` (the rollback-detection rules; fresh adoption only while keyd is unadopted) |
 | K = `agent`, keyd unreachable/unprovisioned | refuse, fix in message — never a fallback to local files |
-| K = `agent` + S/E present | leftovers from a pre-`to-agent` state: verify their derived public keys against keyd's manifest → equal: delete them; else refuse |
+| K = `agent` + S present | leftover seed from a pre-`to-agent` state: derive its public keys through the shared module and compare against keyd's manifest → equal: delete it (fsync dir); else refuse `migration-ambiguous` |
+| K = `agent` + E present | leftover KEK — **no derived public form exists to check** (v2's "verify derived public keys" was impossible for the symmetric KEK). D present: unwrap the store's wrapped DEK locally under E *and* via keyd `unwrap-dek`; equal DEKs → same KEK → delete E (fsync dir); unequal → refuse `migration-ambiguous`. No D: no equality is checkable → refuse `migration-ambiguous`, naming deliberate operator removal as the fix |
+
+Two rules stand beside the table. **Quiescence**: the table is evaluated
+by exactly one process — the daemon at bootstrap; `keys migrate` and `keys
+to-agent` are offline operations that refuse with `daemon-running` while a
+daemon holds the data-dir lock (`aksond.lock`, below). **Read-once**: the
+daemon reads its custody mode from this table exactly once, at bootstrap;
+no path re-reads it while serving, so a running daemon never changes
+custody mid-flight — mode changes take effect at the next start, stated
+plainly under `keys to-agent`.
 
 Every row is exercised by fault injection after every write, fsync, rename,
 and unlink (the recovery matrix below). No migration journal is needed
@@ -436,29 +612,53 @@ by the equality checks above.
 
 **`keys to-agent`** moves the custody artifact **entire** — master *and*
 KEK (v1 said "the master" while defining keyd as holding the KEK; both go).
-Two-phase, explicit operator step, available only once agent mode is whole
-(implementation plan):
+An explicit operator step, available only once agent mode is whole
+(implementation plan), and **offline by specification**: v2 provisioned
+keyd and renamed a file while saying nothing about a running daemon — which
+keeps concrete keys in memory (`DaemonState`) and keeps serving TLS off its
+local key (`receive_serve.rs`), so both sides would have been live at once
+and the exactly-one-authority claim was false as written. The phases:
 
-1. **Provision**: send the keystore secrets and the exact `endpoint.der`
-   to keyd. keyd persists them in its inner keystore, derives all eight
-   public keys through the shared derivation module, stores the manifest,
-   and returns it. Idempotent by content — a lost acknowledgment is
-   recovered by re-sending; byte-identical material is `ok`, different
-   material refuses.
-2. **Verify**: the daemon independently derives the same manifest from the
+0. **Quiesce**: the tool takes the exclusive data-dir lock (`aksond.lock`,
+   the flock the serving daemon holds for its whole lifetime — PR1) with a
+   non-blocking attempt; a held lock refuses `daemon-running` before any
+   byte reaches keyd. The daemon is stopped first, by the operator; the
+   tool never stops, drains, or races it.
+1. **Lineage**: read the store's `store_lineage` meta row, or mint it (16
+   random bytes) and write it, fsynced, if absent — a re-run *re-reads*
+   rather than re-mints, so provisioning stays content-idempotent. Read
+   the database's current generation and trusted time as the checkpoint
+   seed.
+2. **Provision, with proof**: fetch a nonce via `provision-challenge`;
+   derive the root child from the master (shared derivation module) and
+   sign `"akson.keyd.provision.v1" ‖ nonce` with it **directly** — the
+   tool legitimately holds the master at this moment, and no keyd
+   operation signs anything here; the signature is an input to
+   `provision`, not an oracle's output. Send `provision {keystore,
+   endpoint_der, lineage, generation, trusted_time, nonce,
+   root_signature}`. keyd verifies and persists the full set in one
+   atomic journal commit before replying `ok` (registry above), so a lost
+   acknowledgment is recovered by re-sending and an interrupted persist
+   leaves nothing partial.
+3. **Verify**: the tool independently derives the same manifest from the
    material it sent and compares byte-for-byte — all eight thumbprints,
-   the certificate DER, the root key — and requires a fresh challenge
-   signature that verifies under the manifest's root.
-3. **Install**: atomically rename a new `{"custody":"agent"}` keystore over
-   `keystore.json` (temp + rename + dir fsync). This one atomic step both
-   installs the pointer and removes the local secrets — there is no window
-   in which the secrets exist in zero or two authoritative places.
+   the certificate DER, the root key — against what `provision` returned.
+4. **Activate**: only after 3 verifies, atomically rename a new
+   `{"custody":"agent"}` keystore over `keystore.json` (temp + rename +
+   dir fsync). This one atomic step both installs the pointer and removes
+   the local secrets — there is no window in which the secrets exist in
+   zero or two authoritative places. **Activation takes effect at the
+   next daemon start**: custody mode is read once at bootstrap
+   (the read-once rule above), so no running daemon flips mid-flight —
+   there is none running, by phase 0 — and the operator's restart is the
+   moment agent mode begins.
 
-Crash before 3: keyd is provisioned, custody is still local — `doctor`
-warns (`agent provisioned but custody local`), re-running converges. Crash
-during 3: the rename is atomic — either the old keystore or the pointer.
-After 3: keyd is authoritative; keyd state lost afterwards refuses to serve
-(restore keyd from its backup — no fallback exists to fall to).
+Crash before 4: keyd is provisioned, custody is still local — `doctor`
+warns (`agent provisioned but custody local`), re-running converges (same
+lineage, same bytes, fresh nonce). Crash during 4: the rename is atomic —
+either the old keystore or the pointer. After 4: keyd is authoritative;
+keyd state lost afterwards refuses to serve (restore keyd from its backup —
+no fallback exists to fall to).
 
 ### Shared derivation module
 
@@ -484,11 +684,14 @@ custody:
   at rest           keyd: sealed (unlocked) | plaintext file | passphrase | tpm
   rollback anchor   agent-file | tpm-nv | none
   keystore          ~/.local/share/akson/keystore.json  0600  (custody: agent)
-  endpoint cert     endpoint.der present, SPKI matches tls-endpoint key
+  endpoint cert     endpoint.der present, SPKI matches tls-endpoint key,
+                    notAfter 2027-07-30
   warnings          passphrase file shares the keystore's filesystem;
                     agent runs under the daemon's own uid;
                     legacy key files still present;
-                    agent provisioned but custody still local
+                    agent provisioned but custody still local;
+                    endpoint certificate expires within 30 days —
+                    renewal moves the pinned digest; peers re-pair (§8.4)
 ```
 
 In `agent` mode the at-rest row is keyd's own answer (via `describe`), so
@@ -503,7 +706,8 @@ mode is named `plaintext` in the developer's terminal, every time.
   reachable); *other daemon-UID process* (same authority, no daemon
   memory); *keyd process / keyd-UID process*; *root* (holds everything —
   named, not defended); *whole-host snapshot holder* (offline copy of both
-  UIDs' state; defeated only by `sealed`/`tpm` at-rest custody).
+  UIDs' state; defeated only by `sealed` at-rest custody — or `tpm`, once
+  its own future ADR ships it).
 - Residual 1 ("key custody is interim") is rewritten as the axes table:
   per mode, which of the three axes hold and against which actor.
 - T13's mitigation row gains the external counter — **scoped to
@@ -527,32 +731,48 @@ mode is named `plaintext` in the developer's terminal, every time.
   `aksond serve` gets, and remains labeled `plaintext` by doctor.
 - **ADR-0009 is partially superseded.** Its degrade rule (report rollback
   detection unavailable and operate, rather than block) stands. Its
-  `KeyStore` trait does not: the trait is infallible, returns borrowed
-  concrete keys, and was never adopted by the daemon — and it cannot
-  represent remote fallible signing, a public manifest, DEK wrap/unwrap,
-  MAC operations, or reserve retries. It is replaced by four fallible
-  seams the daemon is made to *actually depend on*: `IdentitySigner`
-  (describe / public manifest / typed signing), `StoreCustody`
+  `KeyStore` trait does not: the trait returns borrowed concrete keys with
+  an infallible in-memory `advance_state_generation` (only `put` returns
+  `Result`), and was never adopted by the daemon — and it cannot represent
+  remote fallible signing, a public manifest, DEK wrap/unwrap, MAC
+  operations, or reserve retries. It is replaced by four fallible seams
+  the daemon is made to *actually depend on*: `IdentitySigner` (describe /
+  public manifest / typed signing / renew-certificate), `StoreCustody`
   (wrap/unwrap DEK), `WorkOrderAuthority` (mac/verify), and
-  `CheckpointAnchor` (reserve/read + lineage). Local modes implement them
-  in-process; `agent` implements them over the socket. ADR-0009's header
-  gains "partially superseded by ADR-0017" in the paperwork PR; its
-  anticipated `keyring`-crate adapter is explicitly not built (Context
-  records the scoped rejection).
+  `CheckpointAnchor` (reserve/commit/read + lineage). Local modes
+  implement them in-process; `agent` implements them over the socket.
+  ADR-0009's header gains "partially superseded by ADR-0017" in the
+  paperwork PR; its anticipated `keyring`-crate adapter is explicitly not
+  built (Context records the scoped rejection).
 - The fail-closed surface grows on purpose: locked keystore, unreachable
   or impostor agent, incomplete legacy pair, missing `endpoint.der`, SPKI
-  mismatch, ambiguous migration, malformed or out-of-bounds keystore, and
-  checkpoint disagreement all refuse. Each refusal names its fix; none
-  regenerates key material.
-- New dependencies: `argon2`, `zeroize` (both RustCrypto/pure Rust, §3.3);
-  `tss-esapi` only behind `tpm`. A new crate `akson-keyd`, one more socket
-  protocol held to the ADR-0016 admission standard **in both directions**,
-  and a normative shared derivation module.
+  mismatch, ambiguous migration, malformed or out-of-bounds keystore, a
+  lineage that is missing or foreign, and `keys migrate`/`keys to-agent`
+  against a running daemon all refuse; a checkpoint disagreement opens
+  `Recovery` (diagnostics only) with `akson recover ack` as its explicit
+  operator exit. Each refusal names its fix; none regenerates key
+  material.
+- **Named spec change**: `spec/ext/key-binding.v1.schema.json` tightens
+  `keys` from `minProperties: 1` to the required full six-purpose set
+  (PR3, with introduction/schema vector updates in the same PR).
+- **Named systemic gap, not solved here**: `cert-rotation-unannounced` —
+  no in-band path tells peers a renewed certificate's new digest; renewal
+  rides the explicit §8.4 re-pair, and `doctor` warns 30 days out.
+- New dependencies: `argon2`, `zeroize` (both RustCrypto/pure Rust, §3.3).
+  No `tss-esapi` and no `tpm` feature — the TPM composition is deferred to
+  its own ADR, which brings its dependency. A new crate `akson-keyd`, one
+  more socket protocol held to the ADR-0016 admission standard **in both
+  directions**, a data-dir lifetime lock (`aksond.lock`), and a normative
+  shared derivation module.
 - Affected threat cases: T13, T14, residuals 1 and 3, plus the new actors.
   Test vectors: keystore golden files for all three variants (including a
   sealed vector with fixed KDF parameters), derivation golden vectors
   (eight purposes + work-order MAC), keyd wire vectors including every
-  refusal and the idempotency matrix, and the recovery matrix below.
+  refusal, the reserve/provision idempotency matrix with **reservation
+  retention** (consumption by successor, `checkpoint-commit`, the N = 32
+  cap, evicted-id refusal), the provisioning **crash matrix** (interrupt
+  at every persistence point; all-or-nothing), and the recovery matrix
+  below.
 
 ## Implementation plan
 
@@ -573,13 +793,22 @@ is introduced and watched to fail before the fix, but no main baseline is
 claimed, because the scaffold does not exist on main).
 
 1. **Keystore file, migration, deny-by-absence, endpoint continuity,
-   Recovery enforcement, memory hygiene.** The closed schema and parser,
-   `keys migrate` + auto-migrate, the precedence table, the
-   `identity-missing`/`identity-incomplete` refusals, the `endpoint.der`
-   SPKI check and fail-closed-on-missing, the central Recovery matrix with
-   the reactor fix, `zeroize` + non-dumpable.
+   Recovery enforcement, the data-dir lock, memory hygiene.** The closed
+   schema and parser, `keys migrate` + auto-migrate, the precedence table,
+   the `identity-missing`/`identity-incomplete` refusals, the
+   `endpoint.der` SPKI check and fail-closed-on-missing, the central
+   Recovery matrix with the reactor fix, `aksond.lock` (an exclusive
+   flock the serving daemon takes at bootstrap and holds for its
+   lifetime; offline key operations take it non-blocking and refuse
+   `daemon-running` on contention), `zeroize` + non-dumpable.
    - [red-on-main] delete `identity.seed`, keep `kek`: assert bootstrap
      refuses `identity-incomplete`; on main it mints fresh purpose keys.
+   - [red-on-main] a data dir holding only `endpoint.der`: assert refusal
+     `identity-missing`; on main a fresh identity is minted beside the
+     stale DER, which is loaded unchecked and fails later at TLS setup.
+   - [conformance] `keys migrate` while a daemon holds `aksond.lock`:
+     refuses `daemon-running`, and the data dir's file inventory is
+     byte-identical after the refusal.
    - [red-on-main] delete `identity.seed` **and** `endpoint.der`, keep
      `kek`: assert refusal; on main a coherent fresh identity silently
      appears beside the database — the worst of the three cases.
@@ -613,18 +842,32 @@ claimed, because the scaffold does not exist on main).
    unlock sources, the doctor block.
    - [conformance] wrong passphrase: refusal, and the keystore's bytes and
      directory inventory unchanged (no partial state).
-   - [conformance] flip one byte of each non-ciphertext field (mode,
-     version, each KDF parameter, salt) and of the ciphertext: assert
-     **tag failure**, not parse-level failure, for the AAD-covered fields.
+   - [conformance] **refusals before unseal** (structural, not tag): an
+     unknown `custody` value, a wrong `schema_version`, and each KDF cost
+     outside its bounds are refused by the closed union and the bounds
+     with their named problems, asserting **no KDF run and no AEAD open
+     was attempted** — these can never be tag tests, because the closed
+     union and the DoS ceilings reject them first.
+   - [conformance] **AEAD-tag failures** for in-range mutations only: flip
+     a salt byte, move one KDF cost to a *different in-bounds* value, and
+     flip a ciphertext byte — each asserts **tag failure**, not
+     parse-level failure. (The AAD authenticates canonical semantic
+     metadata; a re-serialization that canonicalizes identically is
+     accepted, and the vector set includes one such re-encoding as a
+     positive case.)
    - [conformance] plant a marker in the inner object; grep the sealed
      file and a simulated backup (§20.7 style) — plus the honest twin: the
      *legacy* files' bytes are asserted still recoverable from a pre-seal
      backup, pinning the "cannot unwrite the past" paragraph.
    - [conformance] locked start with no source: refuse-to-serve with the
      fix named; passphrase file on the keystore's filesystem: the warning.
-3. **`akson-keyd`: crate, wire protocol, provisioning, deploy profile —
-   agent not yet selectable.** The registry, mutual admission, sysusers +
-   unit + root-owned config, `verify.sh` coverage.
+3. **`akson-keyd`: crate, wire protocol, provisioning with proof,
+   renewal, deploy profile — agent not yet selectable.** The full
+   registry (including `provision-challenge`, the extended `provision`,
+   `checkpoint-commit`, and `renew-certificate`), the atomic journal,
+   mutual admission, sysusers + unit + root-owned config, the key-binding
+   schema tightening (`minProperties: 1` → the required six-purpose set)
+   with its vector updates, `verify.sh` coverage.
    - [conformance] wrong-UID client refused before the request line is
      read — real-socket matrix over **every** op (`coord_boundary.rs`
      style).
@@ -632,15 +875,39 @@ claimed, because the scaffold does not exist on main).
      under a wrong UID — the daemon refuses before sending any bytes.
    - [conformance] outside-registry op, unknown version, oversize line,
      slow-loris: each stable problem; nothing logged that names keys.
-   - [conformance] `sign-card` / `sign-introduction` with one binding not
-     in the manifest — for each of the six statement keys and the
-     certificate digest independently — refuse `binding-mismatch`. This is
-     the review's first-contact-takeover attack, kept as a permanent
-     vector.
-   - [conformance] reserve idempotency: kill keyd after persist-before-
-     reply; restart; re-send the same `reservation_id` → the same
-     generation, exactly one reservation row. Lost-response matrix for
-     `provision` likewise (same bytes `ok`, different bytes refused).
+   - [conformance] `sign-introduction` exact-manifest matrix: one binding
+     *mismatched* — for each of the six statement keys and the
+     certificate digest independently — and one binding *absent*, for
+     each of the six independently, plus one extra unknown entry: every
+     case refuses `binding-mismatch`. The mismatch half is the review's
+     first-contact-takeover attack, kept as a permanent vector; the
+     omission half is what v2's presented-entries check let through.
+   - [conformance] `sign-card`: a card failing the closed introduction
+     profile (a missing required extension; streaming on) refuses
+     `card-profile`; a conforming card is signed and verifies under the
+     manifest's agent-card key.
+   - [conformance] provisioning proof: a `provision` with a wrong root
+     signature, a reused nonce, or an expired nonce refuses; nothing is
+     journaled (the durable no-effect oracle is keyd's journal bytes).
+   - [conformance] provisioning crash matrix: kill keyd at every point
+     while persisting the provisioned set; on restart the set is fully
+     present or fully absent — `provision-status` never reports a partial
+     state, and re-sending the same bytes with a fresh nonce converges to
+     `ok`. Lost-response matrix likewise (same bytes `ok`, different
+     bytes refused).
+   - [conformance] reserve idempotency and the **reservation lifecycle**:
+     kill keyd after persist-before-reply; restart; re-send the same
+     `reservation_id` → the same generation, exactly one active
+     reservation. A successor reserve consumes the prior;
+     `checkpoint-commit` consumes explicitly; a retained consumed id
+     replays idempotently; after N = 32 consumed records the oldest is
+     evicted and its retry refuses `reservation-unknown` — the retention
+     bound is exercised at the cap, not asserted.
+   - [conformance] `renew-certificate`: the returned DER has the same
+     SPKI, a fresh validity window, and the manifest's DER and digest
+     move atomically with it (kill keyd mid-renewal: old set or new set,
+     never a mixed manifest); `doctor` warns inside the 30-day window and
+     not outside it.
    - [conformance] kill keyd mid-`sign-statement`: the surrounding daemon
      operation fails closed with nothing half-committed — named oracle: no
      decision row, contract head unmoved, and the retry after keyd returns
@@ -656,30 +923,51 @@ claimed, because the scaffold does not exist on main).
    - [conformance] e2e introduction + task exchange with signing remoted —
      paired with its adversarial twin from PR3 (mismatched-manifest
      introduction refused), so the positive path never stands alone.
-5. **The external checkpoint + `to-agent` + the gate lifts.**
-   Reserve-before-authority-write wiring, lineage id,
-   `rollback_detectable: true` in agent mode, two-phase `to-agent`,
+5. **The external checkpoint + lineage + `to-agent` + `recover ack` +
+   the gate lifts.** Reserve-before-authority-write wiring, the
+   `store_lineage` meta row and the extended `ExternalCheckpoint`
+   (lineage + fresh-adoption; the named store change), the open
+   handshake's adoption/refusal rules, `rollback_detectable: true` in
+   agent mode, the four-phase offline `to-agent`, `akson recover ack`,
    `custody:"agent"` accepted.
-   - [red-on-main] back up the data dir, do authority work, restore the
+   - [conformance] back up the data dir, do authority work, restore the
      backup: the store opens in `Recovery` with automatic authority off,
-     and the PR1 reactor test re-runs in agent mode. Red at the daemon
-     level today because bootstrap hardcodes `rollback_detectable: false`.
+     and the PR1 reactor test re-runs in agent mode. (Relabeled from v2's
+     `[red-on-main]`, which was wrong twice: an agent-mode assertion
+     cannot execute on main, where agent mode and keyd do not exist; and
+     the file-mode equivalent is not red but *intended* — file mode stays
+     `RollbackDetectionUnavailable` by ADR-0009's degrade rule, unchanged
+     after this PR, and a file-mode twin asserts exactly that.)
    - [conformance] roll keyd's counter backward: refusal.
-   - [conformance] delete `state.db` beside an initialized checkpoint: the
-     fresh database is **refused**, not adopted at the current generation
-     (the lineage rule; the store's own first-open adoption remains only
-     for genuinely fresh provisioning).
-   - [claim-pin] same-generation relabel: restore an old database and
-     rewrite its generation to the current value at the daemon's UID —
-     assert the store opens `Normal`. This test *documents the residual*;
-     if a future change makes it detectable, the test fails and the threat
-     model's residual row gets updated in the same PR.
+   - [conformance] delete `state.db` beside an adopted checkpoint: the
+     fresh database is **refused** (`lineage-missing`), not adopted at
+     the current generation; a database carrying a foreign lineage id
+     refuses `lineage-mismatch`; and the positive twin — a fresh database
+     under a *never-reserved* (unadopted) checkpoint adopts once, after
+     which the first reserve seals adoption and the refusal case above
+     holds.
+   - [claim-pin] same-generation relabel: restore an old database,
+     rewrite its generation to the current value *and* its
+     `store_lineage` row at the daemon's UID — assert the store opens
+     `Normal`. This test *documents the residual*; if a future change
+     makes it detectable, the test fails and the threat model's residual
+     row gets updated in the same PR.
    - [conformance] crash between reserve and commit: next open is
-     `Recovery` (conservative, an operator acknowledges), and re-reserve
-     converges; never a silently-current older database.
-   - [conformance] kill -9 during each `to-agent` phase: rerun converges;
-     at every observed intermediate state the secrets are authoritative in
-     **exactly one** place or the daemon refuses to serve.
+     `Recovery` — and the exit is exercised: `akson recover ack` inspects,
+     re-reserves, writes the acknowledged generation, commits, audits;
+     the next open is `Normal`. Its refusal rows too: ack in `Normal`
+     refuses `nothing-to-ack`, ack under `lineage-mismatch` refuses, ack
+     with keyd unreachable refuses — never a silently-current older
+     database.
+   - [conformance] `keys to-agent` while a daemon holds `aksond.lock`:
+     refuses `daemon-running` before any byte reaches keyd — this is the
+     exactly-one-authority claim's enforcement test (v2 asserted the
+     claim without the quiescence that makes it true).
+   - [conformance] kill -9 during each `to-agent` phase (with no daemon
+     running, per phase 0): rerun converges with the *same* lineage id
+     and byte-identical provisioning; at every observed intermediate
+     state the secrets are authoritative in **exactly one** place or the
+     next daemon start refuses to serve.
 6. **The honest paperwork.** Threat-model rewrite (new actors, T13/T14,
    residuals), README custody paragraphs, `deploy/README.md` third role,
    §7.3 profile mapping, ADR-0009 "partially superseded" header, the ADR
