@@ -26,10 +26,12 @@ The version is a prerelease *by construction*, not by modesty. The payload media
 types are still in the unregistered `vnd.akson-dev` tree, and
 `.github/workflows/release.yml` refuses a stable tag while that is true; it also
 requires the tag to equal the workspace version exactly. `0.0.1-alpha.1` is the
-only version both gates accept. The tag exists in this repository; nothing has
-been published from it yet — [verifying a release](docs/verifying-a-release.md)
-is the consumer's side of that, and `design/a0-evidence.md` A0.1 records where it
-stands. Not yet fit for real use.
+only version both gates accept. The release is
+[published](https://github.com/zarbafian/akson/releases/tag/v0.0.1-alpha.1)
+(2026-07-30): every asset is a Sigstore-attested subject, and
+[verifying a release](docs/verifying-a-release.md) is the consumer's side of
+that — `design/a0-evidence.md` A0.1 records exactly what the published set
+does and does not yet establish. Not yet fit for real use.
 
 The first product slice is a two-party code review:
 

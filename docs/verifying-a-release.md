@@ -7,15 +7,15 @@ does not establish.
 The release side of this is `.github/workflows/release.yml`; A0.1 in
 `design/a0-evidence.md` records its status.
 
-> **`v0.0.1-alpha.1` is tagged. Nothing has been published from it yet.** The
-> tag is an annotated tag in this repository, on the commit whose workspace
-> version it names — but it has **not been pushed**, and `release.yml` triggers
-> on a *tag push*. So the workflow has not run, no assets exist, and the
-> `gh release download` below has nothing to fetch today. CI still walks the
-> release path's first steps on every push and pull request
-> (`provenance-dry-run` in `.github/workflows/ci.yml`), which is what keeps it
-> from rotting. `design/a0-evidence.md` A0.1 is the ledger entry for exactly
-> where this stands.
+> **`v0.0.1-alpha.1` is published** (2026-07-30, from release run
+> `30535732062` at commit `28f3b5e`): 20 assets — six binaries, six SBOMs, six
+> dependency trees, `SHA256SUMS`, `BUILD-INFO.txt` — each an attested subject,
+> so every command below has something real to fetch and check. It is a
+> **prerelease**: developer preview, interim key custody, unregistered media
+> types. CI still walks the release path's first steps on every push and pull
+> request (`provenance-dry-run` in `.github/workflows/ci.yml`), which is what
+> keeps it from rotting between releases. `design/a0-evidence.md` A0.1 is the
+> ledger entry for exactly where this stands.
 
 Two things about that tag are deliberate, and they change what you should
 expect to find:
