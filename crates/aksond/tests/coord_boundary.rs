@@ -41,6 +41,7 @@ fn intended_surface(req: &ControlRequest) -> Surface {
         | ControlRequest::TaskSent
         | ControlRequest::TaskOutcomes
         | ControlRequest::TaskOutput { .. }
+        | ControlRequest::TaskExport { .. }
         | ControlRequest::PeerList
         | ControlRequest::PeerKnocks
         | ControlRequest::PeerAdd { .. }
@@ -92,6 +93,9 @@ fn all_requests() -> Vec<ControlRequest> {
         ControlRequest::TaskOutput {
             task_id: "task-1".to_owned(),
             role: None,
+        },
+        ControlRequest::TaskExport {
+            task_id: "task-1".to_owned(),
         },
         ControlRequest::PeerList,
         ControlRequest::PeerKnocks,
@@ -283,7 +287,7 @@ fn the_surface_matrix_holds_for_every_control_op_over_a_real_socket() {
     let requests = all_requests();
     // A sanity check on the enumeration itself: it must cover all three surfaces
     // and every op the coordination surface registers.
-    assert_eq!(requests.len(), 36, "every ControlRequest variant is listed");
+    assert_eq!(requests.len(), 37, "every ControlRequest variant is listed");
     assert_eq!(
         requests
             .iter()

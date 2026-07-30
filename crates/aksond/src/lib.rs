@@ -30,6 +30,7 @@ mod coord;
 mod coord_egress;
 mod decision;
 mod delivery;
+mod export;
 mod introduce;
 mod issue;
 mod keys;
@@ -59,6 +60,7 @@ pub use coord::{
 };
 pub use decision::{decide, DecisionRecord};
 pub use delivery::{deliver_job, prepare_delivery, run_delivery, DeliveryJob};
+pub use export::export_result_bundle;
 pub use introduce::{
     dial_introduction, intro_profile, respond_introduction, IntroConnState, IntroIdentity,
     IntroduceError, PendingIntro,

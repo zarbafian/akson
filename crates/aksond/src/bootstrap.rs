@@ -696,6 +696,26 @@ impl DaemonState {
                     .collect();
                 Ok(serde_json::json!({ "task_id": task_id, "outputs": items }))
             }
+            ControlRequest::TaskExport { task_id } => {
+                let store = self.store.lock().map_err(|_| internal())?;
+                let own_task_result = self
+                    .identity
+                    .purpose_key(akson_crypto::purpose::KeyPurpose::TaskResult)
+                    .verifying();
+                let root_thumbprint = self
+                    .identity
+                    .purpose_key(akson_crypto::purpose::KeyPurpose::AgentCard)
+                    .verifying()
+                    .to_jwk()
+                    .thumbprint();
+                crate::export::export_result_bundle(
+                    &store,
+                    &self.config.local_performer,
+                    &root_thumbprint,
+                    &own_task_result,
+                    task_id,
+                )
+            }
             ControlRequest::TaskApprove {
                 task_id,
                 processor,
