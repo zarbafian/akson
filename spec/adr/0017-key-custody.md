@@ -1,7 +1,10 @@
 # ADR-0017: Key custody — sealed keystore, key agent, rollback checkpoint
 
 Status: proposed
-Date: 2026-07-31 (v4. The review records, dispositions, and confirmation
+Date: 2026-07-31 (v5 — closes the final two P2s from the closing
+confirmation: reservation ids become keyd-issued under a watermark rule,
+and certificate renewal is classified a continuity operation permitted in
+Recovery. v4. The review records, dispositions, and confirmation
 reviews are **external artifacts** — they live in the private program
 repository `akb-program` (`reviews/2026-07-30-adr0017-codex-review.md`,
 `reviews/2026-07-30-adr0017-dispositions.md`,
@@ -416,20 +419,24 @@ are therefore *manifest-validated*:
   {canonical_bytes, mac}` — the work-order MAC key (derived from the master
   under a fixed label: a stable long-term authority, the other secret v1
   mislabeled) never crosses the socket.
-- `checkpoint-reserve {reservation_id, floor?}` / `checkpoint-commit
+- `checkpoint-reserve {nonce, floor?}` / `checkpoint-commit
   {reservation_id}` / `checkpoint-read` / `checkpoint-adopt {lineage_id}`
   — the §15.5 monotonic generation plus trusted time, persisted under
-  keyd's UID. A plain reserve allocates strictly monotonically from the
+  keyd's UID. **Reservation ids are keyd-issued, never caller-supplied**
+  (closing review #31): reserve carries only a caller retry `nonce`, and
+  keyd mints `reservation_id` from a strictly increasing journaled
+  sequence — so every id keyd has ever issued sits at or below a known
+  watermark, and an arbitrary presented id is always classifiable. A plain reserve allocates strictly monotonically from the
   external value. The optional `floor` is **reserve-at-least**: the
   reserved generation is strictly above both the external value and
   `floor`; its one sanctioned caller is `akson recover ack` (Recovery
   below), whose acknowledged generation must clear a database value that
   can legitimately exceed keyd's — ordinary authority reserves never pass
   it and keep strict monotonic-from-external. Reserve is **idempotent
-  while active**: keyd durably records (reservation_id → generation) in
-  the journal before replying, so a lost response retried with the same
-  id returns `{status: "active"}` and the same generation, burning
-  nothing. **The ledger is bounded by a reservation lifecycle**, not
+  while active**: keyd durably records (nonce → reservation_id,
+  generation) in the journal before replying, so a lost response retried
+  with the same nonce returns `{status: "active"}`, the same id, and the
+  same generation, burning nothing. **The ledger is bounded by a reservation lifecycle**, not
   append-forever (v2 grew it without bound): a reservation is *consumed*
   either by the next successful `checkpoint-reserve` with a new id —
   which acknowledges the prior generation — or by an explicit
@@ -440,9 +447,16 @@ are therefore *manifest-validated*:
   effects** — v3 called that retry "idempotent", which would hand a
   delayed caller a stale generation after its successor had already
   acted on a later one — and the daemon must not perform authority work
-  under a reservation keyd reports consumed. A retry of an evicted id
-  refuses `reservation-unknown` (safe: consumption means a later
-  reservation was already acted on). The database end is hardened to
+  under a reservation keyd reports consumed. Eviction is decidable
+  because ids are keyd-issued: a presented id **at or below the issue
+  watermark** that is neither active nor in the retained window is
+  *definitionally consumed* and refuses `reservation-consumed`; an id
+  **above the watermark** was never issued and refuses
+  `reservation-unknown`. v4 required the same refusals with
+  caller-supplied ids, under which an evicted id and a genuinely new one
+  were observationally identical — unimplementable, as the closing
+  review's #31 showed; the watermark makes both answers computable from
+  retained state alone. The database end is hardened to
   match (**named store change**, PR5): `Store::set_state_generation`
   becomes a monotonic **compare-and-set** — it writes G only when G is
   strictly above the stored value, refusing otherwise
@@ -597,9 +611,9 @@ executable:
   external checkpoint and lineage **only while keyd's `adopted` flag is
   false**. **Adoption seals at the first successful open**: once
   `Store::open` returns — lineage verified, or freshly adopted with the
-  `store_lineage` row durably written — and **before the daemon serves
-  any request**, the daemon calls `checkpoint-adopt`; keyd flips
-  `adopted` one-way. From then on a fresh or lineage-less database
+  `store_lineage` row durably written — the daemon calls
+  `checkpoint-adopt` **immediately: before bootstrap's crash resolvers
+  run and before any request is served**; keyd flips `adopted` one-way. From then on a fresh or lineage-less database
   beside the initialized checkpoint refuses (`lineage-missing`) instead
   of adopting — today a deleted `state.db` silently adopts the current
   counter on first open (`lib.rs`'s first-init arm). v3 sealed adoption
@@ -616,10 +630,13 @@ executable:
   operation-to-reserve classification can close that class — inert
   writes are the point of staging — so the seal moves to the strictly
   earliest event instead: a daemon cannot durably mutate a store it has
-  not opened, hence no durable state of any kind — authority, inert, or
-  audit — can predate a first-open seal. The remaining crash window
-  (open succeeded, `checkpoint-adopt` not yet acknowledged) contains no
-  served requests and therefore no user state; a re-open re-runs the
+  not opened, hence no **request-derived durable store state** — staged
+  payloads, peers, policies, tasks — can predate a first-open seal
+  (bootstrap's own pre-open identity writes and open-time schema
+  initialization are reproducible daemon state, not user state). The
+  remaining crash window (open succeeded, `checkpoint-adopt` not yet
+  acknowledged) contains no served requests and therefore no user
+  state; a re-open re-runs the
   handshake and seals.
 
 The adversarial gap — same-generation relabelling by the daemon UID, whose
@@ -637,13 +654,18 @@ time-uncertain recovery) is exhaustive and lives at one chokepoint:
 
 - **Refused in Recovery**: introduction dial and accept, peer import and
   removal, contract acceptance and every work-order issue (manual *and*
-  automatic), processor calls, coordination consent mint and dispatch,
-  certificate renewal (either phase — `renew-certificate` and
-  `renew-commit`). Each refusal names the recovery path: `akson
-  recover ack`, below.
+  automatic), processor calls, coordination consent mint and dispatch.
+  Each refusal names the recovery path: `akson recover ack`, below.
 - **Allowed in Recovery**: `doctor`/`status`/`diagnose`, read-only
-  listing, export — and `akson recover ack`, the one authority-adjacent
-  mutation allowed, because it *is* the exit.
+  listing, export; `akson recover ack`, the one authority-adjacent
+  mutation allowed, because it *is* the exit; and **certificate renewal
+  (`renew-certificate`, `renew-status`, `renew-commit`) — continuity
+  operations** (closing review #32): they read and write only keyd's
+  manifest and `endpoint.der`, never store authority state, and a
+  pending renewal that wakes in Recovery must be able to complete its
+  startup reconciliation — refusing it trapped the process between the
+  renewal oracle and the diagnostics-up rule; completing it changes
+  nothing Recovery protects.
 
 **The exit is an explicit operator acknowledgement — `akson recover ack`**
 (v2 said "re-reserve converges" with no transition that performs it; this
@@ -1079,8 +1101,10 @@ claimed, because the scaffold does not exist on main).
      generation** and no journal change (journal bytes compared before
      and after — the durable no-effect oracle); after N = 32 consumed
      records the oldest is evicted and its retry refuses
-     `reservation-unknown` — the retention bound is exercised at the
-     cap, not asserted.
+     `reservation-consumed` by the watermark rule (at-or-below watermark,
+     not retained), while a never-issued id above the watermark refuses
+     `reservation-unknown` — the retention bound and both refusal classes
+     are exercised at the cap, not asserted.
    - [conformance] the **concurrent-reserve race**: two simultaneous
      `checkpoint-reserve` calls with distinct ids on two connections —
      distinct generations in the replies, **exactly one of them G + 1**,
